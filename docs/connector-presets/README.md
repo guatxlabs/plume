@@ -1,54 +1,54 @@
-# Presets de connecteurs `http_pull` (exemples de config, PAS du code vendeur)
+# `http_pull` connector presets (config examples, NOT vendor code)
 
-[Français](README.md) | [English](README.en.md)
+[English](README.md) | [Français](README.fr.md)
 
-Ces fichiers sont des **exemples de configuration documentés** — des points de départ à
-**copier/adapter**, pas des intégrations embarquées ni maintenues dans le daemon.
+These files are **documented configuration examples** — starting points to
+**copy/adapt**, not integrations embedded in or maintained within the daemon.
 
-Principe (directive *vendor-agnostic / sur-ensemble*) : Plume **ne code AUCUN vendeur en dur**.
-Le connecteur générique `http_pull` (#20/#22) transforme n'importe quelle API REST/JSON en source
-d'events *par configuration seule*. Ces presets ne font que **démontrer** la forme d'une `config`
-`http_pull` pour des API réelles (auth, pagination, `field_map`, watermark) — CrowdStrike Falcon,
-SentinelOne, un REST générique. Il n'y a **pas une ligne de code par-vendeur** derrière eux ; ce
-sont de la documentation. Ajouter un nouveau vendeur = écrire un JSON comme ceux-ci, sans rebuild.
+Principle (*vendor-agnostic / superset* directive): Plume **hard-codes NO vendor**.
+The generic `http_pull` connector (#20/#22) turns any REST/JSON API into an event
+source *by configuration alone*. These presets only **demonstrate** the shape of an `http_pull`
+`config` for real APIs (auth, pagination, `field_map`, watermark) — CrowdStrike Falcon,
+SentinelOne, a generic REST. There is **not one line of per-vendor code** behind them; they
+are documentation. Adding a new vendor = writing a JSON file like these, without a rebuild.
 
-## Utilisation
+## Usage
 
-1. Créez un connecteur de type `http_pull` dans l'UI (Données → Connecteurs de sources) ou via
+1. Create a connector of type `http_pull` in the UI (Data → Source connectors) or via
    `POST /api/connectors` (admin).
-2. **Copiez le contenu d'un preset dans le champ `config`** du connecteur, puis **adaptez-le** :
-   URL/host régional, `client_id`, chemins `field_map` (selon le schéma réel de VOTRE tenant/API),
+2. **Copy the contents of a preset into the connector's `config` field**, then **adapt it**:
+   URL/regional host, `client_id`, `field_map` paths (according to the real schema of YOUR tenant/API),
    pagination, watermark.
-3. Mettez le **credential** (client_secret OAuth, jeton API…) dans le champ **`secret`** du
-   connecteur — **JAMAIS dans `config`**. Le `secret` n'est jamais renvoyé ni journalisé.
-4. Utilisez le bouton **Tester** (`POST /api/connectors/{id}/test`) : il fait 1 page, **n'ingère
-   pas**, et renvoie un ÉCHANTILLON des events mappés pour vérifier que le `field_map` produit ce que
-   vous attendez.
-5. Activez le connecteur quand la prévisualisation est correcte (créé **désactivé** par défaut).
+3. Put the **credential** (OAuth client_secret, API token…) in the connector's **`secret`**
+   field — **NEVER in `config`**. The `secret` is never returned nor logged.
+4. Use the **Test** button (`POST /api/connectors/{id}/test`): it fetches 1 page, **ingests
+   nothing**, and returns a SAMPLE of the mapped events so you can check that the `field_map` produces what
+   you expect.
+5. Enable the connector once the preview is correct (created **disabled** by default).
 
-Les champs `_comment` sont ignorés par le parseur de config (`HttpPullCfg::from_json`) ; ils ne
-servent qu'à documenter le preset.
+The `_comment` fields are ignored by the config parser (`HttpPullCfg::from_json`); they only
+serve to document the preset.
 
-## Enrichissement à l'ingestion
+## Enrichment at ingestion
 
-Depuis #1, les events **pullés** passent par le **même pipeline d'enrichissement** qu'un event
-ingéré nativement : parsers déclaratifs, extracteur générique, et **match-on-ingest threat-intel**
-(un `src_ip`/`dst_ip`/hash qui matche un IOC connu reçoit `fields.threat_intel` + `ti_match=1`, et
-contribue au risk-based alerting). Aucune config supplémentaire nécessaire.
+Since #1, **pulled** events go through the **same enrichment pipeline** as a natively ingested
+event: declarative parsers, generic extractor, and **threat-intel match-on-ingest**
+(a `src_ip`/`dst_ip`/hash that matches a known IOC receives `fields.threat_intel` + `ti_match=1`, and
+contributes to risk-based alerting). No extra config needed.
 
-## Référence des champs de `config` (`HttpPullCfg`)
+## Reference of the `config` fields (`HttpPullCfg`)
 
-| Champ | Rôle |
+| Field | Role |
 |---|---|
-| `method` | `GET` (défaut) ou `POST`. |
-| `url` **ou** `api_root`+`path` | URL complète, ou racine + chemin recomposés. |
-| `body` | Corps statique optionnel (POST). |
-| `records_path` | JSONPath (sous-ensemble sûr) du tableau d'enregistrements dans la réponse (`""` = la racine est le tableau). |
-| `source` | Libellé `source` par défaut (sinon `http:{id}`). |
-| `sourcetype` / `sourcetype_map` | `sourcetype` constant + table `sourcetype -> catégorie CIM` inline (bring-your-own CIM, sans rebuild). |
-| `field_map` | Objet `champ_event: <JSONPath \| "=const">`. Clés `fields.<X>` -> objet `fields` (searchable en GXQL). Clés reconnues : `ts, severity, message, host, src_ip, dst_ip, url, category, sourcetype, source, id, dedup, entity`. |
-| `auth.kind` | `none` \| `basic` \| `bearer` \| `token`/`header` (avec `header_name`+`prefix`) \| `oauth2_client_credentials` (avec `token_url`, `client_id`, `scope`). Le credential est TOUJOURS le champ `secret` du connecteur. |
-| `pagination.kind` | `none` \| `offset` \| `page` \| `cursor` (avec `cursor_path`) \| `link_header` (avec fallback `next_path`). Params : `param`, `size`, `size_param`, `start`. |
-| `watermark` | Incrémental : `field_path` (dans chaque record), `param` (envoyé au serveur), `format` (`epoch`\|`iso8601`), `template` (`{value}`), `lookback_days` (cold-start). |
+| `method` | `GET` (default) or `POST`. |
+| `url` **or** `api_root`+`path` | Full URL, or root + path joined together. |
+| `body` | Optional static body (POST). |
+| `records_path` | JSONPath (safe subset) of the array of records in the response (`""` = the root is the array). |
+| `source` | Default `source` label (otherwise `http:{id}`). |
+| `sourcetype` / `sourcetype_map` | Constant `sourcetype` + inline `sourcetype -> catégorie CIM` table (bring-your-own CIM, without a rebuild). |
+| `field_map` | Object `champ_event: <JSONPath \| "=const">`. `fields.<X>` keys -> `fields` object (searchable in GXQL). Recognized keys: `ts, severity, message, host, src_ip, dst_ip, url, category, sourcetype, source, id, dedup, entity`. |
+| `auth.kind` | `none` \| `basic` \| `bearer` \| `token`/`header` (with `header_name`+`prefix`) \| `oauth2_client_credentials` (with `token_url`, `client_id`, `scope`). The credential is ALWAYS the connector's `secret` field. |
+| `pagination.kind` | `none` \| `offset` \| `page` \| `cursor` (with `cursor_path`) \| `link_header` (with `next_path` fallback). Params: `param`, `size`, `size_param`, `start`. |
+| `watermark` | Incremental: `field_path` (in each record), `param` (sent to the server), `format` (`epoch`\|`iso8601`), `template` (`{value}`), `lookback_days` (cold start). |
 
-Voir aussi le code : `daemon/src/handlers/connectors/httppull.rs` (`HttpPullCfg`, `poll_http_pull`).
+See also the code: `daemon/src/handlers/connectors/httppull.rs` (`HttpPullCfg`, `poll_http_pull`).

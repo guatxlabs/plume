@@ -1,39 +1,39 @@
-# Les agents et leur protocole
+# Agents and their protocol
 
-[Français](AGENTS-PROTOCOLE.md) | [English](AGENTS-PROTOCOLE.en.md)
+[English](AGENTS-PROTOCOLE.md) | [Français](AGENTS-PROTOCOLE.fr.md)
 
-Ce que fait un agent tient en une phrase : **il lit une source, il tamponne sur disque, il POSTe au
-central, et il n'oublie ce qu'il a lu qu'une fois la publication acquittée.** Tout le reste de cette
-page est le détail de cette phrase, et surtout **ce qu'elle ne promet pas**.
+What an agent does fits in one sentence: **it reads a source, buffers to disk, POSTs to the
+central, and forgets what it has read only once the publication has been acknowledged.** The rest of
+this page is the detail of that sentence, and above all **what it does not promise**.
 
-Chaque affirmation est établie par lecture des sources et porte la commande qui la redonne.
-Ce document décrit le **protocole** ; l'agent d'endpoint lui-même est documenté dans
-[`../agent/README.md`](../agent/README.md), sa validation dans [`../agent/CI.md`](../agent/CI.md), et
-les points d'extension dans [`SDK.md`](SDK.md).
+Every claim is established by reading the sources and carries the command that reproduces it.
+This document describes the **protocol**; the endpoint agent itself is documented in
+[`../agent/README.md`](../agent/README.md), its validation in [`../agent/CI.md`](../agent/CI.md), and
+the extension points in [`SDK.md`](SDK.md).
 
 ---
 
-## 1. Trois familles, un seul contrat de fil
+## 1. Three families, a single wire contract
 
-Le mot « agent » recouvre trois choses différentes dans ce produit. Les confondre est la première
-source de malentendu.
+The word "agent" covers three different things in this product. Confusing them is the first
+source of misunderstanding.
 
-| Famille | Ce que c'est | Où elle tourne | Tampon |
+| Family | What it is | Where it runs | Buffer |
 |---|---|---|---|
-| **collecteurs shell** | `collectors/*.sh` + timers systemd, posés par `bootstrap-agent.sh` ; un expéditeur séparé (`ship.sh`) vide le spool | hôte Linux | fichiers dans `PLUME_SPOOL` |
-| **agent d'endpoint** | un binaire Rust multi-OS (`agent/`) qui lit, tamponne et expédie lui-même | Linux, Windows, macOS | anneau borné sur disque |
-| **sans agent** | collecteur PowerShell Windows, récepteur syslog, HEC, OTLP, connecteurs en PULL | la source, ou le central | variable |
+| **shell collectors** | `collectors/*.sh` + systemd timers, set up by `bootstrap-agent.sh`; a separate shipper (`ship.sh`) drains the spool | Linux host | files in `PLUME_SPOOL` |
+| **endpoint agent** | a cross-OS Rust binary (`agent/`) that reads, buffers and ships by itself | Linux, Windows, macOS | bounded ring on disk |
+| **agentless** | Windows PowerShell collector, syslog receiver, HEC, OTLP, PULL connectors | the source, or the central | varies |
 
-**Elles finissent toutes sur le même contrat de fil.** C'est ce qui permet d'en ajouter une sans
-toucher au central — et c'est pourquoi ce document décrit le contrat avant les familles.
+**They all end up on the same wire contract.** That is what makes it possible to add one without
+touching the central — and it is why this document describes the contract before the families.
 
 ---
 
-## 2. Le contrat de fil
+## 2. The wire contract
 
-### 2.1 L'enveloppe
+### 2.1 The envelope
 
-`POST /api/ingest`, `Authorization: Bearer <jeton>`, corps JSON :
+`POST /api/ingest`, `Authorization: Bearer <jeton>`, JSON body:
 
 ```json
 {
@@ -49,308 +49,308 @@ toucher au central — et c'est pourquoi ce document décrit le contrat avant le
 }
 ```
 
-Seul **`kind`** est obligatoire, et c'est le seul champ vérifié au moment du POST. Les valeurs
-`events`, `metrics` et les instantanés (`firewall`, `controls`, …) sont dispatchées à la relecture.
+Only **`kind`** is mandatory, and it is the only field checked at POST time. The values
+`events`, `metrics` and the snapshots (`firewall`, `controls`, …) are dispatched at replay.
 
-| Champ d'enveloppe | Si absent |
+| Envelope field | If absent |
 |---|---|
-| `kind` | **refus `400`** |
-| `ts` | l'instant de la relecture |
-| `host` | **écrasé** par l'hôte du jeton s'il est lié (§3) |
+| `kind` | **`400` refusal** |
+| `ts` | the time of the replay |
+| `host` | **overwritten** by the token's host if it is bound (§3) |
 | `env_id` | `prod` |
-| `events` | liste vide |
+| `events` | empty list |
 
-| Champ d'événement | Si absent |
+| Event field | If absent |
 |---|---|
-| `ts` | celui de l'enveloppe |
+| `ts` | the envelope's |
 | `source` | `agent` |
 | `severity` | `0` |
-| `category`, `message` | chaîne vide |
-| `dedup` | `NULL` → **aucune déduplication** pour cette ligne |
-| `fields` | `NULL` ; `src_ip`, `dst_ip` et `url` en sont promus s'ils s'y trouvent |
+| `category`, `message` | empty string |
+| `dedup` | `NULL` → **no deduplication** for this row |
+| `fields` | `NULL`; `src_ip`, `dst_ip` and `url` are promoted from it if they are present |
 
-La forme canonique est écrite trois fois à l'identique — dans la bibliothèque shell
-(`collectors/lib.sh`), dans l'agent Rust (`agent/src/source/`) et dans `agent/README.md`.
+The canonical form is written three times, identically — in the shell library
+(`collectors/lib.sh`), in the Rust agent (`agent/src/source/`) and in `agent/README.md`.
 
-### 2.2 Ce que le POST vérifie — et ce qu'il ne vérifie pas
+### 2.2 What the POST checks — and what it does not
 
-**MESURÉ SUR L'ARBRE le 2026-08-25 : il n'existe aucune structure Rust désérialisée pour cette
-enveloppe.** Le corps est pris en `String`, parsé en JSON générique, et **écrit verbatim dans le
-spool du central** après un seul contrôle : la présence de `kind`.
+**MEASURED ON THE TREE on 2026-08-25: there is no deserialized Rust struct for this
+envelope.** The body is taken as a `String`, parsed as generic JSON, and **written verbatim to the
+central's spool** after a single check: the presence of `kind`.
 
 ```sh
-grep -rn 'derive(Deserialize' daemon/src/ingest    # rien
+grep -rn 'derive(Deserialize' daemon/src/ingest    # nothing
 ```
 
-Conséquence à connaître avant de déboguer une intégration : **un événement mal formé rend `202`, pas
-une erreur.** Ce qui est refusé synchroniquement est court :
+A consequence to know before debugging an integration: **a malformed event returns `202`, not
+an error.** What is refused synchronously is a short list:
 
-| Code | Quand |
+| Code | When |
 |---|---|
-| `202 {"queued":true,"durable":true}` | le corps est du JSON et porte `kind` — sur `durable`, voir §2.5 |
-| `400` | JSON invalide, ou `kind` absent |
-| `413` | trop d'événements dans un lot, ou corps trop gros — le message **nomme le plafond qui a mordu et le levier qui le change** |
-| `503` + `Retry-After: 60` | plancher d'espace libre franchi (`PLUME_INGEST_MIN_FREE_MB`) |
-| `429` + `Retry-After` | limitation de débit (globale, par IP, ou d'authentification) |
-| `401` / `403` | jeton inconnu, ou rôle insuffisant |
-| `500` | écriture du spool impossible |
+| `202 {"queued":true,"durable":true}` | the body is JSON and carries `kind` — on `durable`, see §2.5 |
+| `400` | invalid JSON, or `kind` absent |
+| `413` | too many events in a batch, or body too large — the message **names the ceiling that bit and the lever that changes it** |
+| `503` + `Retry-After: 60` | free-space floor crossed (`PLUME_INGEST_MIN_FREE_MB`) |
+| `429` + `Retry-After` | rate limiting (global, per IP, or on authentication) |
+| `401` / `403` | unknown token, or insufficient role |
+| `500` | spool write impossible |
 
-Il n'y a **pas de `507`** dans ce produit : la pression disque parle en `503`.
+There is **no `507`** in this product: disk pressure speaks as `503`.
 
-### 2.3 Les autres portes d'entrée
+### 2.3 The other entry points
 
-| Route | Format | Succès | Particularité |
+| Route | Format | Success | Particularity |
 |---|---|---|---|
-| `/api/ingest` | enveloppe ci-dessus | `202` | la porte de référence |
-| `/api/ingest/journal` | NDJSON journald brut | `202`, `204` si vide | pas d'enveloppe englobante |
-| `/api/ingest/minio` | audit MinIO natif | `202`, `204` si le lot est entièrement filtré | plafond de route **plus bas** que le plafond configurable |
-| `/services/collector[/event]` | Splunk HEC | **`200`** `{"text":"Success","code":0}` | compatible fil : pointez vos *forwarders* existants |
-| `/services/collector/health` | — | `200` | **route publique**, sans authentification |
-| `/v1/traces` | OTLP/HTTP JSON, gzip accepté | — | **`404` tant que `PLUME_OTLP_TRACES` n'est pas à `1`** |
-| `/api/ingest/firehose`, `/api/ingest/pubsub` | AWS Firehose, push GCP | — | **les seules routes d'ingestion qui s'authentifient dans leur propre gestionnaire**, hors du contrôle commun |
+| `/api/ingest` | envelope above | `202` | the reference entry point |
+| `/api/ingest/journal` | raw journald NDJSON | `202`, `204` if empty | no enclosing envelope |
+| `/api/ingest/minio` | native MinIO audit | `202`, `204` if the batch is entirely filtered | route ceiling **lower** than the configurable ceiling |
+| `/services/collector[/event]` | Splunk HEC | **`200`** `{"text":"Success","code":0}` | wire-compatible: point your existing *forwarders* at it |
+| `/services/collector/health` | — | `200` | **public route**, without authentication |
+| `/v1/traces` | OTLP/HTTP JSON, gzip accepted | — | **`404` as long as `PLUME_OTLP_TRACES` is not set to `1`** |
+| `/api/ingest/firehose`, `/api/ingest/pubsub` | AWS Firehose, GCP push | — | **the only ingestion routes that authenticate in their own handler**, outside the common check |
 
-Toutes héritent du plafond de corps **par construction** : la borne est posée sur le sous-routeur, pas
-route par route, de sorte qu'une route ajoutée demain l'hérite sans qu'on y pense.
+All of them inherit the body ceiling **by construction**: the bound is set on the sub-router, not
+route by route, so that a route added tomorrow inherits it without anyone having to think about it.
 
-**Le syslog n'est pas une route HTTP.** Le récepteur écoute en UDP/TCP, écrit dans le spool local, et
-c'est l'expéditeur qui POSTe. Il appartient au transport de la famille shell.
+**Syslog is not an HTTP route.** The receiver listens on UDP/TCP, writes to the local spool, and
+it is the shipper that POSTs. It belongs to the shell family's transport.
 
-### 2.4 Les plafonds, et lequel mord vraiment
+### 2.4 The ceilings, and which one really bites
 
-| Levier | Défaut |
+| Lever | Default |
 |---|---|
-| `PLUME_INGEST_MIN_FREE_MB` | `512` (Mo) ; `0` désactive la garde |
+| `PLUME_INGEST_MIN_FREE_MB` | `512` (MB); `0` disables the guard |
 | `PLUME_INGEST_MAX_EVENTS` | `50000` |
-| `PLUME_INGEST_MAX_BODY_MB` | `8` (Mio) |
-| `PLUME_RL_GLOBAL_MAX` / `_IP_MAX` / `_AUTH_MAX` | `6000` / `1200` / `120` par fenêtre de 10 s |
+| `PLUME_INGEST_MAX_BODY_MB` | `8` (MiB) |
+| `PLUME_RL_GLOBAL_MAX` / `_IP_MAX` / `_AUTH_MAX` | `6000` / `1200` / `120` per 10 s window |
 
-Deux subtilités que le code porte et publie lui-même, et qu'il vaut mieux lire avant de relever un
-levier qui ne mordra pas :
+Two subtleties that the code carries and publishes itself, and that are worth reading before raising a
+lever that will not bite:
 
-- **quand deux plafonds gardent la même route, le refus DÉRIVE lequel a lié** au lieu de nommer un
-  levier en dur. Sur la route MinIO, c'est le plafond **de route** qui lie : relever
-  `PLUME_INGEST_MAX_EVENTS` n'y change rien. Sur HEC, OTLP et Firehose, les deux sont ex æquo ;
-- **le plafond d'octets mord bien avant le plafond d'événements** pour tout profil réaliste. Le
-  message d'erreur du plafond d'événements était donc du code mort, et un intégrateur recevait à la
-  place le message générique du cadriciel. C'est écrit et daté dans `daemon/src/limite_corps.rs`.
+- **when two ceilings guard the same route, the refusal DERIVES which one was binding** instead of
+  naming a hard-coded lever. On the MinIO route, the **route** ceiling is the binding one: raising
+  `PLUME_INGEST_MAX_EVENTS` changes nothing there. On HEC, OTLP and Firehose, the two are tied;
+- **the byte ceiling bites well before the event ceiling** for any realistic profile. The
+  event ceiling's error message was therefore dead code, and an integrator received the
+  framework's generic message instead. This is written and dated in `daemon/src/limite_corps.rs`.
 
-La garde disque **échoue en OUVERT** : si la mesure d'espace libre est impossible, l'ingestion passe.
-C'est un choix — refuser sur une mesure absente ferait tomber l'ingestion pour une raison qui n'est
-pas la bonne.
+The disk guard **fails OPEN**: if the free-space measurement is impossible, ingestion goes through.
+This is a choice — refusing on a missing measurement would bring ingestion down for a reason that is
+not the right one.
 
-### 2.5 Ce que l'accusé de réception atteste — et ce qu'il n'atteste pas
+### 2.5 What the acknowledgement attests — and what it does not
 
-**MESURÉ SUR L'ARBRE le 2026-08-29 : aucune surface de réception ne synchronise ce qu'elle vient
-d'écrire.** Un 2xx rendu par le central atteste que le corps a été **reçu et remis au système**. Il
-n'atteste **pas** qu'il survivrait à une coupure d'alimentation.
+**MEASURED ON THE TREE on 2026-08-29: no receiving surface syncs what it has just
+written.** A 2xx returned by the central attests that the body was **received and handed to the system**. It
+does **not** attest that it would survive a power cut.
 
 ```sh
-# le motif cherche un APPEL, pas une mention — sinon cette page se contredirait elle-même
-grep -rn '\.sync_all()\|\.sync_data()' daemon/src/ingest                              # rien
-grep -rn '\.sync_all()\|\.sync_data()' daemon/src/cold_store daemon/src/crypto daemon/src/backup   # six appels
+# the pattern looks for a CALL, not a mention — otherwise this page would contradict itself
+grep -rn '\.sync_all()\|\.sync_data()' daemon/src/ingest                              # nothing
+grep -rn '\.sync_all()\|\.sync_data()' daemon/src/cold_store daemon/src/crypto daemon/src/backup   # six calls
 ```
 
-La seconde commande est là parce qu'une commande qui ne rend rien ne prouve rien tant qu'on ne l'a pas
-vue rendre quelque chose. Ce n'est donc **pas** une capacité qui manque au produit — le même geste est
-appelé dans l'écrivain du tier froid, à l'écriture d'une clé de chiffrement et dans la sauvegarde. Il
-est absent **là où la promesse est faite**.
+The second command is there because a command that returns nothing proves nothing until it has been
+seen returning something. This is therefore **not** a capability the product lacks — the same operation is
+called in the cold tier writer, when writing an encryption key and in the backup. It
+is absent **where the promise is made**.
 
-Deux régimes, qu'il vaut mieux ne pas confondre :
+Two regimes, which are best not confused:
 
-| Régime | Routes | Ce qu'une coupure peut emporter |
+| Regime | Routes | What a power cut can take away |
 |---|---|---|
-| **spool** — un fichier écrit, **synchronisé**, renommé, puis dont le **répertoire** est synchronisé | `/api/ingest`, `/api/ingest/journal`, `/api/ingest/minio`, `/services/collector[/event]`, `/v1/traces`, `/api/ingest/firehose`, `/api/ingest/pubsub` | **rien de ce qui a été acquitté** : les deux barrières sont prises **avant** que l'accusé ne parte |
-| **base** — une transaction validée en `journal_mode=WAL` + `synchronous=NORMAL` | `/api/metrics/prom`, `/api/metrics/write`, `/loki/api/v1/push` | les dernières transactions validées : le `COMMIT` survit à la mort du **processus**, pas à celle de la **machine** |
+| **spool** — a file written, **synced**, renamed, and then its **directory** synced | `/api/ingest`, `/api/ingest/journal`, `/api/ingest/minio`, `/services/collector[/event]`, `/v1/traces`, `/api/ingest/firehose`, `/api/ingest/pubsub` | **nothing that was acknowledged**: both barriers are taken **before** the acknowledgement leaves |
+| **database** — a committed transaction in `journal_mode=WAL` + `synchronous=NORMAL` | `/api/metrics/prom`, `/api/metrics/write`, `/loki/api/v1/push` | the last committed transactions: the `COMMIT` survives the death of the **process**, not that of the **machine** |
 
-**Ce que cela change pour un expéditeur.**
+**What this changes for a shipper.**
 
-*Sur les sept routes de spool*, l'accusé vous autorise à oublier, et il tient : quand le `2xx` part, le
-corps est sur le disque, sous son nom définitif, les deux barrières prises. L'écriture est **déportée**
-sur un fil bloquant, donc l'attente ne bloque pas le récepteur ; elle se paie en latence, pas en débit
-perdu — le coût d'une barrière est celui de la **barrière**, pas de la taille du lot, et il s'amortit
-dès que plusieurs expéditeurs poussent en parallèle. Un exploitant dont le stockage rend cette barrière
-trop chère peut la désarmer avec `PLUME_INGEST_FSYNC=0` ; le champ `durable` retombe alors à `false` de
-lui-même, et le paragraphe suivant redevient vrai pour lui.
+*On the seven spool routes*, the acknowledgement allows you to forget, and it holds: when the `2xx` leaves, the
+body is on disk, under its final name, both barriers taken. The write is **offloaded**
+to a blocking thread, so waiting does not block the receiver; it is paid for in latency, not in lost
+throughput — the cost of a barrier is that of the **barrier**, not of the batch size, and it is amortized
+as soon as several shippers push in parallel. An operator whose storage makes this barrier
+too expensive can disarm it with `PLUME_INGEST_FSYNC=0`; the `durable` field then falls back to `false` by
+itself, and the next paragraph becomes true again for them.
 
-*Sur les trois routes de base*, l'accusé ne couvre toujours que la mort du **processus**. Si votre
-source est rejouable — un journal conservé, un flux à filigrane, un abonnement qui redélivre — gardez
-de quoi rejouer une fenêtre : la déduplication du central (§4.4) absorbe le rejeu dès que vos
-événements portent une clé. Si elle ne l'est pas, cette fenêtre est une perte que rien ne rattrape.
+*On the three database routes*, the acknowledgement still only covers the death of the **process**. If your
+source is replayable — a retained log, a watermarked stream, a subscription that redelivers — keep
+enough to replay a window: the central's deduplication (§4.4) absorbs the replay as soon as your
+events carry a key. If it is not, that window is a loss that nothing recovers.
 
-**Où c'est écrit dans la réponse, et où ça ne l'est pas.** Les quatre routes dont le corps appartient à
-plume portent le champ **`durable`**, et ce n'est pas une constante : c'est la valeur que la
-publication a **obtenue**.
+**Where it is written in the response, and where it is not.** The four routes whose body belongs to
+plume carry the **`durable`** field, and it is not a constant: it is the value that the
+publication **obtained**.
 
-| Route | `durable` | Pourquoi |
+| Route | `durable` | Why |
 |---|---|---|
-| `/api/ingest`, `/api/ingest/journal`, `/api/ingest/minio` | `true` | les deux barrières sont prises avant l'accusé (`false` si `PLUME_INGEST_FSYNC=0`, ou si le noyau refuse la barrière de répertoire après le renommage — auquel cas le lot est publié mais pas garanti) |
-| `/api/metrics/prom` | `false` | régime **base** : rien n'a changé pour lui |
+| `/api/ingest`, `/api/ingest/journal`, `/api/ingest/minio` | `true` | both barriers are taken before the acknowledgement (`false` if `PLUME_INGEST_FSYNC=0`, or if the kernel refuses the directory barrier after the rename — in which case the batch is published but not guaranteed) |
+| `/api/metrics/prom` | `false` | **database** regime: nothing has changed for it |
 
-Les six autres accusés ont une forme dictée par un contrat **étranger** (Splunk HEC, OTLP, AWS
-Firehose, GCP Pub/Sub, Loki push, Prometheus `remote_write`), quand ils ont un corps : y ajouter un
-champ modifierait le protocole d'un tiers. Pour les quatre d'entre eux qui sont des routes de spool, le
-témoin est côté exploitant, dans `/metrics` : `plume_spool_barriere_fichier_total`,
-`plume_spool_barriere_repertoire_total`, `plume_spool_barriere_echec_total`. Les deux premiers montent
-ensemble ; un écart, ou le troisième qui grimpe, dit qu'un `2xx` a cessé d'être adossé à une barrière.
+The six other acknowledgements have a shape dictated by a **foreign** contract (Splunk HEC, OTLP, AWS
+Firehose, GCP Pub/Sub, Loki push, Prometheus `remote_write`), when they have a body: adding a
+field to them would modify a third party's protocol. For the four of them that are spool routes, the
+witness is on the operator's side, in `/metrics`: `plume_spool_barriere_fichier_total`,
+`plume_spool_barriere_repertoire_total`, `plume_spool_barriere_echec_total`. The first two rise
+together; a gap, or the third one climbing, says that a `2xx` has stopped being backed by a barrier.
 
-> **Ce qui est prouvé, et ce qui ne l'est pas.** Ce qui est démontré est que les deux barrières sont
-> **demandées au noyau et rendues sans erreur**, dans cet ordre, avant l'accusé. La survie à une
-> coupure d'alimentation réelle ne se démontre pas depuis le processus : au-delà de l'appel, elle
-> dépend du système de fichiers et du matériel.
+> **What is proven, and what is not.** What is demonstrated is that both barriers are
+> **requested from the kernel and returned without error**, in that order, before the acknowledgement. Survival of a
+> real power cut cannot be demonstrated from the process: beyond the call, it
+> depends on the file system and the hardware.
 
-> ⚠️ **Le régime « base » reste ouvert.** La perte y demeure un **défaut** ; elle est écrite en
-> attendant d'être supprimée. C'est le solde de la clé `S31` de [`ROADMAP.md`](ROADMAP.md).
+> ⚠️ **The "database" regime remains open.** The loss there remains a **defect**; it is written down
+> pending its removal. It is the remainder of key `S31` in [`ROADMAP.md`](ROADMAP.md).
 
 ---
 
-## 3. L'authentification, et ce que « lié à l'hôte » veut dire
+## 3. Authentication, and what "bound to the host" means
 
-### 3.1 Le jeton
+### 3.1 The token
 
 ```sh
-# hôte natif : la configuration de l'unité, que `sudo` ne transmet pas
-sudo env PLUME_CONFIG=/etc/plume/soc.conf /usr/local/bin/plume-daemon token <nom> <hôte-lié>   # jeton de MACHINE
-sudo env PLUME_CONFIG=/etc/plume/soc.conf /usr/local/bin/plume-daemon token <nom> --relais     # jeton de RELAIS (forwarder multi-hôtes)
-# Docker / k3s : dans le conteneur où le démon tourne
+# native host: the unit's configuration, which `sudo` does not pass on
+sudo env PLUME_CONFIG=/etc/plume/soc.conf /usr/local/bin/plume-daemon token <nom> <hôte-lié>   # MACHINE token
+sudo env PLUME_CONFIG=/etc/plume/soc.conf /usr/local/bin/plume-daemon token <nom> --relais     # RELAY token (multi-host forwarder)
+# Docker / k3s: in the container where the daemon runs
 docker compose exec soc plume-daemon token <nom> <hôte-lié>
 kubectl -n soc exec deploy/soc -- plume-daemon token <nom> <hôte-lié>
 ```
 
-Sans le `PLUME_CONFIG` de l'unité, la sous-commande écrit dans une autre base que celle du démon :
-elle affiche un jeton, et le central le refuse. Sur un central neuf, démarrez le démon **avant** :
-une base que la sous-commande crée naît en clair
-([`INSTALLER-SANS-OUVRIR-DE-BRECHE.md` §1.1](INSTALLER-SANS-OUVRIR-DE-BRECHE.md#11-démarrer-le-démon-une-fois-avant-toute-sous-commande-qui-écrit-dans-la-base)).
+Without the unit's `PLUME_CONFIG`, the subcommand writes to a different database from the daemon's:
+it displays a token, and the central refuses it. On a new central, start the daemon **first**:
+a database that the subcommand creates is born unencrypted
+([`INSTALLER-SANS-OUVRIR-DE-BRECHE.md` §1.1](INSTALLER-SANS-OUVRIR-DE-BRECHE.md#11-start-the-daemon-once-before-any-subcommand-that-writes-to-the-database)).
 
-La forme sans hôte **et** sans `--relais` est **refusée** : la portée d'un jeton se déclare, elle ne
-se déduit pas d'une omission. Poser les deux à la fois est refusé aussi.
+The form without a host **and** without `--relais` is **refused**: a token's scope is declared, it is not
+inferred from an omission. Setting both at once is refused too.
 
-Le secret fait 32 octets d'entropie du système, s'affiche **une seule fois**, et **seul son SHA-256
-est en base** — il n'est pas re-dérivable. Perdu, il se recrée ; il ne se relit pas.
+The secret is 32 bytes of system entropy, is displayed **only once**, and **only its SHA-256
+is in the database** — it cannot be re-derived. Lost, it is recreated; it cannot be read back.
 
-Un jeton n'établit une identité que sur une **liste blanche de chemins** (ingestion, métriques,
-traces, canal de réponse). Hors de cette liste, le porteur d'un jeton d'agent n'est personne : le
-défaut est fermé.
+A token establishes an identity only on an **allowlist of paths** (ingestion, metrics,
+traces, response channel). Outside that list, the holder of an agent token is nobody: the
+default is closed.
 
-### 3.2 La liaison n'est pas un refus, c'est une réécriture
+### 3.2 Binding is not a refusal, it is a rewrite
 
-**C'est le point le plus contre-intuitif du protocole, et il est mesuré dans le dépôt.** Un agent qui
-déclare un `host` différent de celui auquel son jeton est lié **reçoit `202`** — et l'événement est
-enregistré **sous l'hôte du jeton**, pas sous celui qu'il a déclaré.
+**This is the most counter-intuitive point of the protocol, and it is measured in the repository.** An agent that
+declares a `host` different from the one its token is bound to **receives `202`** — and the event is
+recorded **under the token's host**, not under the one it declared.
 
-Autrement dit : la liaison protège l'intégrité de l'inventaire, **elle n'avertit pas l'émetteur**. Ne
-comptez pas sur un code d'erreur pour détecter une machine mal configurée ; comparez ce que vous
-envoyez à ce que la console affiche.
+In other words: binding protects the integrity of the inventory, **it does not warn the sender**. Do
+not count on an error code to detect a misconfigured machine; compare what you
+send with what the console displays.
 
-Un jeton **de relais**, lui, n'a pas d'hôte lié : **l'hôte déclaré passe inchangé et n'est pas
-attesté**. Le message affiché à sa création le dit en toutes lettres — quiconque tient ce jeton peut
-écrire sous n'importe quel nom d'hôte. C'est le prix d'un forwarder, et c'est pourquoi un jeton de
-relais est **refusé** sur le canal de réponse (§6).
+A **relay** token, for its part, has no bound host: **the declared host passes unchanged and is not
+attested**. The message displayed when it is created says so in plain words — whoever holds this token can
+write under any host name. That is the price of a forwarder, and it is why a relay
+token is **refused** on the response channel (§6).
 
-### 3.3 Les rôles
+### 3.3 Roles
 
-| Rôle minimal | Routes |
+| Minimum role | Routes |
 |---|---|
-| `Ingest` — satisfait par `editor` **ou** `agent`, **jamais** `viewer` | ingestion, métriques, HEC, traces |
-| `Agent` — satisfait par `agent` **seul** | canal de réponse, engagements actifs |
+| `Ingest` — satisfied by `editor` **or** `agent`, **never** `viewer` | ingestion, metrics, HEC, traces |
+| `Agent` — satisfied by `agent` **alone** | response channel, active engagements |
 
-Un jeton d'un autre genre (source de données, client, Firehose, Pub/Sub) **ne peut pas** s'authentifier
-sur la surface d'agent : les genres sont cloisonnés dans la requête elle-même.
+A token of another kind (data source, client, Firehose, Pub/Sub) **cannot** authenticate
+on the agent surface: the kinds are partitioned in the query itself.
 
 ---
 
-## 4. Le tampon disque, et ce qu'il garantit
+## 4. The disk buffer, and what it guarantees
 
-### 4.1 Publier veut dire deux synchronisations, pas un renommage
+### 4.1 Publishing means two syncs, not a rename
 
-La bibliothèque shell publie en quatre gestes, dans cet ordre : mettre les droits, **synchroniser le
-contenu**, renommer, **synchroniser l'entrée de répertoire**. Le renommage seul donne l'atomicité du
-*contenu* et rien d'autre : après une coupure, les octets peuvent exister sans que leur **nom**
-existe — et l'expéditeur parcourt le spool **par nom**. Les deux synchronisations sont ce qui ferme
-cette fenêtre ; leur coût est mesuré et écrit à côté du code.
+The shell library publishes in four operations, in this order: set the permissions, **sync the
+content**, rename, **sync the directory entry**. The rename alone gives atomicity of the
+*content* and nothing else: after a power cut, the bytes can exist without their **name**
+existing — and the shipper walks the spool **by name**. The two syncs are what close
+this window; their cost is measured and written next to the code.
 
-L'agent Rust tient le même contrat par une **voie unique** de publication, et un test refuse tout
-`rename(` écrit ailleurs dans la caisse. **Sa limite est écrite plutôt qu'affirmée** : sous Windows,
-le répertoire n'est pas synchronisé, faute d'un geste équivalent dans la bibliothèque standard.
+The Rust agent holds the same contract through a **single path** of publication, and a test refuses any
+`rename(` written elsewhere in the crate. **Its limit is written down rather than asserted**: under Windows,
+the directory is not synced, for lack of an equivalent operation in the standard library.
 
-**Le central, lui, ne tient pas ce contrat sur ses propres écritures.** Ses récepteurs poussés écrivent
-puis renomment sans synchroniser — c'est-à-dire exactement la forme que cette section décrit comme
-insuffisante, mais du côté qui *reçoit*. Ce que l'accusé couvre alors, et ce qu'il ne couvre pas, est
-en §2.5.
+**The central, for its part, does not hold this contract on its own writes.** Its push receivers write
+then rename without syncing — that is, exactly the form that this section describes as
+insufficient, but on the side that *receives*. What the acknowledgement then covers, and what it does not, is
+in §2.5.
 
-### 4.2 La borne du tampon — et son absence
+### 4.2 The buffer's bound — and its absence
 
-| Famille | Borne | Politique quand c'est plein |
+| Family | Bound | Policy when it is full |
 |---|---|---|
-| agent Rust | `spool_cap`, défaut **10 000** entrées | éviction des **plus vieilles** |
-| récepteur syslog | `PLUME_SYSLOG_SPOOL_MAX_BYTES` (défaut 512 Mio), `PLUME_SYSLOG_SPOOL_MAX_FILES` (défaut 20 000) ; `0` = illimité | le lot est **abandonné** |
-| **collecteurs shell** | **aucune** | — |
+| Rust agent | `spool_cap`, default **10 000** entries | eviction of the **oldest** |
+| syslog receiver | `PLUME_SYSLOG_SPOOL_MAX_BYTES` (default 512 MiB), `PLUME_SYSLOG_SPOOL_MAX_FILES` (default 20 000); `0` = unlimited | the batch is **dropped** |
+| **shell collectors** | **none** | — |
 
-**MESURÉ SUR L'ARBRE le 2026-08-25 : le spool de la famille shell n'a ni plafond de taille, ni
-plafond de fichiers, ni éviction, ni purge.**
+**MEASURED ON THE TREE on 2026-08-25: the shell family's spool has no size ceiling, no
+file ceiling, no eviction, and no purge.**
 
 ```sh
-grep -nE 'SPOOL_MAX|MAX_FILES|MAX_BYTES' collectors/lib.sh collectors/ship.sh bootstrap-agent.sh   # rien
+grep -nE 'SPOOL_MAX|MAX_FILES|MAX_BYTES' collectors/lib.sh collectors/ship.sh bootstrap-agent.sh   # nothing
 ```
 
-Ce n'est pas un défaut de recherche : les deux autres familles en ont une, ce qui rend l'absence
-lisible. Le seul plafond du côté shell est **par passage de collecteur** (nombre de lignes lues en une
-fois), pas sur le spool.
+This is not a search failure: the two other families have one, which makes the absence
+readable. The only ceiling on the shell side is **per collector pass** (number of lines read in one
+go), not on the spool.
 
-### 4.3 La conséquence à connaître : seul `202` acquitte
+### 4.3 The consequence to know: only `202` acknowledges
 
-L'expéditeur shell supprime un fichier **si et seulement si** la réponse est `202`. Tout le reste est
-« conservé pour réessai » — y compris un `204` (corps vide, ou lot entièrement filtré) et y compris
-une **erreur permanente** comme `400` ou `413`. Ce `202` n'atteste que la **réception** : ce qu'il
-laisse ouvert est en §2.5.
+The shell shipper deletes a file **if and only if** the response is `202`. Everything else is
+"kept for retry" — including a `204` (empty body, or batch entirely filtered) and including
+a **permanent error** such as `400` or `413`. This `202` attests only **receipt**: what it
+leaves open is in §2.5.
 
 ```sh
 sed -n '/^ship_glob/,/^}/p' collectors/ship.sh
 ```
 
-Combiné à l'absence de borne (§4.2), cela veut dire qu'**une erreur permanente fait croître le spool
-sans fin**. Surveillez `PLUME_SPOOL` sur un agent shell, et lisez la sortie d'erreur de l'unité
-d'expédition : elle nomme le fichier et le code.
+Combined with the absence of a bound (§4.2), this means that **a permanent error makes the spool grow
+without end**. Monitor `PLUME_SPOOL` on a shell agent, and read the error output of the shipping
+unit: it names the file and the code.
 
-L'agent Rust ne se comporte pas ainsi, et c'est délibéré : il acquitte sur tout `2xx`, réessaie sur
-`429` et `5xx`, et **abandonne en le journalisant** sur un `4xx` définitif.
+The Rust agent does not behave this way, and it is deliberate: it acknowledges on any `2xx`, retries on
+`429` and `5xx`, and **gives up while logging it** on a definitive `4xx`.
 
-### 4.4 La déduplication est côté central, et elle est cloisonnée
+### 4.4 Deduplication is on the central's side, and it is partitioned
 
-`event.dedup` est unique, et l'insertion ignore les doublons. La clé est **cloisonnée par hôte** par
-un encodage préfixé de longueur — deux machines qui produiraient la même clé ne s'effacent pas l'une
-l'autre. **Une ligne sans `dedup` n'est jamais dédupliquée** : SQLite tient deux `NULL` pour
-distincts.
+`event.dedup` is unique, and insertion ignores duplicates. The key is **partitioned by host** by
+a length-prefixed encoding — two machines that would produce the same key do not erase one
+another. **A row without `dedup` is never deduplicated**: SQLite treats two `NULL` values as
+distinct.
 
-C'est ce qui rend le rejeu absorbable, et le coût exact du rejeu **par capteur** est écrit dans
-`collectors/lib.sh` : certains portent une clé d'identité de contenu (rejeu absorbé intégralement),
-d'autres un seau de temps (absorbé dans le seau seulement).
+This is what makes replay absorbable, and the exact cost of replay **per sensor** is written in
+`collectors/lib.sh`: some carry a content-identity key (replay fully absorbed),
+others a time bucket (absorbed within the bucket only).
 
 ---
 
-## 5. Les filigranes : ce qui empêche de perdre ou de répéter
+## 5. Watermarks: what prevents losing or repeating
 
-Un filigrane (`PLUME_STATE`, défaut `/var/lib/plume/state`) mémorise où un capteur en était. **Il
-n'est jamais expédié.**
+A watermark (`PLUME_STATE`, default `/var/lib/plume/state`) remembers where a sensor was. **It
+is never shipped.**
 
-**La règle tient par construction, pas par discipline : un capteur n'a pas les deux gestes à sa
-disposition.** Il peut *mettre en attente* un filigrane, mais l'écriture n'a lieu que dans les
-fonctions qui publient d'abord. L'ordre est donc toujours : **publier, puis acquitter le filigrane.**
-Deux gardes de CI le tiennent (`check_watermark_follows_publication.py`,
+**The rule holds by construction, not by discipline: a sensor does not have both operations at its
+disposal.** It can *stage* a watermark, but the write only happens in the
+functions that publish first. The order is therefore always: **publish, then acknowledge the watermark.**
+Two CI guards hold it (`check_watermark_follows_publication.py`,
 `check_publication_is_durable.py`).
 
-L'écriture du filigrane est **délibérément non durable**, et le code interdit explicitement d'y
-« corriger » l'absence de synchronisation : un filigrane perdu coûte un rejeu, que la déduplication
-absorbe ; un filigrane qui survivrait aux événements les ferait disparaître **définitivement**.
+Writing the watermark is **deliberately not durable**, and the code explicitly forbids
+"fixing" the absence of sync there: a lost watermark costs a replay, which deduplication
+absorbs; a watermark that survived the events would make them disappear **permanently**.
 
-Le même ordre est tenu par les trois familles. Côté Windows, le filigrane est en plus **borné au
-présent** dans les deux sens, après un cas mesuré d'horloge en avance qui avait rendu trois sources
-aveugles de façon irrécupérable.
+The same order is held by the three families. On the Windows side, the watermark is in addition **bounded to the
+present** in both directions, after a measured case of a clock running ahead that had left three sources
+blind irrecoverably.
 
 ---
 
-## 6. Le canal retour : réclamer une action
+## 6. The return channel: claiming an action
 
-Le central ne pousse rien vers un agent. C'est l'agent qui **tire**.
+The central pushes nothing to an agent. It is the agent that **pulls**.
 
 ```
 GET  /api/actions/pending    -> réclame ; réponse en TSV : id \t kind \t target \t dry_run
@@ -358,134 +358,134 @@ GET  /api/actions/pending    -> réclame ; réponse en TSV : id \t kind \t targe
 POST /api/actions/result     -> rend compte : {"id":…, "status":"done|dryrun|failed", "result":"…"}
 ```
 
-| Propriété | Détail |
+| Property | Detail |
 |---|---|
-| **rôle** | `agent` **et** jeton lié à un hôte — un jeton de relais est refusé en `403` |
-| **l'hôte vient du jeton** | jamais d'un paramètre de requête ; le paramètre `?host=` qu'envoie le collecteur shell est **ignoré** par le démon — c'est ce qui ferme la porte à la réclamation de l'action d'autrui |
-| **vocabulaire réclamable** | `ban_ip` et `unban_ip` **seuls** ; `kill_pid` et `stop_service` ne se réclament pas par ce canal |
-| **remise en jeu** | une action réclamée sans résultat est re-remise après quelques minutes |
-| **clôture** | ne porte que sur une action *approuvée* **et** assignée au même hôte ; idempotente |
-| **format** | TSV par défaut, pas JSON — pour que la boucle shell le lise sans dépendance ; JSON par ligne sur demande (ci-dessous) |
-| **durée du ban** | portée par la forme JSON par ligne seulement : `ban_ttl_s` (voir ci-dessous) |
+| **role** | `agent` **and** a token bound to a host — a relay token is refused with `403` |
+| **the host comes from the token** | never from a query parameter; the `?host=` parameter that the shell collector sends is **ignored** by the daemon — that is what closes the door to claiming someone else's action |
+| **claimable vocabulary** | `ban_ip` and `unban_ip` **only**; `kill_pid` and `stop_service` are not claimed through this channel |
+| **reissue** | an action claimed without a result is handed out again after a few minutes |
+| **closing** | applies only to an action that is *approved* **and** assigned to the same host; idempotent |
+| **format** | TSV by default, not JSON — so that the shell loop reads it without a dependency; JSON per line on request (below) |
+| **ban duration** | carried by the JSON-per-line form only: `ban_ttl_s` (see below) |
 
-**La durée du ban d'une riposte.** Un agent qui envoie `Accept: application/x-ndjson` reçoit un objet
-JSON par ligne (type de contenu `application/x-ndjson`), par exemple :
+**The ban duration of a response.** An agent that sends `Accept: application/x-ndjson` receives one JSON
+object per line (content type `application/x-ndjson`), for example:
 
 ```
 {"ban_ttl_s":5400,"dry_run":false,"id":12,"kind":"ban_ip","target":"203.0.113.82"}
 {"dry_run":false,"id":14,"kind":"unban_ip","target":"203.0.113.84"}
 ```
 
-- `ban_ttl_s` est un **entier, en secondes** : la durée **effective** du ban de cette riposte, celle que
-  le central applique aussi (approbation, blocage HTTP, commande CrowdSec du responder local) — la durée
-  posée par le playbook, ou la durée par défaut si la riposte n'en porte pas. Il est présent sur **chaque**
-  `ban_ip`, jamais nul, et **absent** de tout autre genre (`unban_ip`).
-- Contrat de l'agent : il ne se replie sur `PLUME_BAN_DURATION` que si la durée **n'est pas servie** —
-  réponse en TSV (un démon antérieur ignore l'en-tête), ou agent sans lecteur JSON qui n'a pas demandé
-  cette forme. Sous la forme JSON par ligne, un `ban_ip` dont `ban_ttl_s` est absent, nul, non entier ou
-  hors de 1 à 31 536 000 est **hors contrat** : l'action est rendue `failed` avec la cause, rien n'est
-  appliqué.
-- **Ce que fait `collectors/respond.sh`** : il envoie l'en-tête seulement s'il sait lire du JSON (`jq`,
-  sinon `python3 -I`), et ne prend le chemin JSON que si le type servi est `application/x-ndjson` (un
-  central qui sert du TSV malgré l'en-tête reprend le chemin TSV). Tout statut autre que `200`, ou un
-  `curl` en échec, n'est jamais lu comme une file : journal d'erreur nommé, code de sortie `3`, rien
-  d'exécuté. Une ligne JSON illisible est ignorée et dite au journal, les autres sont servies ; un champ
-  inconnu est ignoré ; aucune valeur servie n'est évaluée par le shell, la cible passe toujours par les
-  mêmes contrôles d'adresse, de plages réservées et de liste d'épargne. La durée part vers CrowdSec en
-  `-d <n>s` ; vers nft en timeout d'élément dans un set dédié `inet plume blocklist_ttl` (`flags timeout`),
-  le set historique `inet plume blocklist`, sans timeout, n'étant ni migré ni détruit (ses éléments déjà
-  posés restent ; un `unban_ip` retire l'adresse des deux sets) ; une durée de repli nulle ou illisible
-  (autre chose que des `<n>s`, `m`, `h` ou `d` sur une seule ligne) n'est posée ni par nft ni par cscli
-  (`failed`, jamais un ban sans fin ni une valeur passée telle quelle) ; fail2ban ne la porte pas (le ban dure le `bantime` de la
-  jail), et le résultat remis le dit. Chaque résultat remis, simulation comprise, porte la durée
-  effective et sa provenance (servie, ou `PLUME_BAN_DURATION` avec la cause du repli).
-- L'en-tête est lu type par type (casse ignorée). Un poids nul (`application/x-ndjson;q=0`) est un refus
-  explicite de ce type : la réponse est alors le TSV.
-- Sans l'en-tête, la réponse reste le TSV à quatre champs, à l'octet. Un cinquième champ n'y est pas
-  ajouté : la boucle d'un agent déjà déployé (`read -r id kind target dry`) le lirait dans `dry`.
-- Une riposte dont la durée ne se lit pas en base n'est **ni remise ni réclamée**, dans les deux formes :
-  elle reste approuvée, le journal du démon le dit (`[actions] action <id> NON REMISE ce tour-ci : durée
-  du ban de cette riposte NON lue …`), les autres actions sont remises — le démon lit la page suivante
-  tant qu'une page pleine n'a pas remis cent actions, si bien que des ripostes retenues en tête de file ne
-  masquent pas les suivantes —, et elle part au tour suivant une fois la colonne corrigée. Rien n'est appliqué avec une durée devinée.
-- Un tour remet **au plus cent** actions, quelle que soit la forme ; le reste part aux tours suivants. Si
-  la lecture d'une page suivante échoue après des actions déjà réclamées, celles-ci sont remises (et
-  l'échec est au journal du démon) plutôt que perdues dans un refus.
+- `ban_ttl_s` is an **integer, in seconds**: the **effective** ban duration of this response, the one that
+  the central also applies (approval, HTTP blocking, CrowdSec command of the local responder) — the duration
+  set by the playbook, or the default duration if the response does not carry one. It is present on **every**
+  `ban_ip`, never zero, and **absent** from any other kind (`unban_ip`).
+- The agent's contract: it falls back on `PLUME_BAN_DURATION` only if the duration **is not served** —
+  a TSV response (an older daemon ignores the header), or an agent without a JSON reader that has not requested
+  that form. Under the JSON-per-line form, a `ban_ip` whose `ban_ttl_s` is absent, zero, not an integer or
+  outside 1 to 31 536 000 is **out of contract**: the action is reported `failed` with the cause, nothing is
+  applied.
+- **What `collectors/respond.sh` does**: it sends the header only if it can read JSON (`jq`,
+  otherwise `python3 -I`), and takes the JSON path only if the served type is `application/x-ndjson` (a
+  central that serves TSV despite the header goes back to the TSV path). Any status other than `200`, or a
+  failed `curl`, is never read as a queue: named error log, exit code `3`, nothing
+  executed. An unreadable JSON line is ignored and reported in the log, the others are served; an unknown
+  field is ignored; no served value is evaluated by the shell, the target always goes through the
+  same checks for address, reserved ranges and ban-exempt list. The duration goes to CrowdSec as
+  `-d <n>s`; to nft as an element timeout in a dedicated set `inet plume blocklist_ttl` (`flags timeout`),
+  the historical set `inet plume blocklist`, without a timeout, being neither migrated nor destroyed (its elements already
+  set stay; an `unban_ip` removes the address from both sets); a zero or unreadable fallback duration
+  (anything other than `<n>s`, `m`, `h` or `d` on a single line) is set neither by nft nor by cscli
+  (`failed`, never a ban without end nor a value passed as is); fail2ban does not carry it (the ban lasts the jail's
+  `bantime`), and the reported result says so. Every reported result, simulation included, carries the effective
+  duration and its provenance (served, or `PLUME_BAN_DURATION` with the cause of the fallback).
+- The header is read type by type (case ignored). A zero weight (`application/x-ndjson;q=0`) is an explicit
+  refusal of that type: the response is then TSV.
+- Without the header, the response remains the four-field TSV, byte for byte. A fifth field is not
+  added to it: the loop of an already deployed agent (`read -r id kind target dry`) would read it into `dry`.
+- A response whose duration cannot be read from the database is **neither handed out nor claimed**, in both forms:
+  it stays approved, the daemon's log says so (`[actions] action <id> NON REMISE ce tour-ci : durée
+  du ban de cette riposte NON lue …`), the other actions are handed out — the daemon reads the next page
+  as long as a full page has not handed out a hundred actions, so that responses held back at the head of the queue do not
+  hide the ones that follow —, and it leaves on the next round once the column is corrected. Nothing is applied with a guessed duration.
+- A round hands out **at most a hundred** actions, whatever the form; the rest leaves on the following rounds. If
+  reading a following page fails after actions have already been claimed, those are handed out (and
+  the failure is in the daemon's log) rather than lost in a refusal.
 
-En amont, la chaîne est : création → **approbation par un administrateur** → réclamation → résultat.
-Côté agent, le moteur est **coupé par défaut** (`PLUME_RESPONDER=0`) et, une fois allumé, il est en
-**simulation** tant que `PLUME_RESPONDER_APPLY=1` n'est pas posé. Chaque résultat entre au journal
-d'audit.
+Upstream, the chain is: creation → **approval by an administrator** → claim → result.
+On the agent side, the engine is **off by default** (`PLUME_RESPONDER=0`) and, once switched on, it is in
+**simulation** as long as `PLUME_RESPONDER_APPLY=1` is not set. Every result goes into the audit
+log.
 
-> ⚠️ Le fichier d'allowlist du responder porte **deux significations incompatibles** selon
-> l'installateur qui l'a semé. Voir l'avertissement du [`README`](../README.md#configuration--les-variables-plume_)
-> et les clés `P4.7-a`, `P4.7-b` et `P4.7-c` de [`ROADMAP.md`](ROADMAP.md).
-> **Les deux lecteurs n'ont pas le même critère d'adresse** (`P4.7-b`) : ce qui est tenu — et mesuré
-> sur les deux — est que le démon en reconnaît **strictement plus** de formes que l'agent, donc
-> qu'aucune ligne n'est acceptée en silence par les deux. Ce n'est **pas** l'égalité, et le rejet de
-> chaque lecteur n'est **pas** dérivé du prédicat qui décide ce qu'on sait bannir.
-> **Depuis le 2026-09-10 (`P4.7-c`), la liste d'épargne vaut aussi côté central** : le démon lit `PLUME_CENTRAL_BAN_EXEMPT_FILE` (défaut : le fichier distinct semé par l'installateur d'agent), ses adresses rejoignent l'ensemble protégé et un ban réclamé par le central sur l'une d'elles est refusé en nommant l'épargne ; une ligne illisible est comptée au registre never-ban sans désarmer le central. Ce qui suit décrit l'état antérieur.
-> **Et la liste d'épargne ne valait que côté agent** (`P4.7-c`, jusqu'au 2026-09-10) : le responder du central ne
-> la consultait pas.
+> ⚠️ The responder's allowlist file carries **two incompatible meanings** depending on
+> the installer that seeded it. See the warning in the [`README`](../README.md#configuration-the-plume_-variables)
+> and keys `P4.7-a`, `P4.7-b` and `P4.7-c` of [`ROADMAP.md`](ROADMAP.md).
+> **The two readers do not have the same address criterion** (`P4.7-b`): what holds — and is measured
+> on both — is that the daemon recognizes **strictly more** forms than the agent, so
+> that no line is silently accepted by both. This is **not** equality, and the rejection of
+> each reader is **not** derived from the predicate that decides what can be banned.
+> **Since 2026-09-10 (`P4.7-c`), the ban-exempt list also applies on the central's side**: the daemon reads `PLUME_CENTRAL_BAN_EXEMPT_FILE` (default: the separate file seeded by the agent installer), its addresses join the protected set and a ban claimed by the central on one of them is refused, naming the exemption; an unreadable line is counted in the never-ban register without disarming the central. What follows describes the earlier state.
+> **And the ban-exempt list applied only on the agent's side** (`P4.7-c`, until 2026-09-10): the central's responder did not
+> consult it.
 
 ---
 
-## 7. TLS et mTLS
+## 7. TLS and mTLS
 
-| Famille | Comment on le pose | Si c'est absent |
+| Family | How it is set | If it is absent |
 |---|---|---|
-| collecteurs shell | `PLUME_TLS_CACERT`, `PLUME_TLS_CERT`, `PLUME_TLS_KEY` — concaténés en options du client HTTP | magasin de confiance du système, **aucun certificat client, aucun avertissement** |
-| agent Rust | des clés **TOML**, pas des variables : `[tls] ca_cert / client_cert / client_key / insecure` | racines publiques seules, aucun certificat client, aucune erreur |
-| collecteur Windows | `PLUME_TLS_INSECURE=1` pour un central auto-signé de test | vérification normale |
+| shell collectors | `PLUME_TLS_CACERT`, `PLUME_TLS_CERT`, `PLUME_TLS_KEY` — concatenated into options of the HTTP client | system trust store, **no client certificate, no warning** |
+| Rust agent | **TOML** keys, not variables: `[tls] ca_cert / client_cert / client_key / insecure` | public roots only, no client certificate, no error |
+| Windows collector | `PLUME_TLS_INSECURE=1` for a self-signed test central | normal verification |
 
-**Il n'existe aucun mode « mTLS obligatoire » côté agent.** L'exigence ne peut être posée que **côté
-central**, par le point d'entrée qui expose la route d'ingestion. Un agent sans certificat client ne
-s'en plaindra pas.
+**There is no "mandatory mTLS" mode on the agent side.** The requirement can only be set **on the
+central's side**, by the entry point that exposes the ingestion route. An agent without a client certificate will not
+complain about it.
 
-**Collision de noms à connaître** : `PLUME_TLS_CERT` et `PLUME_TLS_KEY` désignent le certificat
-**serveur** côté démon et le certificat **client** côté agent. Même nom, deux rôles opposés.
+**A name collision to know about**: `PLUME_TLS_CERT` and `PLUME_TLS_KEY` designate the **server**
+certificate on the daemon side and the **client** certificate on the agent side. Same name, two opposite roles.
 
-Ce qui se passe quand la chaîne ne se vérifie pas est **mesuré et publié** dans
-[`../agent/README.md`](../agent/README.md), cas par cas — y compris le cas contre-intuitif d'un
-certificat **de CA** servi comme certificat serveur, qui reste refusé quoi que l'agent déclare, et
-dont le remède est de corriger le **central**. Le remède affiché est dérivé du **type** de l'erreur
-de vérification, pas de son texte.
-
----
-
-## 8. Pourquoi c'est ainsi
-
-**Le contrat de fil est mince pour qu'on puisse en écrire un émetteur en trente lignes de shell.**
-C'est la raison d'être du produit : brancher une source sans rebuild et sans SDK. Le prix est celui
-décrit en §2.2 — la validation est tardive, et un `202` ne prouve pas qu'un événement était bien
-formé.
-
-**Le tampon est côté émetteur, pas côté central.** Un central qui refuse (garde disque, limitation de
-débit) rend un code qui invite au réessai ; c'est l'agent qui garde les octets. Cela déplace le risque
-de saturation vers l'agent — d'où l'importance de §4.2. Et cela a un second prix, moins visible :
-l'instant où le central acquitte est l'instant où la **seule autre copie** disparaît, alors que la
-sienne n'est pas encore durable (§2.5).
-
-**L'hôte est attesté par le jeton, pas par l'émetteur.** Un inventaire dont les noms d'hôte sont
-déclarés par la machine elle-même n'est pas un inventaire. La liaison réécrit plutôt que de refuser
-parce qu'un refus ferait perdre les événements d'une machine mal configurée — mais cela se paie par le
-silence décrit en §3.2.
-
-**On publie avant d'acquitter, toujours.** C'est la seule invariance qui permet de promettre « au
-moins une fois » sans jamais promettre « exactement une fois ». La déduplication côté central
-transforme le rejeu en coût, pas en faux.
+What happens when the chain does not verify is **measured and published** in
+[`../agent/README.md`](../agent/README.md), case by case — including the counter-intuitive case of a
+**CA** certificate served as a server certificate, which remains refused whatever the agent declares, and
+whose remedy is to fix the **central**. The remedy displayed is derived from the **type** of the verification
+error, not from its text.
 
 ---
 
-## 9. Ce qui n'a pas été vérifié
+## 8. Why it is this way
 
-- **Aucun agent n'a été enrôlé, et aucun événement n'a été envoyé dans ce lot.** Tout ce qui précède
-  est établi par lecture des sources ; les codes, les défauts et les comportements cités sont ceux
-  que le code écrit, pas ceux d'une session observée.
-- La ligne d'événement stockée est construite dans une **caisse externe** au dépôt (`guatx-core`,
-  résolue par étiquette git) : ses champs ne sont observables ici que par la façon dont ils sont
-  remplis.
-- **Ce qui est réellement exercé par l'intégration continue** de l'agent, et ce qui n'est que compilé,
-  est écrit sans fard dans [`../agent/CI.md`](../agent/CI.md) — notamment que **l'installation du
-  service n'est exercée sur aucun système d'exploitation**. Lisez-le avant de traiter la
-  compilation comme une preuve.
+**The wire contract is thin so that an emitter can be written in thirty lines of shell.**
+That is the product's reason for being: plugging in a source without a rebuild and without an SDK. The price is the one
+described in §2.2 — validation is late, and a `202` does not prove that an event was well
+formed.
+
+**The buffer is on the emitter's side, not the central's.** A central that refuses (disk guard, rate
+limiting) returns a code that invites a retry; it is the agent that keeps the bytes. This moves the risk
+of saturation to the agent — hence the importance of §4.2. And it has a second, less visible price:
+the moment the central acknowledges is the moment the **only other copy** disappears, while its
+own is not yet durable (§2.5).
+
+**The host is attested by the token, not by the emitter.** An inventory whose host names are
+declared by the machine itself is not an inventory. Binding rewrites rather than refuses
+because a refusal would lose the events of a misconfigured machine — but this is paid for by the
+silence described in §3.2.
+
+**We publish before acknowledging, always.** It is the only invariant that makes it possible to promise "at
+least once" without ever promising "exactly once". Deduplication on the central's side
+turns replay into a cost, not into a falsehood.
+
+---
+
+## 9. What has not been verified
+
+- **No agent was enrolled, and no event was sent in this batch of work.** Everything above
+  is established by reading the sources; the codes, defaults and behaviors cited are those
+  that the code writes, not those of an observed session.
+- The stored event row is built in a **crate external** to the repository (`guatx-core`,
+  resolved by git tag): its fields are observable here only through the way they are
+  filled.
+- **What is actually exercised by the agent's continuous integration**, and what is only compiled,
+  is written without embellishment in [`../agent/CI.md`](../agent/CI.md) — notably that **the installation of the
+  service is not exercised on any operating system**. Read it before treating
+  compilation as proof.

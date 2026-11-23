@@ -16,7 +16,12 @@
             "le cycle natif appelle l'exécutant sur ses deux formes (destination locale, destination objet)"
         );
         assert!(crate::SUBCOMMANDS_COLD.iter().any(|(n, _)| *n == "cold-escrow"), "l'aide nomme cold-escrow dans cette forme du binaire");
-        let runbook = include_str!("../../../docs/DR-plume-restore.md");
+        // Le runbook existe en deux langues : la phrase retirée se juge dans la sienne, la commande dans les deux.
+        let runbook = include_str!("../../../docs/DR-plume-restore.fr.md");
+        let runbook_en = include_str!("../../../docs/DR-plume-restore.md");
         assert!(!runbook.contains("sidecar `backup` par `plume-daemon cold-backup-plan`"), "le runbook ne renvoie plus à un sidecar qui n'existe pas");
-        assert!(runbook.contains("plume-daemon cold-escrow <destination>"), "le runbook nomme l'exécutant du mode hôte");
+        assert!(!runbook_en.contains("`backup` sidecar"), "le runbook anglais ne renvoie pas non plus à ce sidecar");
+        for (langue, texte) in [("fr", runbook), ("en", runbook_en)] {
+            assert!(texte.contains("plume-daemon cold-escrow <destination>"), "le runbook ({langue}) nomme l'exécutant du mode hôte");
+        }
     }

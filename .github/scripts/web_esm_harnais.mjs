@@ -4705,8 +4705,9 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   //     Le compilateur, lui, ne refuse pas : il avale le second terme dans un LITTÉRAL DE TEXTE
   //     (`WHERE "count" > '5 and count < 100'`) ou jette le second champ de tri. Un exploitant qui écrit
   //     d'après la description obtient donc une réponse VIDE qui a l'air complète.
-  //     LA BORNE N'EST PAS ÉCRITE ICI : elle est DÉCLARÉE PAR LE CORPUS (`docs/GXQL.md`, tableau dont
-  //     l'en-tête porte « Commande » et « Phrase exigée »), et ce témoin exige que chaque surface qui
+  //     LA BORNE N'EST PAS ÉCRITE ICI : elle est DÉCLARÉE PAR LE CORPUS (`docs/GXQL.fr.md`, tableau dont
+  //     l'en-tête porte « Commande » et « Phrase exigée » ; `docs/GXQL.md`, le même tableau sous l'en-tête
+  //     « Command » et « Required phrase », et les mêmes bornes), et ce témoin exige que chaque surface qui
   //     décrit la commande porte la phrase déclarée. Ajouter une ligne au corpus arme ce témoin sur une
   //     commande de plus sans le toucher ; revenir à « un ou plusieurs champs » retire « un champ » et
   //     fait rougir. Le sens inverse est tenu aussi : une commande bornée par le corpus que le démon ne
@@ -4716,12 +4717,19 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
   //     corpus (§3.1, §10). Et il ne juge QUE les commandes que le corpus borne : une borne jamais
   //     déclarée reste invisible, ce qu'un PLANCHER rend au moins visible en refusant de conclure sous
   //     deux bornes déclarées.
-  const CORPUS_LANGAGE = path.join(RACINE, "docs", "GXQL.md");
+  // Le guide existe en deux langues ; chacune déclare le tableau sous l'en-tête de SA langue, et les
+  // cellules (commande, phrases exigées) sont des segments de code, identiques dans les deux.
+  const CORPUS_LANGAGE = path.join(RACINE, "docs", "GXQL.fr.md");
+  const CORPUS_LANGAGE_EN = path.join(RACINE, "docs", "GXQL.md");
+  const EN_TETE_DES_BORNES = {
+    fr: [/^\|\s*Commande\s*\|/, /Phrase exigée \(fr\)/, /Phrase exigée \(en\)/],
+    en: [/^\|\s*Command\s*\|/, /Required phrase \(fr\)/, /Required phrase \(en\)/],
+  };
   // Le tableau est DÉRIVÉ de son EN-TÊTE, jamais d'un numéro de ligne ni d'un titre de section : le
   // document peut être réorganisé, la garde suit la propriété.
-  const bornesDuCorpus = (texte) => {
+  const bornesDuCorpus = (texte, langue = "fr") => {
     const l = String(texte).split("\n");
-    const i = l.findIndex((x) => /^\|\s*Commande\s*\|/.test(x) && /Phrase exigée \(fr\)/.test(x) && /Phrase exigée \(en\)/.test(x));
+    const i = l.findIndex((x) => EN_TETE_DES_BORNES[langue].every((motif) => motif.test(x)));
     if (i < 0) return null;
     const out = [];
     for (let k = i + 2; k < l.length; k++) {
@@ -4759,13 +4767,23 @@ exiger(lireMesure({ x_verdict: "inconnu", x_cause: "aucune" }, "x").verdict === 
       `(38d) instrument : la lecture du tableau de bornes rend ${vu ? JSON.stringify(vu) : "rien"} sur son corpus témoin — 1 borne \`sort\` attendue, ni la ligne sans dosseret ni le tableau à trois colonnes`);
     exiger(bornesDuCorpus("aucun tableau ici") === null,
       `(38d) instrument : la lecture prétend trouver un tableau de bornes là où il n'y en a pas`);
+    const TEMOIN_EN = TEMOIN.replace("| Commande | Ce que le langage tient | Phrase exigée (fr) | Phrase exigée (en) |",
+      "| Command | What the language holds | Required phrase (fr) | Required phrase (en) |");
+    const vuEn = bornesDuCorpus(TEMOIN_EN, "en");
+    exiger(!!vuEn && JSON.stringify(vuEn) === JSON.stringify(vu),
+      `(38d) instrument : sous l'en-tête anglais, la lecture rend ${vuEn ? JSON.stringify(vuEn) : "rien"} au lieu des mêmes bornes`);
+    exiger(bornesDuCorpus(TEMOIN_EN) === null && bornesDuCorpus(TEMOIN, "en") === null,
+      `(38d) instrument : la lecture d'une langue prend pour sien l'en-tête de l'autre`);
     exiger(ligneItem("  sort        trie sur un champ", "sort") === "trie sur un champ",
       `(38d) instrument : la lecture d'une ligne d'item de la référence est cassée`);
     exiger(ligneItem("  sort trie sur un champ", "sort") === null,
       `(38d) instrument : la lecture prend pour un item une ligne qui n'a qu'UN espace — elle lirait de la prose`);
   }
   const bornes = bornesDuCorpus(readFileSync(CORPUS_LANGAGE, "utf8"));
-  exiger(!!bornes, `(38d) le corpus \`docs/GXQL.md\` ne déclare plus de tableau de bornes (en-tête « Commande … Phrase exigée (fr) … (en) ») : la borne du langage n'est plus déclarée nulle part, et ce témoin refuse de conclure`);
+  exiger(!!bornes, `(38d) le corpus \`docs/GXQL.fr.md\` ne déclare plus de tableau de bornes (en-tête « Commande … Phrase exigée (fr) … (en) ») : la borne du langage n'est plus déclarée nulle part, et ce témoin refuse de conclure`);
+  const bornesEn = bornesDuCorpus(readFileSync(CORPUS_LANGAGE_EN, "utf8"), "en");
+  exiger(!!bornesEn && JSON.stringify(bornesEn) === JSON.stringify(bornes),
+    `(38d) le corpus anglais \`docs/GXQL.md\` ne déclare pas les mêmes bornes que \`docs/GXQL.fr.md\` (en-tête « Command … Required phrase (fr) … (en) ») : ${bornesEn ? JSON.stringify(bornesEn) : "aucun tableau"} contre ${JSON.stringify(bornes)} — une langue décrirait un autre langage`);
   const BORNES_MIN = 2;
   exiger(!bornes || bornes.length >= BORNES_MIN, `(38d) le corpus ne déclare plus que ${bornes ? bornes.length : 0} borne(s) de langage, ${BORNES_MIN} au moins étaient déclarées le 2026-08-27 (\`where\`, \`sort\`) — une borne retirée du corpus désarme ce témoin en silence`);
   const descriptionsDemon = new Map(paires("DOC_COMMANDS"));

@@ -12,18 +12,19 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import parite_des_langues as pdl  # noqa: E402
 
-SELECTEUR = "[Français](guide.md) | [English](guide.en.md)"
+SELECTEUR = "[English](guide.md) | [Français](guide.fr.md)"
 SELECTEUR_BASCULE = "[Français](guide.fr.md) | [English](guide.md)"
 
 ORIGINAL = """\
 # Guide
 
-[Français](guide.md) | [English](guide.en.md)
+[English](guide.md) | [Français](guide.fr.md)
 
 Le budget est de 2,7 Gio, mesuré sur 4 812 337 lignes.
 
@@ -48,7 +49,7 @@ Lire `daemon/Cargo.toml` d'abord.
 TRADUCTION = """\
 # Guide
 
-[Français](guide.md) | [English](guide.en.md)
+[English](guide.md) | [Français](guide.fr.md)
 
 The budget is 2.7 GiB, measured on 4,812,337 lines.
 
@@ -59,7 +60,7 @@ The budget is 2.7 GiB, measured on 4,812,337 lines.
 cargo test --locked   # default suite
 ```
 
-See [the map](carte.en.md#subsystems) and [the schema](schema.md).
+See [the map](carte.fr.md#subsystems) and [the schema](schema.md).
 
 | key | value |
 |---|---|
@@ -80,8 +81,8 @@ class Paire(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.racine = self._tmp.name
         # carte.md a sa traduction, schema.md n'en a pas : un lien bascule, l'autre non. Le titre de
-        # carte.en.md porte l'ancre `#subsystems` que la traduction vise.
-        for nom, texte in (("carte.md", CARTE), ("carte.en.md", CARTE_EN), ("schema.md", "# x\n")):
+        # carte.fr.md porte l'ancre `#subsystems` que la traduction vise.
+        for nom, texte in (("carte.md", CARTE), ("carte.fr.md", CARTE_EN), ("schema.md", "# x\n")):
             self.ecrire(nom, texte)
 
     def tearDown(self):
@@ -103,7 +104,7 @@ class Paire(unittest.TestCase):
 
     def peupler_docs(self):
         """Sous docs/, les cibles relatives de la paire de base : carte bascule, schema non."""
-        for nom, texte in (("docs/carte.md", CARTE), ("docs/carte.en.md", CARTE_EN),
+        for nom, texte in (("docs/carte.md", CARTE), ("docs/carte.fr.md", CARTE_EN),
                            ("docs/schema.md", "# x\n")):
             self.ecrire(nom, texte)
 
@@ -121,7 +122,7 @@ class Paire(unittest.TestCase):
     def test_niveau_de_titre_change_rouge(self):
         ecarts = self.ecarts(TRADUCTION.replace("### Detail", "## Detail"))
         self.assertEqual(self.familles(ecarts), ["titres"])
-        self.assertIn("guide.en.md:20", ecarts[0].message)
+        self.assertIn("guide.fr.md:20", ecarts[0].message)
 
     def test_commande_modifiee_rouge(self):
         ecarts = self.ecarts(TRADUCTION.replace("cargo test --locked", "cargo test"))
@@ -132,7 +133,7 @@ class Paire(unittest.TestCase):
         ecarts = self.ecarts(TRADUCTION.replace("cargo test --locked   # default suite\n",
                                                 "cargo test --locked\ncargo clippy\n"))
         self.assertEqual(self.familles(ecarts), ["blocs"])
-        self.assertEqual((ecarts[0].fichier, ecarts[0].ligne), ("guide.en.md", 12))
+        self.assertEqual((ecarts[0].fichier, ecarts[0].ligne), ("guide.fr.md", 12))
 
     def test_bloc_de_code_retire_rouge(self):
         sans_bloc = TRADUCTION.replace("```sh\n# free comment, translated\n"
@@ -143,65 +144,65 @@ class Paire(unittest.TestCase):
         ecarts = self.ecarts(TRADUCTION.replace("4,812,337", "4,812,373"))
         self.assertEqual(self.familles(ecarts), ["nombres"])
         lieux = {(e.fichier, e.ligne) for e in ecarts}
-        self.assertEqual(lieux, {("guide.md", 5), ("guide.en.md", 5)})
+        self.assertEqual(lieux, {("guide.md", 5), ("guide.fr.md", 5)})
 
     def test_lien_non_bascule_rouge(self):
-        ecarts = self.ecarts(TRADUCTION.replace("carte.en.md#subsystems", "carte.md#subsystems"))
+        ecarts = self.ecarts(TRADUCTION.replace("carte.fr.md#subsystems", "carte.md#subsystems"))
         # L'ancre est jugée contre le fichier réellement visé, carte.md, qui n'a pas ce titre.
         self.assertEqual(self.familles(ecarts), ["ancres", "liens"])
-        self.assertEqual((ecarts[0].fichier, ecarts[0].ligne), ("guide.en.md", 14))
+        self.assertEqual((ecarts[0].fichier, ecarts[0].ligne), ("guide.fr.md", 14))
         self.assertIn("non basculé", ecarts[0].message)
 
     def test_lien_bascule_sans_traduction_existante_rouge(self):
         # Les deux sens sont nommés : la cible attendue manque, la cible portée est en trop.
-        ecarts = self.ecarts(TRADUCTION.replace("schema.md", "schema.en.md"))
+        ecarts = self.ecarts(TRADUCTION.replace("schema.md", "schema.fr.md"))
         self.assertEqual(self.familles(ecarts), ["liens"])
         lus = sorted((e.fichier, e.ligne, e.message) for e in ecarts)
         self.assertEqual(lus, [
-            ("guide.en.md", 14, "lien vers « schema.en.md » absent de l'original"),
+            ("guide.fr.md", 14, "lien vers « schema.fr.md » absent de l'original"),
             ("guide.md", 14, "lien vers « schema.md » absent de la traduction"),
         ])
 
     def test_lien_en_trop_dans_la_traduction_rouge(self):
         ecarts = self.ecarts(TRADUCTION + "\nSee [the annex](annexe.md).\n")
         self.assertEqual([(e.fichier, e.ligne, e.message) for e in ecarts],
-                         [("guide.en.md", 24, "lien vers « annexe.md » absent de l'original")])
+                         [("guide.fr.md", 24, "lien vers « annexe.md » absent de l'original")])
 
     def test_bloc_en_trop_dans_la_traduction_rouge(self):
         ecarts = self.ecarts(TRADUCTION + "\n```sh\nmake extra\n```\n")
         self.assertEqual(self.familles(ecarts), ["blocs"])
-        self.assertEqual((ecarts[0].fichier, ecarts[0].ligne), ("guide.en.md", 24))
+        self.assertEqual((ecarts[0].fichier, ecarts[0].ligne), ("guide.fr.md", 24))
         self.assertIn("2 blocs de code contre 1 dans guide.md", ecarts[0].message)
 
     def test_tableau_en_trop_dans_la_traduction_rouge(self):
         ecarts = self.ecarts(TRADUCTION + "\n| a | b |\n|---|---|\n")
         self.assertEqual(self.familles(ecarts), ["tableaux"])
-        self.assertEqual((ecarts[0].fichier, ecarts[0].ligne), ("guide.en.md", 24))
+        self.assertEqual((ecarts[0].fichier, ecarts[0].ligne), ("guide.fr.md", 24))
         self.assertIn("2 tableaux contre 1 dans guide.md", ecarts[0].message)
 
     def test_lien_relatif_resolu_depuis_le_dossier_du_document(self):
-        # docs/plan.md a sa traduction ; à la racine, plan.en.md n'existe pas. Résolu depuis la
+        # docs/plan.md a sa traduction ; à la racine, plan.fr.md n'existe pas. Résolu depuis la
         # racine, le lien ne basculerait pas, et la traduction juste serait accusée.
         self.peupler_docs()
-        for nom in ("docs/plan.md", "docs/plan.en.md"):
+        for nom in ("docs/plan.md", "docs/plan.fr.md"):
             self.ecrire(nom, "# x\n")
         original = ORIGINAL + "\nVoir [le plan](plan.md).\n"
-        juste = TRADUCTION + "\nSee [the plan](plan.en.md).\n"
+        juste = TRADUCTION + "\nSee [the plan](plan.fr.md).\n"
         self.assertEqual(self.ecarts(juste, original, dossier="docs"), [])
-        ecarts = self.ecarts(juste.replace("plan.en.md", "plan.md"), original, dossier="docs")
+        ecarts = self.ecarts(juste.replace("plan.fr.md", "plan.md"), original, dossier="docs")
         self.assertEqual(self.familles(ecarts), ["liens"])
         self.assertIn("non basculé", ecarts[0].message)
-        self.assertEqual(ecarts[0].fichier, os.path.join("docs", "guide.en.md"))
+        self.assertEqual(ecarts[0].fichier, os.path.join("docs", "guide.fr.md"))
 
     def test_lien_absolu_resolu_depuis_la_racine(self):
-        # annexe.en.md existe à la racine, pas sous docs/ : `/annexe.md` bascule depuis docs/.
+        # annexe.fr.md existe à la racine, pas sous docs/ : `/annexe.md` bascule depuis docs/.
         self.peupler_docs()
-        for nom in ("annexe.md", "annexe.en.md", "docs/annexe.md"):
+        for nom in ("annexe.md", "annexe.fr.md", "docs/annexe.md"):
             self.ecrire(nom, "# x\n")
         original = ORIGINAL + "\nVoir [l'annexe](/annexe.md).\n"
-        juste = TRADUCTION + "\nSee [the annex](/annexe.en.md).\n"
+        juste = TRADUCTION + "\nSee [the annex](/annexe.fr.md).\n"
         self.assertEqual(self.ecarts(juste, original, dossier="docs"), [])
-        ecarts = self.ecarts(juste.replace("/annexe.en.md", "/annexe.md"), original, dossier="docs")
+        ecarts = self.ecarts(juste.replace("/annexe.fr.md", "/annexe.md"), original, dossier="docs")
         self.assertEqual(self.familles(ecarts), ["liens"])
         self.assertIn("non basculé", ecarts[0].message)
 
@@ -214,7 +215,7 @@ class Paire(unittest.TestCase):
         self.peupler_docs()
         self.assertEqual(self.ecarts(TRADUCTION, dossier="docs"), [])
         # Un lien vers un AUTRE document non basculé reste accusé, sélecteur présent.
-        ecarts = self.ecarts(TRADUCTION.replace("carte.en.md#", "carte.md#"))
+        ecarts = self.ecarts(TRADUCTION.replace("carte.fr.md#", "carte.md#"))
         self.assertEqual(self.familles(ecarts), ["ancres", "liens"])
         self.assertIn("non basculé", next(e for e in ecarts if e.famille == "liens").message)
 
@@ -226,43 +227,46 @@ class Paire(unittest.TestCase):
         original = ORIGINAL.replace(SELECTEUR, SELECTEUR_BASCULE).replace(
             "carte.md", "carte.fr.md").replace("schema.md", "annexe.fr.md")
         juste = TRADUCTION.replace(SELECTEUR, SELECTEUR_BASCULE).replace(
-            "carte.en.md", "carte.md").replace("schema.md", "annexe.fr.md")
+            "carte.fr.md", "carte.md").replace("schema.md", "annexe.fr.md")
         self.assertEqual(self.ecarts(juste, original, convention), [])
-        # Le sélecteur de l'ancienne convention vise un fichier qui n'est plus de la paire.
+        # Un sélecteur d'une autre convention vise un fichier qui n'est pas de la paire.
         # Ses deux liens diffèrent de ceux de l'original : la famille des liens le dit aussi.
-        ecarts = self.ecarts(juste.replace(SELECTEUR_BASCULE, SELECTEUR), original, convention)
+        autre = "[English](guide.md) | [Deutsch](guide.de.md)"
+        ecarts = self.ecarts(juste.replace(SELECTEUR_BASCULE, autre), original, convention)
         selecteur = [e for e in ecarts if e.famille == "sélecteur"]
         self.assertEqual([(e.fichier, e.ligne) for e in selecteur], [("guide.md", 3)])
         self.assertIn("attendu « guide.fr.md » puis « guide.md »", selecteur[0].message)
         self.assertEqual(self.familles(ecarts), ["liens", "sélecteur"])
 
-    def test_selecteur_original_anglais_nomme_l_original_d_abord(self):
-        # Original anglais `X.md`, traduction `X.fr.md` : l'anglais vient en premier.
-        convention = pdl.Convention("", ".fr")
-        self.ecrire("carte.fr.md", CARTE_EN)
-        selecteur = "[English](guide.md) | [Français](guide.fr.md)"
-        original = ORIGINAL.replace(SELECTEUR, selecteur).replace("carte.md#sous-systemes",
-                                                                   "carte.md#x")
-        juste = TRADUCTION.replace(SELECTEUR, selecteur).replace("carte.en.md", "carte.fr.md")
+    def test_selecteur_convention_inverse_nomme_l_original_d_abord(self):
+        # Convention inverse, original `X.fr.md` et traduction `X.md` : l'original vient en premier,
+        # quelle que soit sa langue.
+        convention = pdl.Convention(".fr", "")
+        for nom in ("carte.fr.md", "annexe.fr.md"):
+            self.ecrire(nom, "# x\n")
+        self.ecrire("carte.md", CARTE_EN)
+        original = ORIGINAL.replace(SELECTEUR, SELECTEUR_BASCULE).replace(
+            "carte.md#sous-systemes", "carte.fr.md#x").replace("schema.md", "annexe.fr.md")
+        juste = TRADUCTION.replace(SELECTEUR, SELECTEUR_BASCULE).replace(
+            "carte.fr.md", "carte.md").replace("schema.md", "annexe.fr.md")
         self.assertEqual(self.ecarts(juste, original, convention), [])
-        inverse = "[Français](guide.fr.md) | [English](guide.md)"
-        ecarts = self.ecarts(juste.replace(selecteur, inverse), original, convention)
+        ecarts = self.ecarts(juste.replace(SELECTEUR_BASCULE, SELECTEUR), original, convention)
         self.assertEqual([(e.fichier, e.ligne, e.famille) for e in ecarts],
-                         [("guide.fr.md", 3, "sélecteur")])
+                         [("guide.md", 3, "sélecteur")])
         self.assertIn("inversé", ecarts[0].message)
 
     def test_selecteur_absent_des_deux_cotes_rouge(self):
         sans = SELECTEUR + "\n\n"
         ecarts = self.ecarts(TRADUCTION.replace(sans, ""), ORIGINAL.replace(sans, ""))
         self.assertEqual([(e.fichier, e.ligne, e.famille) for e in ecarts],
-                         [("guide.md", 3, "sélecteur"), ("guide.en.md", 3, "sélecteur")])
+                         [("guide.md", 3, "sélecteur"), ("guide.fr.md", 3, "sélecteur")])
         self.assertIn("absent sous le titre de niveau 1 (ligne 1)", ecarts[0].message)
-        self.assertIn("« guide.md » puis « guide.en.md »", ecarts[0].message)
+        self.assertIn("« guide.md » puis « guide.fr.md »", ecarts[0].message)
 
     def test_selecteur_absent_d_un_cote_rouge(self):
         # Ses deux liens manquent d'un côté : la famille des liens le dit aussi.
         for traduction, original, fautif in (
-                (TRADUCTION.replace(SELECTEUR + "\n\n", ""), ORIGINAL, "guide.en.md"),
+                (TRADUCTION.replace(SELECTEUR + "\n\n", ""), ORIGINAL, "guide.fr.md"),
                 (TRADUCTION, ORIGINAL.replace(SELECTEUR + "\n\n", ""), "guide.md")):
             ecarts = self.ecarts(traduction, original)
             self.assertEqual([(e.fichier, e.ligne) for e in ecarts if e.famille == "sélecteur"],
@@ -271,21 +275,21 @@ class Paire(unittest.TestCase):
 
     def test_selecteur_inverse_dans_la_traduction_rouge(self):
         # Mêmes cibles, donc aucun écart de lien : seul l'ordre trahit l'inversion.
-        inverse = "[English](guide.en.md) | [Français](guide.md)"
+        inverse = "[Français](guide.fr.md) | [English](guide.md)"
         ecarts = self.ecarts(TRADUCTION.replace(SELECTEUR, inverse))
         self.assertEqual([(e.fichier, e.ligne, e.famille) for e in ecarts],
-                         [("guide.en.md", 3, "sélecteur")])
+                         [("guide.fr.md", 3, "sélecteur")])
         self.assertIn("inversé", ecarts[0].message)
 
     def test_selecteur_qui_vise_un_autre_fichier_rouge(self):
-        autre = "[Français](carte.md) | [English](carte.en.md)"
+        autre = "[English](carte.md) | [Français](carte.fr.md)"
         ecarts = self.ecarts(TRADUCTION.replace(SELECTEUR, autre), ORIGINAL.replace(SELECTEUR, autre))
         selecteur = [e for e in ecarts if e.famille == "sélecteur"]
         self.assertEqual([(e.fichier, e.ligne) for e in selecteur],
-                         [("guide.md", 3), ("guide.en.md", 3)])
-        self.assertIn("vise carte.md, carte.en.md", selecteur[0].message)
+                         [("guide.md", 3), ("guide.fr.md", 3)])
+        self.assertIn("vise carte.md, carte.fr.md", selecteur[0].message)
         # Un seul lien, vers l'original : la traduction manque au sélecteur.
-        seul = "[Français](guide.md)"
+        seul = "[English](guide.md)"
         ecarts = self.ecarts(TRADUCTION.replace(SELECTEUR, seul), ORIGINAL.replace(SELECTEUR, seul))
         self.assertEqual(self.familles(ecarts), ["sélecteur"])
         self.assertEqual(len(ecarts), 2)
@@ -293,7 +297,7 @@ class Paire(unittest.TestCase):
     def test_selecteur_different_d_un_cote_a_l_autre_rouge(self):
         ecarts = self.ecarts(TRADUCTION.replace("[Français]", "[French]", 1))
         self.assertEqual([(e.fichier, e.ligne, e.famille) for e in ecarts],
-                         [("guide.en.md", 3, "sélecteur")])
+                         [("guide.fr.md", 3, "sélecteur")])
         self.assertIn("différent de celui de l'original (guide.md:3)", ecarts[0].message)
 
     def test_selecteur_pas_juste_sous_le_titre_rouge(self):
@@ -306,7 +310,7 @@ class Paire(unittest.TestCase):
         ecarts = self.ecarts(TRADUCTION.replace("# Guide\n\n", "# Guide\n\nIntro.\n\n", 1),
                              ORIGINAL.replace("# Guide\n\n", "# Guide\n\nIntro.\n\n", 1))
         self.assertEqual([(e.fichier, e.ligne, e.famille) for e in ecarts],
-                         [("guide.md", 3, "sélecteur"), ("guide.en.md", 3, "sélecteur")])
+                         [("guide.md", 3, "sélecteur"), ("guide.fr.md", 3, "sélecteur")])
 
     def test_second_titre_1_ne_deplace_pas_le_selecteur(self):
         # Le sélecteur se cherche sous le PREMIER titre de niveau 1 : un second titre de niveau 1,
@@ -322,7 +326,7 @@ class Paire(unittest.TestCase):
         juste = TRADUCTION.replace(sans, "") + "\n# Appendix\n\n" + SELECTEUR + "\n"
         ecarts = self.ecarts(juste, original)
         self.assertEqual([(e.fichier, e.ligne, e.famille) for e in ecarts],
-                         [("guide.md", 3, "sélecteur"), ("guide.en.md", 3, "sélecteur")])
+                         [("guide.md", 3, "sélecteur"), ("guide.fr.md", 3, "sélecteur")])
         self.assertIn("absent sous le titre de niveau 1 (ligne 1)", ecarts[0].message)
 
     def test_segment_de_code_replie_lu_comme_un_seul(self):
@@ -365,7 +369,7 @@ class Paire(unittest.TestCase):
         self.assertEqual(self.ecarts(juste, original), [])
         ecarts = self.ecarts(juste.replace("42", "43"), original)
         self.assertEqual([(e.fichier, e.ligne, e.famille) for e in ecarts],
-                         [("guide.md", 25, "nombres"), ("guide.en.md", 25, "nombres")])
+                         [("guide.md", 25, "nombres"), ("guide.fr.md", 25, "nombres")])
 
     def test_ligne_de_tableau_coupe_le_paragraphe(self):
         # Un accent grave resté ouvert n'avale pas la ligne de tableau qui suit : elle reste une
@@ -410,15 +414,15 @@ class Paire(unittest.TestCase):
         self.assertEqual(self.familles(ecarts), ["ancres"])
 
     def test_ancre_vers_un_titre_traduit_verte(self):
-        # La paire de base vise `carte.en.md#subsystems`, titre réel de carte.en.md.
-        self.assertIn("carte.en.md#subsystems", TRADUCTION)
+        # La paire de base vise `carte.fr.md#subsystems`, titre réel de carte.fr.md.
+        self.assertIn("carte.fr.md#subsystems", TRADUCTION)
         self.assertEqual(self.ecarts(TRADUCTION), [])
 
     def test_ancre_changee_d_une_lettre_rouge(self):
         ecarts = self.ecarts(TRADUCTION.replace("#subsystems", "#subsystem"))
         self.assertEqual([(e.fichier, e.ligne, e.famille) for e in ecarts],
-                         [("guide.en.md", 14, "ancres")])
-        self.assertIn("ancre « #subsystem » : aucun titre de carte.en.md", ecarts[0].message)
+                         [("guide.fr.md", 14, "ancres")])
+        self.assertIn("ancre « #subsystem » : aucun titre de carte.fr.md", ecarts[0].message)
 
     def test_ancre_restee_sur_le_titre_francais_rouge(self):
         ecarts = self.ecarts(TRADUCTION.replace("#subsystems", "#sous-systèmes"))
@@ -434,7 +438,7 @@ class Paire(unittest.TestCase):
         self.assertEqual(self.ecarts(juste, original), [])
         ecarts = self.ecarts(juste.replace("(#detail)", "(#détail)"), original)
         self.assertEqual([(e.fichier, e.ligne, e.famille) for e in ecarts],
-                         [("guide.en.md", 24, "ancres")])
+                         [("guide.fr.md", 24, "ancres")])
         self.assertIn("l'original guide.md", ecarts[0].message)
 
     def test_slug_github(self):
@@ -452,19 +456,19 @@ class Paire(unittest.TestCase):
             self.assertEqual(pdl.slug(titre), attendu, titre)
 
     def test_ancre_de_titre_en_double(self):
-        self.ecrire("carte.en.md", "# Subsystems\n\n## Usage\n\n## Usage\n")
+        self.ecrire("carte.fr.md", "# Subsystems\n\n## Usage\n\n## Usage\n")
         self.ecrire("carte.md", "# Sous-systèmes\n\n## Usage\n\n## Usage\n")
         original = ORIGINAL + "\nVoir [le second](carte.md#usage-1).\n"
-        juste = TRADUCTION + "\nSee [the second](carte.en.md#usage-1).\n"
+        juste = TRADUCTION + "\nSee [the second](carte.fr.md#usage-1).\n"
         self.assertEqual(self.ecarts(juste, original), [])
         ecarts = self.ecarts(juste.replace("#usage-1", "#usage-2"), original)
         self.assertEqual(self.familles(ecarts), ["ancres"])
 
     def test_ancre_html_et_titre_souligne_existent(self):
-        self.ecrire("carte.en.md", CARTE_EN + "\n<a id=\"pin\"></a>\n\nUnderlined\n----------\n")
+        self.ecrire("carte.fr.md", CARTE_EN + "\n<a id=\"pin\"></a>\n\nUnderlined\n----------\n")
         for ancre in ("pin", "underlined"):
             original = ORIGINAL + f"\nVoir [ici](carte.md#{ancre}).\n"
-            juste = TRADUCTION + f"\nSee [here](carte.en.md#{ancre}).\n"
+            juste = TRADUCTION + f"\nSee [here](carte.fr.md#{ancre}).\n"
             self.assertEqual(self.ecarts(juste, original), [], ancre)
 
     def test_ancres_non_jugees(self):
@@ -489,13 +493,13 @@ class Paire(unittest.TestCase):
         ecarts = self.ecarts(juste.replace("script.sh", "script.md"),
                              original.replace("script.sh", "script.md"))
         self.assertEqual([(e.fichier, e.ligne, e.famille) for e in ecarts],
-                         [("guide.en.md", 24, "ancres")])
+                         [("guide.fr.md", 24, "ancres")])
 
     def test_ancre_vers_un_fichier_hors_de_l_arbre_non_jugee(self):
         # La racine est un sous-dossier ; `../dehors.md` existe à côté, hors de l'arbre, et n'a pas
         # le titre visé : il n'est ni lu ni jugé.
         self.racine = os.path.join(self._tmp.name, "depot")
-        for nom, texte in (("carte.md", CARTE), ("carte.en.md", CARTE_EN), ("schema.md", "# x\n")):
+        for nom, texte in (("carte.md", CARTE), ("carte.fr.md", CARTE_EN), ("schema.md", "# x\n")):
             self.ecrire(nom, texte)
         with open(os.path.join(self._tmp.name, "dehors.md"), "w", encoding="utf-8") as f:
             f.write("# Dehors\n")
@@ -510,12 +514,12 @@ class Paire(unittest.TestCase):
 
     def test_ancre_dans_une_definition_de_lien(self):
         original = ORIGINAL + "\nVoir [la carte][r].\n\n[r]: carte.md#sous-systemes\n"
-        juste = TRADUCTION + "\nSee [the map][r].\n\n[r]: carte.en.md#subsystems\n"
+        juste = TRADUCTION + "\nSee [the map][r].\n\n[r]: carte.fr.md#subsystems\n"
         self.assertEqual(self.ecarts(juste, original), [])
-        ecarts = self.ecarts(juste.replace("[r]: carte.en.md#subsystems", "[r]: carte.en.md#maps"),
+        ecarts = self.ecarts(juste.replace("[r]: carte.fr.md#subsystems", "[r]: carte.fr.md#maps"),
                              original)
         self.assertEqual([(e.fichier, e.ligne, e.famille) for e in ecarts],
-                         [("guide.en.md", 26, "ancres")])
+                         [("guide.fr.md", 26, "ancres")])
 
     def test_note_de_bas_de_page_n_est_pas_une_definition_de_lien(self):
         original = ORIGINAL + "\nVoir la note[^1].\n\n[^1]: Voir le manuel, page 12.\n"
@@ -550,7 +554,7 @@ class Paire(unittest.TestCase):
     def test_titre_en_trop_rouge(self):
         ecarts = self.ecarts(TRADUCTION + "\n## Extra\n")
         self.assertEqual(self.familles(ecarts), ["titres"])
-        self.assertEqual((ecarts[0].fichier, ecarts[0].ligne), ("guide.en.md", 24))
+        self.assertEqual((ecarts[0].fichier, ecarts[0].ligne), ("guide.fr.md", 24))
 
     def test_commande_retiree_d_un_bloc_rouge(self):
         ecarts = self.ecarts(TRADUCTION.replace("cargo test --locked   # default suite\n", ""))
@@ -573,9 +577,9 @@ class Paire(unittest.TestCase):
 
     def test_definition_de_lien_comparee(self):
         original = ORIGINAL + "\nVoir [la carte][r].\n\n[r]: carte.md\n"
-        juste = TRADUCTION + "\nSee [the map][r].\n\n[r]: carte.en.md\n"
+        juste = TRADUCTION + "\nSee [the map][r].\n\n[r]: carte.fr.md\n"
         self.assertEqual(self.ecarts(juste, original), [])
-        ecarts = self.ecarts(juste.replace("[r]: carte.en.md", "[r]: carte.md"), original)
+        ecarts = self.ecarts(juste.replace("[r]: carte.fr.md", "[r]: carte.md"), original)
         self.assertEqual(self.familles(ecarts), ["liens"])
         self.assertIn("non basculé", ecarts[0].message)
 
@@ -611,7 +615,7 @@ class Paire(unittest.TestCase):
         self.assertEqual(self.familles(ecarts), ["blocs"])
 
     def test_point_barre_ne_change_pas_la_cible(self):
-        juste = TRADUCTION.replace("(carte.en.md#", "(./carte.en.md#").replace("(schema.md)",
+        juste = TRADUCTION.replace("(carte.fr.md#", "(./carte.fr.md#").replace("(schema.md)",
                                                                               "(./schema.md)")
         self.assertEqual(self.ecarts(juste), [])
 
@@ -624,7 +628,7 @@ class Paire(unittest.TestCase):
         original = ORIGINAL.replace(SELECTEUR, SELECTEUR_BASCULE).replace(
             "carte.md", "carte.fr.md").replace("schema.md", "annexe.fr.md")
         juste = TRADUCTION.replace(SELECTEUR, SELECTEUR_BASCULE).replace(
-            "carte.en.md", "carte.md").replace("schema.md", "annexe.fr.md")
+            "carte.fr.md", "carte.md").replace("schema.md", "annexe.fr.md")
         self.assertEqual(self.ecarts(juste, original, convention), [])
         ecarts = self.ecarts(juste.replace("(carte.md", "(carte.fr.md"), original, convention)
         self.assertIn("non basculé", ecarts[0].message)
@@ -634,9 +638,10 @@ class Convention(unittest.TestCase):
     def test_suffixes(self):
         c = pdl.Convention()
         self.assertTrue(c.est_original("docs/X.md"))
-        self.assertFalse(c.est_original("docs/X.en.md"))
-        self.assertTrue(c.est_traduction("docs/X.en.md"))
-        self.assertEqual(c.traduction_de("docs/X.md"), "docs/X.en.md")
+        self.assertFalse(c.est_original("docs/X.fr.md"))
+        self.assertTrue(c.est_traduction("docs/X.fr.md"))
+        self.assertEqual(c.traduction_de("docs/X.md"), "docs/X.fr.md")
+        self.assertEqual(c.original_de("docs/X.fr.md"), "docs/X.md")
         b = pdl.Convention(".fr", "")
         self.assertTrue(b.est_original("X.fr.md"))
         self.assertFalse(b.est_original("X.md"))
@@ -646,10 +651,10 @@ class Convention(unittest.TestCase):
 
     def test_suffixes_identiques_refuses(self):
         with self.assertRaises(ValueError):
-            pdl.Convention(".en", ".en")
+            pdl.Convention(".fr", ".fr")
 
     def test_suffixe_mal_forme_refuse(self):
-        for mauvais in ("en", ".", ".e n", "../x", ".en.md"):
+        for mauvais in ("en", ".", ".e n", "../x", ".fr.md"):
             with self.assertRaises(ValueError, msg=mauvais):
                 pdl.Convention("", mauvais)
         self.assertEqual(muet(pdl.main, ["--suffixe-traduction", "en"])[0], 2)
@@ -673,8 +678,8 @@ class CodeDeSortie(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.racine = self._tmp.name
-        for nom, texte in (("carte.md", CARTE), ("carte.en.md", CARTE_EN), ("schema.md", "# x\n"),
-                           ("guide.md", ORIGINAL), ("guide.en.md", TRADUCTION)):
+        for nom, texte in (("carte.md", CARTE), ("carte.fr.md", CARTE_EN), ("schema.md", "# x\n"),
+                           ("guide.md", ORIGINAL), ("guide.fr.md", TRADUCTION)):
             with open(os.path.join(self.racine, nom), "w", encoding="utf-8") as f:
                 f.write(texte)
 
@@ -685,18 +690,18 @@ class CodeDeSortie(unittest.TestCase):
         return muet(pdl.main, ["--racine", self.racine, *args])
 
     def test_paire_juste_rend_0(self):
-        rc, _ = self.main("--paire", "guide.md", "guide.en.md")
+        rc, _ = self.main("--paire", "guide.md", "guide.fr.md")
         self.assertEqual(rc, 0)
 
     def test_paire_avec_ecart_rend_1_et_le_nomme(self):
-        with open(os.path.join(self.racine, "guide.en.md"), "w", encoding="utf-8") as f:
+        with open(os.path.join(self.racine, "guide.fr.md"), "w", encoding="utf-8") as f:
             f.write(TRADUCTION.replace("### Detail\n", ""))
-        rc, sortie = self.main("--paire", "guide.md", "guide.en.md")
+        rc, sortie = self.main("--paire", "guide.md", "guide.fr.md")
         self.assertEqual(rc, 1)
         self.assertIn("guide.md:20: [titres]", sortie)
 
     def test_fichier_absent_rend_2(self):
-        rc, sortie = self.main("--paire", "guide.md", "absent.en.md")
+        rc, sortie = self.main("--paire", "guide.md", "absent.fr.md")
         self.assertEqual(rc, 2)
         self.assertIn("rien comparé", sortie)
 
@@ -714,50 +719,50 @@ class CodeDeSortie(unittest.TestCase):
         # `autre` se lit avant `guide` : la paire illisible n'arrête pas la comparaison, et l'écart
         # trouvé ensuite est imprimé ; une violation ne se lit pas comme « rien mesuré ».
         self.ecrire("autre.md", "# Autre\n")
-        self.ecrire("autre.en.md", "# Autre évalué\n".encode("latin-1"))
-        self.ecrire("guide.en.md", TRADUCTION.replace("### Detail\n", ""))
-        self.suivre("autre.md", "autre.en.md", "guide.md", "guide.en.md")
+        self.ecrire("autre.fr.md", "# Autre évalué\n".encode("latin-1"))
+        self.ecrire("guide.fr.md", TRADUCTION.replace("### Detail\n", ""))
+        self.suivre("autre.md", "autre.fr.md", "guide.md", "guide.fr.md")
         rc, sortie = self.main()
         self.assertEqual(rc, 1)
         self.assertIn("guide.md:20: [titres]", sortie)
-        self.assertIn("autre.en.md", sortie)
+        self.assertIn("autre.fr.md", sortie)
         self.assertIn("illisible", sortie)
 
     def test_illisible_sans_ecart_rend_2_et_le_nomme(self):
         self.ecrire("autre.md", "# Autre\n")
-        self.ecrire("autre.en.md", "# Autre évalué\n".encode("latin-1"))
-        self.suivre("autre.md", "autre.en.md", "guide.md", "guide.en.md")
+        self.ecrire("autre.fr.md", "# Autre évalué\n".encode("latin-1"))
+        self.suivre("autre.md", "autre.fr.md", "guide.md", "guide.fr.md")
         rc, sortie = self.main()
         self.assertEqual(rc, 2)
-        self.assertIn("autre.en.md", sortie)
+        self.assertIn("autre.fr.md", sortie)
         self.assertIn("illisible", sortie)
         self.assertIn("1 paire(s) comparée(s), 0 écart(s)", sortie)
 
     def test_fichier_hors_utf8_rend_2(self):
-        with open(os.path.join(self.racine, "guide.en.md"), "wb") as f:
+        with open(os.path.join(self.racine, "guide.fr.md"), "wb") as f:
             f.write("# Guide évalué\n".encode("latin-1"))
-        rc, sortie = self.main("--paire", "guide.md", "guide.en.md")
+        rc, sortie = self.main("--paire", "guide.md", "guide.fr.md")
         self.assertEqual(rc, 2)
         self.assertIn("rien comparé", sortie)
 
     def test_selecteur_absent_rend_1_et_le_nomme(self):
-        self.ecrire("guide.en.md", TRADUCTION.replace(SELECTEUR + "\n\n", ""))
-        rc, sortie = self.main("--paire", "guide.md", "guide.en.md")
+        self.ecrire("guide.fr.md", TRADUCTION.replace(SELECTEUR + "\n\n", ""))
+        rc, sortie = self.main("--paire", "guide.md", "guide.fr.md")
         self.assertEqual(rc, 1)
-        self.assertIn("guide.en.md:3: [sélecteur] sélecteur de langue absent", sortie)
+        self.assertIn("guide.fr.md:3: [sélecteur] sélecteur de langue absent", sortie)
 
     def test_ancre_fausse_rend_1_et_la_nomme(self):
-        self.ecrire("guide.en.md", TRADUCTION.replace("#subsystems", "#subsystem"))
-        rc, sortie = self.main("--paire", "guide.md", "guide.en.md")
+        self.ecrire("guide.fr.md", TRADUCTION.replace("#subsystems", "#subsystem"))
+        rc, sortie = self.main("--paire", "guide.md", "guide.fr.md")
         self.assertEqual(rc, 1)
-        self.assertIn("guide.en.md:14: [ancres] ancre « #subsystem »", sortie)
+        self.assertIn("guide.fr.md:14: [ancres] ancre « #subsystem »", sortie)
 
     def test_fichier_vise_par_une_ancre_illisible_rend_2(self):
         # Une ancre qu'on n'a pas pu chercher n'est ni juste ni fausse : rien ne prouve la parité.
         self.ecrire("latin.md", "# Évalué\n".encode("latin-1"))
         self.ecrire("guide.md", ORIGINAL + "\nVoir [l](latin.md#x).\n")
-        self.ecrire("guide.en.md", TRADUCTION + "\nSee [l](latin.md#x).\n")
-        rc, sortie = self.main("--paire", "guide.md", "guide.en.md")
+        self.ecrire("guide.fr.md", TRADUCTION + "\nSee [l](latin.md#x).\n")
+        rc, sortie = self.main("--paire", "guide.md", "guide.fr.md")
         self.assertEqual(rc, 2)
         self.assertIn("latin.md", sortie)
         self.assertIn("illisible", sortie)
@@ -767,8 +772,8 @@ class CodeDeSortie(unittest.TestCase):
         # comme lue en partie, pas comme « aucun écart ».
         self.ecrire("latin.md", "# Évalué\n".encode("latin-1"))
         self.ecrire("guide.md", ORIGINAL + "\nVoir [l](latin.md#x).\n")
-        self.ecrire("guide.en.md", TRADUCTION.replace("### Detail\n", "") + "\nSee [l](latin.md#x).\n")
-        rc, sortie = self.main("--paire", "guide.md", "guide.en.md")
+        self.ecrire("guide.fr.md", TRADUCTION.replace("### Detail\n", "") + "\nSee [l](latin.md#x).\n")
+        rc, sortie = self.main("--paire", "guide.md", "guide.fr.md")
         self.assertEqual(rc, 1)
         self.assertIn("guide.md:20: [titres]", sortie)
         self.assertIn("latin.md", sortie)
@@ -794,38 +799,93 @@ class Inventaire(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.racine = self._tmp.name
-        selecteur = "# x\n\n[Français](A.md) | [English](A.en.md)\n"
-        for nom in ("A.md", "A.en.md", "B.md", "docs/C.md", "D.en.md"):
+        selecteur = "# x\n\n[English](A.md) | [Français](A.fr.md)\n"
+        for nom in ("A.md", "A.fr.md", "B.md", "docs/C.md", "D.fr.md", "S.md"):
             chemin = os.path.join(self.racine, nom)
             os.makedirs(os.path.dirname(chemin), exist_ok=True)
             with open(chemin, "w", encoding="utf-8") as f:
                 f.write(selecteur if nom.startswith("A.") else "# x\n")
         subprocess.run(["git", "init", "-q", self.racine], check=True)
-        subprocess.run(["git", "-C", self.racine, "add", "--", "A.md", "A.en.md", "B.md",
-                        "docs/C.md", "D.en.md"], check=True)
+        self.suivre("A.md", "A.fr.md", "B.md", "docs/C.md", "D.fr.md", "S.md")
+        # `S.md` est déclaré en une seule langue, avec sa raison : ce n'est pas un écart.
+        self.seules = mock.patch.dict(pdl.UNE_SEULE_LANGUE, {"S.md": "tenu en une langue"}, clear=True)
+        self.seules.start()
 
     def tearDown(self):
+        self.seules.stop()
         self._tmp.cleanup()
+
+    def suivre(self, *fichiers):
+        subprocess.run(["git", "-C", self.racine, "add", "--", *fichiers], check=True)
 
     def test_liste_sans_rougir_puis_rougit_en_strict(self):
         documents = pdl.documents_suivis(self.racine)
-        sans, orphelines = pdl.inventaire(documents, pdl.Convention())
+        sans, orphelines, perimees = pdl.inventaire(documents, pdl.Convention())
         self.assertEqual(sans, ["B.md", "docs/C.md"])
-        self.assertEqual(orphelines, ["D.en.md"])
-        attendu = ("B.md: sans traduction (attendue : B.en.md)\n"
-                   "docs/C.md: sans traduction (attendue : docs/C.en.md)\n"
-                   "D.en.md: traduction sans original (attendu : D.md)\n"
-                   "2 document(s) sans traduction, 1 traduction(s) sans original, "
-                   "sur 5 documents suivis\n")
+        self.assertEqual(orphelines, ["D.fr.md"])
+        self.assertEqual(perimees, [])
+        attendu = ("B.md: sans traduction (attendue : B.fr.md), et absent de UNE_SEULE_LANGUE\n"
+                   "docs/C.md: sans traduction (attendue : docs/C.fr.md), et absent de UNE_SEULE_LANGUE\n"
+                   "D.fr.md: traduction sans original (attendu : D.md)\n"
+                   "1 paire(s), 1 document(s) en une seule langue déclarés, 3 écart(s) (2 document(s) "
+                   "sans traduction, 1 traduction(s) sans original, 0 entrée(s) périmée(s)), "
+                   "sur 6 documents suivis\n")
         rc, sortie = muet(pdl.main, ["--racine", self.racine, "--inventaire"])
         self.assertEqual((rc, sortie), (0, attendu))
         rc, sortie = muet(pdl.main, ["--racine", self.racine, "--inventaire", "--strict"])
         self.assertEqual((rc, sortie), (1, attendu))
         self.assertEqual(muet(pdl.main, ["--racine", self.racine])[0], 0)
 
+    def retirer(self, *fichiers):
+        for nom in fichiers:
+            os.remove(os.path.join(self.racine, nom))
+        subprocess.run(["git", "-C", self.racine, "rm", "-q", "--cached", "--", *fichiers], check=True)
+
+    def test_inventaire_juste_rend_0_en_strict(self):
+        self.retirer("B.md", "docs/C.md", "D.fr.md")
+        rc, sortie = muet(pdl.main, ["--racine", self.racine, "--inventaire", "--strict"])
+        self.assertEqual(rc, 0, sortie)
+        self.assertIn("1 paire(s), 1 document(s) en une seule langue déclarés, 0 écart(s)", sortie)
+
+    def test_entree_qui_a_retrouve_sa_paire_est_un_ecart(self):
+        self.retirer("B.md", "docs/C.md", "D.fr.md")
+        with open(os.path.join(self.racine, "S.fr.md"), "w", encoding="utf-8") as f:
+            f.write("# x\n")
+        self.suivre("S.fr.md")
+        documents = pdl.documents_suivis(self.racine)
+        self.assertEqual(pdl.inventaire(documents, pdl.Convention())[2],
+                         [("S.md", "a retrouvé sa traduction S.fr.md")])
+        rc, sortie = muet(pdl.main, ["--racine", self.racine, "--inventaire", "--strict"])
+        self.assertEqual(rc, 1)
+        self.assertIn("S.md: entrée périmée de UNE_SEULE_LANGUE (tenu en une langue) : a retrouvé sa "
+                      "traduction S.fr.md", sortie)
+
+    def test_entree_qui_ne_designe_plus_un_document_suivi_est_un_ecart(self):
+        self.retirer("B.md", "docs/C.md", "D.fr.md", "S.md")
+        documents = pdl.documents_suivis(self.racine)
+        self.assertEqual(pdl.inventaire(documents, pdl.Convention())[2],
+                         [("S.md", "n'est plus un document suivi")])
+        self.assertEqual(muet(pdl.main, ["--racine", self.racine, "--inventaire", "--strict"])[0], 1)
+
+    def test_document_hors_de_l_ensemble_sans_paire_est_un_ecart(self):
+        # Le même `S.md`, retiré de l'ensemble : il redevient un document sans traduction.
+        self.retirer("B.md", "docs/C.md", "D.fr.md")
+        del pdl.UNE_SEULE_LANGUE["S.md"]
+        documents = pdl.documents_suivis(self.racine)
+        self.assertEqual(pdl.inventaire(documents, pdl.Convention())[0], ["S.md"])
+        self.assertEqual(muet(pdl.main, ["--racine", self.racine, "--inventaire", "--strict"])[0], 1)
+
+    def test_ensemble_reel_nomme_ses_raisons(self):
+        # Les deux documents en une seule langue du dépôt, chacun avec une raison écrite.
+        self.seules.stop()
+        try:
+            self.assertEqual(sorted(pdl.UNE_SEULE_LANGUE), ["docs/BENCHMARK.md", "docs/ROADMAP.md"])
+            self.assertTrue(all(r.strip() for r in pdl.UNE_SEULE_LANGUE.values()))
+        finally:
+            self.seules.start()
+
     def test_aucune_paire_ne_rend_pas_vert(self):
-        os.remove(os.path.join(self.racine, "A.en.md"))
-        subprocess.run(["git", "-C", self.racine, "rm", "-q", "--cached", "A.en.md"], check=True)
+        self.retirer("A.fr.md")
         with open(os.devnull, "w") as nul:
             erreur, sys.stderr = sys.stderr, nul
             try:

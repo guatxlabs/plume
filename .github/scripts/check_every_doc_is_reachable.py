@@ -42,11 +42,11 @@ erreur, pour qu'elle ne puisse pas devenir une trappe où l'on range ce qu'on ne
 
 LA TRADUCTION D'UN EXEMPTÉ PASSE PAR SON SÉLECTEUR, ET RIEN D'AUTRE
 -------------------------------------------------------------------
-Rien ne mène à un exempté depuis `README.md` : c'est sa définition. Sa traduction (`X.en.md` ou
-`X.fr.md`, à côté de `X.md`) serait donc inatteignable par construction, alors que le lecteur
+Rien ne mène à un exempté depuis `README.md` : c'est sa définition. Sa traduction (`X.fr.md`, à
+côté de `X.md`) serait donc inatteignable par construction, alors que le lecteur
 qui ouvre `X.md` y arrive par la ligne de sélecteur de langue posée sous le titre. La règle est
 ÉTROITE : la traduction de `X.md` exempté est tenue pour atteinte SI ET SEULEMENT SI `X.md` la
-lie depuis une ligne de sélecteur (`[Français](…) | [English](…)`, dans un ordre ou l'autre).
+lie depuis une ligne de sélecteur (`[English](…) | [Français](…)`, dans un ordre ou l'autre).
 Un lien ordinaire dans le corps de `X.md` ne suffit pas, un sélecteur qui vise un autre fichier
 ne rend rien atteignable, et ni l'exempté ni sa traduction ne propagent leurs liens : un autre
 document lié seulement depuis eux reste inatteignable.
@@ -80,11 +80,11 @@ EXEMPTES = {
 LIEN = re.compile(r'\]\(\s*<?([^)>\s]+?)>?(?:\s+"[^"]*")?\s*\)')
 # `[id]: cible`, définition de lien en style référence.
 REFDEF = re.compile(r'^\s{0,3}\[[^\]]+\]:\s*<?(\S+?)>?\s*$', re.M)
-# Ligne de sélecteur de langue : `[Français](X.md) | [English](X.en.md)`, ou l'ordre inverse.
+# Ligne de sélecteur de langue : `[English](X.md) | [Français](X.fr.md)`, ou l'ordre inverse.
 SELECTEUR = re.compile(r'^\[(?:Français|English)\]\([^)\s]+\) \| \[(?:Français|English)\]\([^)\s]+\)\s*$',
                        re.M)
 # Suffixes d'une traduction posée à côté de son original.
-SUFFIXES_TRADUCTION = (".en.md", ".fr.md")
+SUFFIXES_TRADUCTION = (".fr.md",)
 
 
 def cibles(texte, depuis, suivis):
@@ -102,7 +102,7 @@ def cibles(texte, depuis, suivis):
 
 
 def traductions_par_selecteur(texte, depuis, suivis):
-    """Les traductions de `depuis` (`X.en.md`, `X.fr.md`) qu'une LIGNE DE SÉLECTEUR de `texte` lie.
+    """Les traductions de `depuis` (`X.fr.md`) qu'une LIGNE DE SÉLECTEUR de `texte` lie.
 
     Seule la paire de langue sort d'ici : un sélecteur qui viserait un autre document ne rend
     rien."""
@@ -137,20 +137,20 @@ def valider_fermeture():
         "README.md": "[i](docs/I.md)\n",
         "docs/I.md": "rien\n",
         # Exempté AVEC sélecteur, plus un lien ordinaire vers un autre document.
-        "AGENTS.md": "# A\n\n[Français](AGENTS.md) | [English](AGENTS.en.md)\n\n[o](docs/O.md)\n",
+        "AGENTS.md": "# A\n\n[English](AGENTS.md) | [Français](AGENTS.fr.md)\n\n[o](docs/O.md)\n",
         # Sa traduction lie un document que rien d'autre ne lie.
-        "AGENTS.en.md": "# A\n\n[Français](AGENTS.md) | [English](AGENTS.en.md)\n\n[p](docs/P.md)\n",
+        "AGENTS.fr.md": "# A\n\n[English](AGENTS.md) | [Français](AGENTS.fr.md)\n\n[p](docs/P.md)\n",
         "docs/O.md": "lié seulement depuis un exempté\n",
         "docs/P.md": "lié seulement depuis la traduction d'un exempté\n",
         # Exempté SANS sélecteur : un lien ordinaire vers sa traduction ne suffit pas.
-        "NOTICES.md": "# N\n\nvoir [la version anglaise](NOTICES.en.md)\n",
-        "NOTICES.en.md": "# N\n",
+        "NOTICES.md": "# N\n\nsee [the French version](NOTICES.fr.md)\n",
+        "NOTICES.fr.md": "# N\n",
         # Exempté dont le sélecteur vise un autre document que sa paire.
         "COC.md": "# C\n\n[English](COC.md) | [Français](docs/Q.md)\n",
         "docs/Q.md": "visé par un sélecteur qui n'est pas une paire\n",
         # Traduction d'un document NON exempté que rien ne lie, et dont l'original a un sélecteur.
-        "docs/Y.md": "# Y\n\n[Français](Y.md) | [English](Y.en.md)\n",
-        "docs/Y.en.md": "# Y\n",
+        "docs/Y.md": "# Y\n\n[English](Y.md) | [Français](Y.fr.md)\n",
+        "docs/Y.fr.md": "# Y\n",
         # Traduction d'un exempté sans aucun lien vers elle.
         "COC.fr.md": "# C\n",
         # Exempté dont le sélecteur vise un autre fichier, et dont le CORPS lie sa traduction :
@@ -162,21 +162,21 @@ def valider_fermeture():
         "AUTRE.md": "# X\n\n[Français](AUTRE.md) | [English](docs/Z.fr.md)\n",
         "docs/Z.fr.md": "traduction d'un autre document\n",
         # Paire liée au milieu d'une ligne : ce n'est pas une ligne de sélecteur.
-        "MILIEU.md": "# M\n\nLangues : [Français](MILIEU.md) | [English](MILIEU.en.md)\n",
-        "MILIEU.en.md": "# M\n",
+        "MILIEU.md": "# M\n\nLanguages: [English](MILIEU.md) | [Français](MILIEU.fr.md)\n",
+        "MILIEU.fr.md": "# M\n",
         # Libellés qui ne sont pas Français/English.
-        "LIBELLE.md": "# L\n\n[FR](LIBELLE.md) | [EN](LIBELLE.en.md)\n",
-        "LIBELLE.en.md": "# L\n",
+        "LIBELLE.md": "# L\n\n[EN](LIBELLE.md) | [FR](LIBELLE.fr.md)\n",
+        "LIBELLE.fr.md": "# L\n",
         # Texte après la paire : ce n'est pas une ligne de sélecteur.
-        "SUITE.md": "# T\n\n[Français](SUITE.md) | [English](SUITE.en.md) (version anglaise)\n",
-        "SUITE.en.md": "# T\n",
+        "SUITE.md": "# T\n\n[English](SUITE.md) | [Français](SUITE.fr.md) (French version)\n",
+        "SUITE.fr.md": "# T\n",
     }
     suivis = set(textes)
     exemptes = {"AGENTS.md", "NOTICES.md", "COC.md", "SEL.md", "AUTRE.md", "MILIEU.md", "LIBELLE.md",
                 "SUITE.md"}
     liens = {d: cibles(t, d, suivis) for d, t in textes.items()}
     atteints = atteignables(liens, textes, suivis, "README.md", exemptes)
-    attendu = {"README.md", "docs/I.md", "AGENTS.en.md"}
+    attendu = {"README.md", "docs/I.md", "AGENTS.fr.md"}
     if atteints != attendu:
         return [f"témoin de FERMETURE en échec : attendu {sorted(attendu)}, obtenu {sorted(atteints)} "
                 "— seule la traduction qu'un exempté lie par son sélecteur peut passer par lui."]

@@ -1,313 +1,313 @@
-# IdP natif (#44) — OIDC / LDAP / MFA, et la conception SAML 2.0
+# Native IdP (#44) — OIDC / LDAP / MFA, and the SAML 2.0 design
 
-[Français](NATIVE-IDP.md) | [English](NATIVE-IDP.en.md)
+[English](NATIVE-IDP.md) | [Français](NATIVE-IDP.fr.md)
 
-> **Statut.** OIDC (Authorization-Code + PKCE), LDAP/AD (bind), et TOTP MFA sont **implémentés et testés**.
-> SAML 2.0 SP est **implémenté et testé**, mais **derrière la feature de compilation `saml`** (cf. §5) :
-> compilé **sans** cette feature, le login SAML renvoie **501**. ⚠️ **L'image Docker livrée est bâtie
-> `ldap,cold_tier`** — jeu déclaré une seule fois par `ARG PLUME_FEATURES` dans le
-> [`Dockerfile`](../Dockerfile), depuis `971de7a` (2026‑08‑08) — et **`saml` n'en fait pas partie** :
-> **SAML y répond donc 501**. Pour l'activer, rajoutez-le au jeu sans toucher au fichier :
+> **Status.** OIDC (Authorization-Code + PKCE), LDAP/AD (bind), and TOTP MFA are **implemented and tested**.
+> SAML 2.0 SP is **implemented and tested**, but **behind the `saml` compile feature** (see §5):
+> compiled **without** that feature, SAML login returns **501**. ⚠️ **The shipped Docker image is built
+> with `ldap,cold_tier`** — a set declared only once, by `ARG PLUME_FEATURES` in the
+> [`Dockerfile`](../Dockerfile), since `971de7a` (2026‑08‑08) — and **`saml` is not part of it**:
+> **SAML therefore answers 501 there**. To enable it, add it to the set without touching the file:
 > `docker build --build-arg PLUME_FEATURES=ldap,cold_tier,saml .`
-> ⚠️ **Le mode hôte natif ne compile AUCUNE feature optionnelle** : le README et `bootstrap.sh`
-> prescrivent `cargo build --release` **nu**. Sur un binaire hôte ainsi bâti, **le login LDAP/AD répond
-> 501 lui aussi** (et le tier froid est absent) — cf. §3 et
-> [`TROIS-MODES.md` §3.9](TROIS-MODES.md#39-mettre-à-jour). OIDC, TOTP MFA et le SSO d'en-tête, eux, ne
-> dépendent d'aucune feature : ils sont là dans les trois modes.
-> Cet incrément est **additif et fail-closed** : sans fournisseur configuré ni MFA enrôlée, toute
-> l'authentification existante (Basic / cookie de session / token d'agent / HEC / SSO d'en-tête Authentik)
-> est **strictement inchangée** (mode 0 byte-identique, prouvé par la suite de tests).
+> ⚠️ **Native host mode compiles NO optional feature**: the README and `bootstrap.sh`
+> prescribe a **bare** `cargo build --release`. On a host binary built that way, **LDAP/AD login answers
+> 501 as well** (and the cold tier is absent) — see §3 and
+> [`TROIS-MODES.md` §3.9](TROIS-MODES.md#39-updating). OIDC, TOTP MFA and header SSO, on the other hand,
+> depend on no feature: they are present in all three modes.
+> This increment is **additive and fail-closed**: with no provider configured and no MFA enrolled, all
+> existing authentication (Basic / session cookie / agent token / HEC / Authentik header SSO)
+> is **strictly unchanged** (mode 0 byte-identical, proven by the test suite).
 
-## 1. Modèle de configuration
+## 1. Configuration model
 
-Un **fournisseur d'identité** est une ligne de la table `idp_provider` (migration v85), configurée par un
-**admin** via l'UI (`Administration → Identité fédérée (SSO)`) ou l'API `/api/idp/providers` (admin-only) :
+An **identity provider** is a row of the `idp_provider` table (migration v85), configured by an
+**admin** through the UI (`Administration → Identité fédérée (SSO)`) or the `/api/idp/providers` API (admin-only):
 
-| colonne       | rôle |
+| column        | role |
 |---------------|------|
-| `name`        | identifiant unique (segment d'URL sûr : alnum + `. _ -`) |
+| `name`        | unique identifier (URL-safe segment: alnum + `. _ -`) |
 | `kind`        | `oidc` \| `ldap` \| `saml` |
-| `enabled`     | un fournisseur désactivé n'accorde **aucun** login |
-| `config_json` | paramètres **non-secrets** (issuer, client_id, redirect_uri, scopes, group_claim ; url LDAP, base_dn, filtres, groupes) |
-| `secret`      | **le seul** credential (client_secret OIDC / mot de passe de bind LDAP) — colonne dédiée, **jamais** dans `config_json`, **jamais** projetée en réponse, chiffrée au repos par SQLCipher |
+| `enabled`     | a disabled provider grants **no** login |
+| `config_json` | **non-secret** parameters (issuer, client_id, redirect_uri, scopes, group_claim; LDAP url, base_dn, filters, groups) |
+| `secret`      | **the only** credential (OIDC client_secret / LDAP bind password) — dedicated column, **never** in `config_json`, **never** projected into a response, encrypted at rest by SQLCipher |
 
-**Secret write-only** : identique à `connectors`/`notifiers`. La liste ne renvoie qu'un booléen `has_secret` ;
-en mise à jour, un secret **vide/omis conserve** l'existant (jamais d'écrasement par vide, jamais de fuite).
+**Write-only secret**: identical to `connectors`/`notifiers`. The list only returns a `has_secret` boolean;
+on update, an **empty/omitted** secret **keeps** the existing one (never overwritten by an empty value, never leaked).
 
-La **MFA TOTP** est stockée par compte dans `user_mfa` (secret base32, `enabled`, hachages SHA-256 des codes
-de secours). Vide par défaut → aucun challenge.
+**TOTP MFA** is stored per account in `user_mfa` (base32 secret, `enabled`, SHA-256 hashes of the recovery
+codes). Empty by default → no challenge.
 
-**Mapping groupe → rôle** : réutilise **exactement** la table du SSO d'en-tête Authentik (`sso_role` /
-`sso_grants`). Les groupes de l'IdP (claim OIDC `groups` ; `memberOf`/`group_filter` LDAP) sont mappés vers
-`admin`/`editor`/`viewer`. **Fail-closed** : `require_group_match` (défaut **true**) refuse (DENY) un
-utilisateur qui ne matche **aucun** groupe connu — contrairement au repli viewer implicite, on ne délivre
-jamais d'accès sur un mapping vide.
+**Group → role mapping**: reuses **exactly** the Authentik header SSO table (`sso_role` /
+`sso_grants`). The IdP's groups (OIDC `groups` claim; LDAP `memberOf`/`group_filter`) are mapped to
+`admin`/`editor`/`viewer`. **Fail-closed**: `require_group_match` (default **true**) refuses (DENY) a
+user who matches **no** known group — unlike the implicit viewer fallback, access is
+never granted on an empty mapping.
 
-### 1bis. SSO d'en-tête « trusted-header » (forward-auth) — noms d'en-têtes VENDOR-AGNOSTIQUES
+### 1bis. "Trusted-header" SSO (forward-auth) — VENDOR-AGNOSTIC header names
 
-Chemin optionnel (activé **uniquement** si `PLUME_SSO_HEADER_SECRET` est posé) où un forward-auth de confiance
-(Traefik/oauth2-proxy/nginx auth_request…) injecte l'identité en en-têtes HTTP, accompagnée d'un **secret
-partagé** `x-plume-sso-secret` (comparé en temps constant). Sans le bon secret, les en-têtes d'identité ne
-sont **jamais** lus.
+Optional path (enabled **only** if `PLUME_SSO_HEADER_SECRET` is set) where a trusted forward-auth
+(Traefik/oauth2-proxy/nginx auth_request…) injects the identity as HTTP headers, together with a **shared
+secret** `x-plume-sso-secret` (compared in constant time). Without the right secret, the identity headers are
+**never** read.
 
-- **Noms d'en-têtes configurables** (v107) : `PLUME_SSO_HEADER_USER` (défaut **`x-authentik-username`**) et
-  `PLUME_SSO_HEADER_GROUPS` (défaut **`x-authentik-groups`**). Défauts inchangés → déploiement Authentik
-  existant **byte-identique**. Un client derrière Okta/Keycloak/Azure/Ping pose les noms d'en-têtes que **son**
-  proxy émet. Le mapping groupe→rôle reste `PLUME_SSO_GROUP_*` (déjà configurable).
-- **Le nom ne contourne PAS le modèle de confiance** : ces en-têtes ne sont lus **que** sur le chemin déjà
-  authentifié par `x-plume-sso-secret`. Changer le NOM n'ouvre aucun chemin de lecture hors du gate secret.
-- **Concern de DÉPLOIEMENT (à respecter)** : la confiance vient de ce que le middleware forward-auth
-  **écrase** (overwrite) les en-têtes fournis par le client. Si vous configurez des noms personnalisés, le
-  middleware **doit écraser CES noms-là** (sinon un client pourrait injecter `PLUME_SSO_HEADER_GROUPS`
-  directement). C'est une exigence de configuration du proxy, pas une faiblesse du daemon.
-- **AUCUN COMPTE N'EST CRÉÉ PAR CE CHEMIN**, et c'est délibéré : contrairement à OIDC et LDAP (qui
-  provisionnent un compte à la volée, cf. §2 et §3), le SSO d'en-tête ne pose **aucune** ligne dans la table
-  des comptes — le nom et le rôle sont recalculés à chaque requête depuis les en-têtes. Conséquence à
-  connaître : un compte d'annuaire **n'est ni créé, ni modifiable, ni révocable** depuis `Administration →
-  Comptes & accès` ; son rôle vient de ses groupes et se change **dans l'annuaire**.
-- **« QUI A ACCÈS » se lit quand même** (`P11.5-c`). Comme ces comptes n'ont pas de ligne, la liste des
-  comptes ne pouvait pas les montrer : ils administraient la console sans figurer nulle part. Le point de
-  passage d'authentification consigne désormais **chaque identité résolue** — nom, provenance (annuaire
-  externe / compte local / jeton / identifiant d'amorçage), rôle effectif, origine de ce rôle, première et
-  dernière vue — et `Administration → Comptes & accès` rend cet inventaire **à côté** de la liste des
-  comptes locaux (lecture seule : on n'administre pas ici un compte dont l'autorité vient d'ailleurs).
-  Aucun secret n'y entre — ni empreinte, ni jeton, ni la valeur brute des groupes de l'annuaire.
+- **Configurable header names** (v107): `PLUME_SSO_HEADER_USER` (default **`x-authentik-username`**) and
+  `PLUME_SSO_HEADER_GROUPS` (default **`x-authentik-groups`**). Unchanged defaults → existing Authentik
+  deployment **byte-identical**. A client behind Okta/Keycloak/Azure/Ping sets the header names that **its**
+  proxy emits. The group→role mapping remains `PLUME_SSO_GROUP_*` (already configurable).
+- **The name does NOT bypass the trust model**: these headers are read **only** on the path already
+  authenticated by `x-plume-sso-secret`. Changing the NAME opens no read path outside the secret gate.
+- **DEPLOYMENT concern (to be respected)**: the trust comes from the forward-auth middleware
+  **overwriting** the headers supplied by the client. If you configure custom names, the
+  middleware **must overwrite THOSE names** (otherwise a client could inject `PLUME_SSO_HEADER_GROUPS`
+  directly). This is a proxy configuration requirement, not a weakness of the daemon.
+- **NO ACCOUNT IS CREATED BY THIS PATH**, and that is deliberate: unlike OIDC and LDAP (which
+  provision an account on the fly, see §2 and §3), header SSO writes **no** row into the accounts
+  table — the name and the role are recomputed on every request from the headers. A consequence to
+  know: a directory account **is neither created, nor editable, nor revocable** from `Administration →
+  Comptes & accès`; its role comes from its groups and is changed **in the directory**.
+- **"WHO HAS ACCESS" can still be read** (`P11.5-c`). Since these accounts have no row, the accounts
+  list could not show them: they administered the console without appearing anywhere. The authentication
+  choke-point now records **every resolved identity** — name, provenance (external
+  directory / local account / token / bootstrap credential), effective role, origin of that role, first and
+  last seen — and `Administration → Comptes & accès` renders this inventory **next to** the list of
+  local accounts (read-only: an account whose authority comes from elsewhere is not administered here).
+  No secret goes into it — no fingerprint, no token, nor the raw value of the directory groups.
 
-## 2. OIDC (implémenté)
+## 2. OIDC (implemented)
 
-- `GET /api/auth/oidc/{name}/start` → génère `state`, `nonce`, et un **PKCE** `code_verifier`/`code_challenge`
-  (S256), pose un **cookie de state signé HMAC** (`plume_oidc`, `SameSite=Lax`, HttpOnly, 10 min) et redirige
-  (302) vers l'`authorization_endpoint` (résolu par **discovery** `.well-known/openid-configuration`, ou
-  overrides explicites). Aucun état serveur (stateless).
-- `GET /api/auth/oidc/callback` → vérifie le cookie de state (HMAC + exp), compare `state` (anti-CSRF, temps
-  constant), échange le `code` (+ `code_verifier`) au `token_endpoint`, récupère le **JWKS**, et **valide
-  l'`id_token`** : signature **RS256/ES256** (clé choisie par `kid`, algo **restreint à l'asymétrique** → pas
-  de confusion d'algorithme HS256), `iss` == issuer **configuré**, `aud` contient `client_id`, `exp` valide
-  (leeway 60 s), `nonce` == nonce du state. Puis mapping groupe→rôle, **provisioning JIT** du compte, session.
-- **Anti open-redirect** : le `redirect_uri` est celui **configuré** (re-servi tel quel, jamais depuis la
-  requête) ; la redirection finale est **fixe** (`/`). Endpoints forcés **https** (anti-fuite de secret/clé).
+- `GET /api/auth/oidc/{name}/start` → generates `state`, `nonce`, and a **PKCE** `code_verifier`/`code_challenge`
+  (S256), sets an **HMAC-signed state cookie** (`plume_oidc`, `SameSite=Lax`, HttpOnly, 10 min) and redirects
+  (302) to the `authorization_endpoint` (resolved by **discovery** `.well-known/openid-configuration`, or
+  explicit overrides). No server state (stateless).
+- `GET /api/auth/oidc/callback` → checks the state cookie (HMAC + exp), compares `state` (anti-CSRF, constant
+  time), exchanges the `code` (+ `code_verifier`) at the `token_endpoint`, fetches the **JWKS**, and **validates
+  the `id_token`**: **RS256/ES256** signature (key chosen by `kid`, algorithm **restricted to asymmetric** → no
+  HS256 algorithm confusion), `iss` == **configured** issuer, `aud` contains `client_id`, `exp` valid
+  (leeway 60 s), `nonce` == nonce from the state. Then group→role mapping, **JIT provisioning** of the account, session.
+- **Anti open-redirect**: the `redirect_uri` is the **configured** one (served back as is, never taken from the
+  request); the final redirect is **fixed** (`/`). Endpoints forced to **https** (prevents secret/key leaks).
 
-## 3. LDAP / Active Directory (implémenté, feature `ldap`)
+## 3. LDAP / Active Directory (implemented, `ldap` feature)
 
-- `POST /api/auth/ldap {provider?, user, pass}` → **bind** contre l'annuaire (StartTLS/LDAPS via `ldap3` +
-  tokio-rustls, **pas d'OpenSSL**), résout l'appartenance aux groupes (`memberOf` ou `group_filter`), mappe
-  vers un rôle, provisionne JIT, pose la session. Anti-brute-force réutilisé (lockout `(user,ip)`).
-- **Injection-safe** : tout composant utilisateur d'un filtre est échappé **RFC 4515** (`\\ * ( ) NUL`) et
-  tout composant de DN **RFC 4514** — un login `*)(uid=*` ne peut pas altérer la structure du filtre (testé).
-  Bind avec mot de passe **vide refusé** (anti *unauthenticated-bind*).
-- **Garde de sortie** (`P7.20-a`) : avant toute connexion, l'URL de l'annuaire est jugée par la garde des sorties
-  (`ldap_garde_de_sortie`) — seuls `ldap://` (port 389 par défaut) et `ldaps://` (636) sont admis, `ldapi://` et un
-  hôte vide sont refusés ; le littéral et chaque adresse résolue passent la garde : boucle locale, link-local et ULA
-  refusés quelle que soit `PLUME_SSRF_BLOCK_PRIVATE` (seule une cible listée dans `PLUME_SSRF_ALLOW` y échappe),
-  adresse privée (`10/8`, `172.16/12`, `192.168/16`) refusée par défaut et admise par `PLUME_SSRF_ALLOW` (hôte ou
-  CIDR listé) ou `PLUME_SSRF_BLOCK_PRIVATE=0`. La route la joue avant le bind, avec ou sans la feature `ldap` : un
-  refus — quelle que soit sa cause — sert un 502 à phrase fixe sur `POST /api/auth/ldap` (jamais l'adresse ; un build
-  sans `ldap` le sert aussi, avant son 501), la cause au journal `[idp]`, et ne compte aucun échec au frein. Une URL
-  d'annuaire vide (absente ou blanche) n'est pas une cible refusée mais un fournisseur non configuré : la garde n'est
-  pas jouée, la réponse reste celle d'avant (501 sans `ldap`, 401 avec). L'autorité jugée s'arrête, comme celle que lit
-  `ldap3`, au premier `/`, `?` ou `#` (`ldap://10.0.0.5?@192.0.2.10` est jugée sur `10.0.0.5`) ; seule différence
-  connue, une tabulation ou un saut de ligne DANS l'autorité est gardé par la garde et retiré par `ldap3` : le nom
-  jugé ne se résout pas, l'URL est donc refusée. Une URL d'annuaire, un point de jeton ou des JWKS OIDC écrits sur
-  une adresse privée — et l'issuer quand la découverte est exigée, c'est-à-dire quand il est joint — sont refusés dès la saisie
-  (400, création et modification d'un fournisseur), avec la phrase qui nomme ces deux réglages ; la boucle locale, la
-  cible des métadonnées, `ldapi://` ou un nom non résolu ne le sont qu'à la connexion.
-- **Feature `ldap`** : les **fonctions pures** (échappement, mapping) sont compilées/testées **sans** la
-  feature ; seul le bind réseau est derrière `#[cfg(feature = "ldap")]` (sans la feature : 501 explicite).
-  **DEPUIS v107 : `--features ldap` est activé PAR DÉFAUT dans l'image stock** — il fait partie du jeu
-  `ldap,cold_tier` que déclare `ARG PLUME_FEATURES` ([`Dockerfile`](../Dockerfile)) — le
-  login LDAP/AD natif fonctionne sans rebuild (bring-your-own-directory). **Ce défaut-ON ne vaut QUE
-  pour l'image** : la recette hôte compile nu, donc un `plume-daemon` installé par `bootstrap.sh` sans
-  `--features ldap` répond **501** à `POST /api/auth/ldap` — le prendre :
-  `cargo build --release --features cold_tier,ldap`. Coût : ~40 crates **pur-Rust** en
-  plus (ldap3/lber, asn1/x509, url/idna/icu) ; **aucune** nouvelle dépendance C (`openssl-sys` vient déjà de
-  SQLCipher). **INERTE tant qu'aucun provider LDAP n'est configuré+activé** : `POST /api/auth/ldap` répond
-  `404 aucun provider LDAP activé` (aucun endpoint ouvert, aucun bind sortant, aucune surface active) — un
-  déploiement stock sans LDAP se comporte à l'identique feature ON ou OFF.
+- `POST /api/auth/ldap {provider?, user, pass}` → **bind** against the directory (StartTLS/LDAPS via `ldap3` +
+  tokio-rustls, **no OpenSSL**), resolves group membership (`memberOf` or `group_filter`), maps
+  to a role, provisions JIT, sets the session. Anti-brute-force reused (lockout `(user,ip)`).
+- **Injection-safe**: every user-supplied component of a filter is escaped per **RFC 4515** (`\\ * ( ) NUL`) and
+  every DN component per **RFC 4514** — a login `*)(uid=*` cannot alter the structure of the filter (tested).
+  Bind with an **empty password refused** (prevents *unauthenticated bind*).
+- **Egress guard** (`P7.20-a`): before any connection, the directory URL is judged by the egress guard
+  (`ldap_garde_de_sortie`) — only `ldap://` (port 389 by default) and `ldaps://` (636) are admitted, `ldapi://` and an
+  empty host are refused; the literal and every resolved address go through the guard: loopback, link-local and ULA
+  refused whatever `PLUME_SSRF_BLOCK_PRIVATE` says (only a target listed in `PLUME_SSRF_ALLOW` escapes it),
+  private address (`10/8`, `172.16/12`, `192.168/16`) refused by default and admitted by `PLUME_SSRF_ALLOW` (listed host or
+  CIDR) or `PLUME_SSRF_BLOCK_PRIVATE=0`. The route runs it before the bind, with or without the `ldap` feature: a
+  refusal — whatever its cause — serves a 502 with a fixed phrase on `POST /api/auth/ldap` (never the address; a build
+  without `ldap` serves it too, before its 501), the cause to the `[idp]` log, and counts no failure against the throttle. An
+  empty directory URL (absent or blank) is not a refused target but an unconfigured provider: the guard is not
+  run, the response stays what it was before (501 without `ldap`, 401 with it). The judged authority stops, like the one `ldap3`
+  reads, at the first `/`, `?` or `#` (`ldap://10.0.0.5?@192.0.2.10` is judged on `10.0.0.5`); the only known
+  difference, a tab or a line feed INSIDE the authority is kept by the guard and removed by `ldap3`: the judged
+  name does not resolve, so the URL is refused. A directory URL, an OIDC token endpoint or JWKS written with
+  a private address — and the issuer when discovery is required, that is when it is contacted — are refused at entry
+  (400, creation and update of a provider), with the phrase that names these two settings; loopback, the
+  metadata target, `ldapi://` or an unresolved name are only refused at connection time.
+- **`ldap` feature**: the **pure functions** (escaping, mapping) are compiled/tested **without** the
+  feature; only the network bind is behind `#[cfg(feature = "ldap")]` (without the feature: explicit 501).
+  **SINCE v107: `--features ldap` is enabled BY DEFAULT in the stock image** — it is part of the
+  `ldap,cold_tier` set that `ARG PLUME_FEATURES` declares ([`Dockerfile`](../Dockerfile)) — native
+  LDAP/AD login works without a rebuild (bring-your-own-directory). **This default-ON applies ONLY
+  to the image**: the host recipe compiles bare, so a `plume-daemon` installed by `bootstrap.sh` without
+  `--features ldap` answers **501** to `POST /api/auth/ldap` — to get it:
+  `cargo build --release --features cold_tier,ldap`. Cost: ~40 additional **pure-Rust** crates
+  (ldap3/lber, asn1/x509, url/idna/icu); **no** new C dependency (`openssl-sys` already comes from
+  SQLCipher). **INERT as long as no LDAP provider is configured+enabled**: `POST /api/auth/ldap` answers
+  `404 aucun provider LDAP activé` (no endpoint open, no outbound bind, no active surface) — a
+  stock deployment without LDAP behaves identically with the feature ON or OFF.
 
-## 4. TOTP MFA (implémenté, RFC 6238)
+## 4. TOTP MFA (implemented, RFC 6238)
 
-- Self-service (`/api/mfa/*`, tout compte, opère sur `au.name`) : `enroll` (graine base32 + URI `otpauth://`
-  show-once), `verify` (1er code → active + **codes de secours** show-once, seuls leurs SHA-256 sont
-  persistés), `disable` (exige un code valide), `status`.
-- **Challenge au login local** : si le compte a une MFA active, `POST /api/login` renvoie
-  `{mfa_required:true, ticket}` (ticket HMAC court) **sans** poser de session ; `POST /api/login/mfa
-  {ticket, code}` valide le TOTP (fenêtre de dérive ±1 pas, temps constant) **ou** un code de secours à
-  **usage unique**, puis pose la session. `user_mfa` vide → flux de login **byte-identique**.
+- Self-service (`/api/mfa/*`, any account, operates on `au.name`): `enroll` (base32 seed + `otpauth://` URI
+  shown once), `verify` (first code → activates + **recovery codes** shown once, only their SHA-256 are
+  persisted), `disable` (requires a valid code), `status`.
+- **Challenge at local login**: if the account has an active MFA, `POST /api/login` returns
+  `{mfa_required:true, ticket}` (short HMAC ticket) **without** setting a session; `POST /api/login/mfa
+  {ticket, code}` validates the TOTP (drift window ±1 step, constant time) **or** a **single-use**
+  recovery code, then sets the session. Empty `user_mfa` → **byte-identical** login flow.
 
-Les sous-sections suivantes décrivent les refus et les freins de ce flux. Les contrôles y sont nommés, entre
-accents graves, par la constante ou la fonction qui les porte ; les causes sont servies telles quelles dans le
-champ `error` de la réponse. Le témoin `documentation_du_second_facteur` vérifie trois choses, et seulement
-celles-là : chaque contrôle qu'il exige a sa phrase, qui cite le symbole défini qui le porte ; tout nom composé
-(qui contient un souligné) cité ici figure dans une ligne de code de `daemon/src` hors tests, une ligne de
-commentaire ne comptant pas ; le 409 de réactivation, la remise à zéro et l'arbitrage du frein ont leur phrase
-dans leur sous-section, et le 409 est servi par `mfa_verify` avant tout essai compté. Il ne lit pas le sens des
-phrases : un statut faux à côté d'un symbole juste passe, la relecture le tient.
+The following subsections describe the refusals and the throttles of this flow. The controls are named there, in
+backticks, by the constant or the function that carries them; the causes are served as is in the
+`error` field of the response. The `documentation_du_second_facteur` witness checks three things, and only
+those: every control it requires has its sentence, which cites the defined symbol that carries it; every compound name
+(containing an underscore) cited here appears in a code line of `daemon/src` outside tests, a comment
+line not counting; the reactivation 409, the reset and the throttle trade-off have their sentence
+in their subsection, and the 409 is served by `mfa_verify` before any counted attempt. It does not read the meaning of the
+sentences: a wrong status next to a correct symbol passes, review catches it.
 
-### 4.1 Enrôlement : le mot de passe du compte est exigé
+### 4.1 Enrollment: the account password is required
 
-- `POST /api/mfa/enroll {password}` exige le mot de passe du compte, jugé **avant** toute graine par
-  `prouver_le_premier_facteur` (`session.rs`), avec la **même** résolution que `POST /api/login` et au **même**
-  verrou (compte, adresse) : la route n'offre aucun essai de plus que la connexion. Une session seule ne suffit
-  pas — elle permettrait à qui l'a volée d'enfermer le titulaire derrière une graine qu'il ne détient pas.
-  - champ absent ou vide → **403** `CAUSE_MOT_DE_PASSE_EXIGE_POUR_ENROLER` (rien examiné, rien compté) ;
-  - mot de passe faux → **403** `CAUSE_MOT_DE_PASSE_REFUSE_A_L_ENROLEMENT` (échec compté par
-    `auth_record_failure`, ligne au registre) ;
-  - verrou (compte, adresse) posé → **429** `CAUSE_MOT_DE_PASSE_VERROUILLE_A_L_ENROLEMENT` + `Retry-After`,
-    le mot de passe n'est pas examiné ;
-  - compte non lu → **503** `CAUSE_COMPTE_NON_LU_A_L_ENROLEMENT`.
-- **Comptes sans mot de passe local** — compte fédéré OIDC, SAML ou LDAP (hachage `IDP_HASH_SENTINEL`), ou
-  identité SSO par en-têtes — → **403** `CAUSE_ENROLEMENT_SANS_MOT_DE_PASSE_LOCAL`, décidé par
-  `le_compte_a_un_mot_de_passe_local`. Le second facteur de plume n'est demandé qu'à la connexion par mot de
-  passe local, que ces comptes n'empruntent pas : leur second facteur est celui de leur fournisseur
-  d'identité. Leur connexion n'est pas modifiée ; seul l'enrôlement est refusé.
-- Une MFA **déjà active** n'est jamais écrasée : **409** « MFA déjà active (désactivez-la d'abord) ». L'écriture
-  de l'enrôlement rejuge la condition (`WHERE user_mfa.enabled=0`) : une activation survenue pendant la preuve
-  du mot de passe rend aussi 409. Écriture refusée → **503** `CAUSE_ENROLEMENT_NON_ECRIT`, aucune graine
-  posée ni montrée.
+- `POST /api/mfa/enroll {password}` requires the account password, judged **before** any seed by
+  `prouver_le_premier_facteur` (`session.rs`), with the **same** resolution as `POST /api/login` and under the **same**
+  lock (account, address): the route offers no attempt beyond what login offers. A session alone is not
+  enough — it would let whoever stole it lock the holder out behind a seed they do not hold.
+  - field absent or empty → **403** `CAUSE_MOT_DE_PASSE_EXIGE_POUR_ENROLER` (nothing examined, nothing counted);
+  - wrong password → **403** `CAUSE_MOT_DE_PASSE_REFUSE_A_L_ENROLEMENT` (failure counted by
+    `auth_record_failure`, an entry in the register);
+  - (account, address) lock set → **429** `CAUSE_MOT_DE_PASSE_VERROUILLE_A_L_ENROLEMENT` + `Retry-After`,
+    the password is not examined;
+  - account not read → **503** `CAUSE_COMPTE_NON_LU_A_L_ENROLEMENT`.
+- **Accounts without a local password** — OIDC, SAML or LDAP federated account (hash `IDP_HASH_SENTINEL`), or
+  SSO identity through headers — → **403** `CAUSE_ENROLEMENT_SANS_MOT_DE_PASSE_LOCAL`, decided by
+  `le_compte_a_un_mot_de_passe_local`. plume's second factor is only asked for at login by local
+  password, which these accounts do not use: their second factor is that of their identity
+  provider. Their login is not modified; only enrollment is refused.
+- An MFA that is **already active** is never overwritten: **409** « MFA déjà active (désactivez-la d'abord) ». The enrollment
+  write re-judges the condition (`WHERE user_mfa.enabled=0`): an activation that happened during the password
+  proof also returns 409. Write refused → **503** `CAUSE_ENROLEMENT_NON_ECRIT`, no seed
+  set nor shown.
 
-### 4.2 Activation : le 409 de réactivation
+### 4.2 Activation: the reactivation 409
 
-- `POST /api/mfa/verify` sur une MFA **déjà active** → **409** « MFA déjà active (désactivez-la d'abord) »,
-  **avant** tout examen du code et avant tout essai compté (`mfa_verify`) : la réponse est la même que le code
-  soit juste ou faux, aucun code de secours neuf n'est servi. Sans ce refus, la route serait un oracle du TOTP
-  pour une session volée.
-- L'activation est un compare-et-pose sur l'enrôlement lu (`enabled=0 AND secret=<graine lue>`) : une autre
-  requête l'a activé, remplacé ou supprimé entre-temps → **409** `CAUSE_ENROLEMENT_CHANGE_PENDANT_LA_VERIFICATION`,
-  rien n'est activé ; écriture refusée → **503** `CAUSE_MFA_NON_ACTIVEE`, aucun code de secours servi.
-- Un code dont le pas est déjà consommé → **401** (anti-rejeu).
+- `POST /api/mfa/verify` on an **already active** MFA → **409** « MFA déjà active (désactivez-la d'abord) »,
+  **before** any examination of the code and before any counted attempt (`mfa_verify`): the response is the same whether the code
+  is right or wrong, no new recovery code is served. Without this refusal, the route would be a TOTP oracle
+  for a stolen session.
+- Activation is a compare-and-set on the enrollment that was read (`enabled=0 AND secret=<graine lue>`): another
+  request activated, replaced or deleted it in the meantime → **409** `CAUSE_ENROLEMENT_CHANGE_PENDANT_LA_VERIFICATION`,
+  nothing is activated; write refused → **503** `CAUSE_MFA_NON_ACTIVEE`, no recovery code served.
+- A code whose step is already consumed → **401** (anti-replay).
 
-### 4.3 Frein du second facteur, par compte
+### 4.3 Second-factor throttle, per account
 
-- **Clé** : le compte — jamais l'adresse, jamais le ticket. Les trois routes qui jugent un code
-  (`login_mfa_post`, `mfa_verify`, `mfa_disable` sur une MFA active) le traversent.
-- **L'essai est compté avant d'être examiné** : `reserver_un_essai` (`handlers/frein_du_second_facteur.rs`)
-  écrit l'échec possible, dans sa propre transaction validée, **avant** que le code soit jugé. Compte freiné →
-  **429** `CAUSE_SECOND_FACTEUR_FREINE` + `Retry-After`, le code n'est pas examiné (un code juste est refusé
-  comme un faux). Écriture du frein refusée → **503** `CAUSE_ESSAI_DU_SECOND_FACTEUR_NON_COMPTE`, le code
-  n'est ni accepté ni refusé.
-- **Seuil et délai** : les réglages du verrou de connexion, `lock_threshold`, `lock_base_s`, `lock_max_s`,
-  posés par `PLUME_AUTH_LOCK_THRESHOLD` (défaut 10), `PLUME_AUTH_LOCK_BASE_S` (délai de base, défaut 30 s) et
-  `PLUME_AUTH_LOCK_MAX_S` (plafond, défaut 900 s) ; les deux délais valent au moins 1 s. Au seuil, le délai vaut `lock_base_s` × 2^(échecs au-delà du seuil), plafonné à `lock_max_s`. Seuil
-  0 : frein coupé, rien n'est lu ni écrit.
-- **Oubli** : un jour sans échec efface les échecs consécutifs (`MEMOIRE_DES_ECHECS_S`).
-- **Remise à zéro** (`remettre_a_zero`) : un code juste **accepté** remet le compte à zéro ; une connexion par
-  mot de passe, jamais. Une exception, qui n'examine aucun code : `mfa_disable` sur un enrôlement **en attente**
-  (jamais activé) supprime la graine et remet aussi le compte à zéro — les échecs comptés par `mfa_verify` contre
-  cette graine sont effacés avec elle. Ce n'est pas une porte : la graine visée n'existe plus, son titulaire la
-  connaissait (l'enrôlement la montre), et un nouvel enrôlement exige le mot de passe.
-- **Refus qui ne juge pas le code** (pas non consommé, enrôlement changé, écriture refusée) : l'essai réservé
-  est rendu (`rendre_l_essai`). Un retour refusé laisse un échec de trop — le sens qui freine.
-- **Durable** : l'état vit dans la table `setting`, portée `frein.second_facteur`
-  (`PORTEE_DU_FREIN_DU_SECOND_FACTEUR`), clé = le nom du compte, aucune migration de schéma. Un redémarrage ou
-  une autre réplique ne rouvre pas la fenêtre. La ligne est retirée dans la transaction qui supprime le compte
-  (`oublier_dans_la_transaction`). Aucune route de réglages ne sert une portée autre que `global` ; le SQL brut,
-réservé aux administrateurs, peut lire la ligne (son autorisateur refuse des colonnes de secrets, pas la table
-`setting`) : elle ne porte que des compteurs et des instants (`consecutifs`, `freine_jusqu_a`, `dernier`), aucun
-code ni graine.
-- **Vu du SIEM** (`tracer_l_echec`, source `plume-auth`) : à l'activation et à la désactivation, un code faux
-  émet `failure` de sévérité 3 (la connexion émet déjà le sien par `auth_record_failure`) ; sur les trois
-  routes, l'échec qui pose le frein émet `lockout` de sévérité 4. Les champs portent `facteur: "second"` et
-  la route, jamais le code présenté, la graine ni le ticket.
-- **Arbitrage** : le frein n'est atteignable qu'avec un ticket signé (donc le mot de passe) ou une session du
-  compte ; des tickets forgés ou des mots de passe faux ne freinent personne. Celui qui tient le mot de passe
-  peut geler l'étape du code au titulaire, au plus `lock_max_s` à la fois : prix assumé, l'alternative étant
-  de le laisser deviner le second facteur ; la parade est celle d'une compromission du mot de passe (le
-  changer). Le premier facteur n'est pas freiné par ce compteur : le titulaire obtient toujours son ticket. Un
-  frein par ticket est écarté : le ticket se réémet à volonté avec le mot de passe.
+- **Key**: the account — never the address, never the ticket. The three routes that judge a code
+  (`login_mfa_post`, `mfa_verify`, `mfa_disable` on an active MFA) go through it.
+- **The attempt is counted before it is examined**: `reserver_un_essai` (`handlers/frein_du_second_facteur.rs`)
+  writes the possible failure, in its own committed transaction, **before** the code is judged. Throttled account →
+  **429** `CAUSE_SECOND_FACTEUR_FREINE` + `Retry-After`, the code is not examined (a correct code is refused
+  like a wrong one). Throttle write refused → **503** `CAUSE_ESSAI_DU_SECOND_FACTEUR_NON_COMPTE`, the code
+  is neither accepted nor refused.
+- **Threshold and delay**: the login lock settings, `lock_threshold`, `lock_base_s`, `lock_max_s`,
+  set by `PLUME_AUTH_LOCK_THRESHOLD` (default 10), `PLUME_AUTH_LOCK_BASE_S` (base delay, default 30 s) and
+  `PLUME_AUTH_LOCK_MAX_S` (ceiling, default 900 s); both delays are at least 1 s. At the threshold, the delay is `lock_base_s` × 2^(failures beyond the threshold), capped at `lock_max_s`. Threshold
+  0: throttle off, nothing is read or written.
+- **Forgetting**: a day without failure erases the consecutive failures (`MEMOIRE_DES_ECHECS_S`).
+- **Reset** (`remettre_a_zero`): a correct code that is **accepted** resets the account; a password
+  login, never. One exception, which examines no code: `mfa_disable` on a **pending** enrollment
+  (never activated) deletes the seed and also resets the account — the failures counted by `mfa_verify` against
+  that seed are erased with it. This is not a loophole: the targeted seed no longer exists, its holder
+  knew it (enrollment shows it), and a new enrollment requires the password.
+- **Refusal that does not judge the code** (step not consumed, enrollment changed, write refused): the reserved attempt
+  is given back (`rendre_l_essai`). A refused give-back leaves one failure too many — the direction that throttles.
+- **Durable**: the state lives in the `setting` table, scope `frein.second_facteur`
+  (`PORTEE_DU_FREIN_DU_SECOND_FACTEUR`), key = the account name, no schema migration. A restart or
+  another replica does not reopen the window. The row is removed in the transaction that deletes the account
+  (`oublier_dans_la_transaction`). No settings route serves a scope other than `global`; raw SQL,
+reserved to administrators, can read the row (its authorizer refuses secret columns, not the
+`setting` table): it carries only counters and instants (`consecutifs`, `freine_jusqu_a`, `dernier`), no
+code nor seed.
+- **Seen from the SIEM** (`tracer_l_echec`, source `plume-auth`): at activation and at deactivation, a wrong code
+  emits `failure` with severity 3 (login already emits its own through `auth_record_failure`); on the three
+  routes, the failure that sets the throttle emits `lockout` with severity 4. The fields carry `facteur: "second"` and
+  the route, never the presented code, the seed nor the ticket.
+- **Trade-off**: the throttle can only be reached with a signed ticket (hence the password) or a session of the
+  account; forged tickets or wrong passwords throttle nobody. Whoever holds the password
+  can freeze the code step for the holder, at most `lock_max_s` at a time: an accepted price, the alternative being
+  to let them guess the second factor; the countermeasure is that of a password compromise (changing
+  it). The first factor is not throttled by this counter: the holder always gets their ticket. A
+  per-ticket throttle is ruled out: the ticket is reissued at will with the password.
 
-### 4.4 Consommation du facteur
+### 4.4 Consumption of the factor
 
-- Un pas TOTP n'est accepté que **consommé** : `consommer_le_pas_totp` est un compare-et-pose en base
-  (`last_step < pas`). Un pas déjà consommé — rejeu séquentiel ou concurrent — → **401** « code MFA invalide »,
-  échec compté. La base n'a pas pris l'écriture → **503** `CAUSE_PAS_TOTP_NON_CONSOMME` : aucune session, le
-  code n'est pas brûlé, l'essai est rendu.
-- Même règle pour un code de secours, retiré de la liste avant toute session : retrait refusé → **503**
-  `CAUSE_CODE_DE_SECOURS_NON_CONSOMME`, le code reste utilisable.
-- La désactivation juge le pas par la **même** `consommer_le_pas_totp`, dans la transaction qui supprime la
-  ligne : un code déjà utilisé à la connexion ne désactive pas la MFA (401).
+- A TOTP step is only accepted once **consumed**: `consommer_le_pas_totp` is a compare-and-set in the database
+  (`last_step < pas`). A step already consumed — sequential or concurrent replay — → **401** « code MFA invalide »,
+  failure counted. The database did not take the write → **503** `CAUSE_PAS_TOTP_NON_CONSOMME`: no session, the
+  code is not burned, the attempt is given back.
+- Same rule for a recovery code, removed from the list before any session: removal refused → **503**
+  `CAUSE_CODE_DE_SECOURS_NON_CONSOMME`, the code remains usable.
+- Deactivation judges the step through the **same** `consommer_le_pas_totp`, in the transaction that deletes the
+  row: a code already used at login does not deactivate the MFA (401).
 
-### 4.5 Ticket MFA et révocation
+### 4.5 MFA ticket and revocation
 
-- Le ticket (`mfa_challenge_response`, signé par `mfa_ticket_sign`) sert **cinq minutes**. Il est signé avec
-  l'époque de session globale **et** l'époque du compte (`epoque_du_compte`, `session.rs`), dans un domaine
-  (`mfa-ticket|`) distinct de celui des cookies de session. Époque du compte non lue → **503**
-  `CAUSE_EPOQUE_DU_COMPTE_NON_LUE`, aucun ticket émis.
-- `login_mfa_post` refuse en **401** `CAUSE_TICKET_MFA_INVALIDE_EXPIRE_OU_REVOQUE`, **avant** tout examen du
-  code et sans rien compter, un ticket invalide, expiré, ou **révoqué** : l'époque globale a avancé
-  (déconnexion de portée `globale`), ou celle du compte a avancé (`avancer_l_epoque_du_compte` : déconnexion du
-  compte, changement de son mot de passe, réinitialisation par un administrateur), ou n'a pas pu être relue.
-  Toutes ces causes partagent la même phrase, à dessein : la distinguer renseignerait le porteur d'un vieux
-  ticket sur ce qui s'est passé depuis.
-- À époques inchangées, un ticket reste rejouable pendant ses cinq minutes : chaque rejeu doit présenter un code
-  frais, borné par le pas consommé et par le frein du compte.
-- La session posée est frappée à l'époque du compte que le ticket a prouvée (`mint_session_du_compte`) : une
-  révocation survenue depuis la rend caduque dès la requête suivante.
+- The ticket (`mfa_challenge_response`, signed by `mfa_ticket_sign`) is valid for **five minutes**. It is signed with
+  the global session epoch **and** the account epoch (`epoque_du_compte`, `session.rs`), in a domain
+  (`mfa-ticket|`) distinct from that of the session cookies. Account epoch not read → **503**
+  `CAUSE_EPOQUE_DU_COMPTE_NON_LUE`, no ticket issued.
+- `login_mfa_post` refuses with **401** `CAUSE_TICKET_MFA_INVALIDE_EXPIRE_OU_REVOQUE`, **before** any examination of the
+  code and without counting anything, a ticket that is invalid, expired, or **revoked**: the global epoch has advanced
+  (logout with `globale` scope), or the account's has advanced (`avancer_l_epoque_du_compte`: logout of the
+  account, change of its password, reset by an administrator), or could not be read again.
+  All these causes share the same phrase, on purpose: distinguishing them would tell the bearer of an old
+  ticket what has happened since.
+- With epochs unchanged, a ticket remains replayable during its five minutes: each replay must present a fresh
+  code, bounded by the consumed step and by the account throttle.
+- The session set is minted at the account epoch that the ticket proved (`mint_session_du_compte`): a
+  revocation that happened since makes it void from the next request on.
 
-## 5. SAML 2.0 SP (implémenté — **feature `saml`**, SP-initiated, POST binding)
+## 5. SAML 2.0 SP (implemented — **`saml` feature**, SP-initiated, POST binding)
 
-`kind = 'saml'` est accepté par le CRUD des fournisseurs, et le login SAML est **implémenté derrière la
-feature de compilation `saml`** (comme LDAP). **Sans `--features saml`, les routes renvoient 501** (samlify
-non linké → build/test DÉFAUT byte-identique, budget 2 Go préservé). La validation XML-DSig/C14N/XSW est
-**déléguée à `samlify`/`saml-rs`** (pur-Rust, RustCrypto via `bergshamra`) — **on ne ré-implémente jamais**
-C14N/XML-DSig (c'est là que vivent les contournements d'auth). `samael` (bindings C) est **banni** (doctrine
-image minimale).
+`kind = 'saml'` is accepted by the providers CRUD, and SAML login is **implemented behind the
+`saml` compile feature** (like LDAP). **Without `--features saml`, the routes return 501** (samlify
+not linked → DEFAULT build/test byte-identical, 2 GB budget preserved). XML-DSig/C14N/XSW validation is
+**delegated to `samlify`/`saml-rs`** (pure Rust, RustCrypto via `bergshamra`) — **C14N/XML-DSig is never
+re-implemented here** (that is where authentication bypasses live). `samael` (C bindings) is **banned** (minimal
+image doctrine).
 
-**Config** (`config_json`, tout NON-secret) : `idp_sso_url`, `idp_entity_id`, `sp_entity_id`, `acs_url`,
-`idp_x509_cert` (cert de signature IdP, PEM), `attr_username` (vide → NameID), `attr_groups` (défaut `groups`),
-`want_assertions_signed` (défaut **true**), `sign_authn_requests` (défaut false), `allowed_clock_skew_s`
-(défaut 60, borné 0..3600), `require_group_match` (défaut **true**). La **clé+cert privés SP** (bundle PEM,
-UNIQUEMENT si `sign_authn_requests`) vont dans `secret` (write-only, comme les autres credentials).
+**Config** (`config_json`, all NON-secret): `idp_sso_url`, `idp_entity_id`, `sp_entity_id`, `acs_url`,
+`idp_x509_cert` (IdP signing cert, PEM), `attr_username` (empty → NameID), `attr_groups` (default `groups`),
+`want_assertions_signed` (default **true**), `sign_authn_requests` (default false), `allowed_clock_skew_s`
+(default 60, bounded 0..3600), `require_group_match` (default **true**). The **SP private key+cert** (PEM bundle,
+ONLY if `sign_authn_requests`) go into `secret` (write-only, like the other credentials).
 
-> ⚠️ **`want_assertions_signed=false` est un footgun.** Il reste configurable (principe vendor-agnostic : un
-> IdP legacy peut ne signer QUE la `Response`), mais il fait accepter des **assertions NON SIGNÉES** sur un
-> chemin d'auth SOC. Il n'est **jamais silencieux** : un avertissement `eprintln!` BRUYANT est émis à la
-> création du provider (`idp_provider_create`, avec le nom du provider) **et** à chaque usage insécure
-> (`saml_verify_and_extract`), routé vers stderr → logs/SIEM. Ne l'activez que pour un IdP legacy avéré.
+> ⚠️ **`want_assertions_signed=false` is a footgun.** It remains configurable (vendor-agnostic principle: a
+> legacy IdP may sign ONLY the `Response`), but it makes the daemon accept **UNSIGNED assertions** on an
+> SOC authentication path. It is **never silent**: a LOUD `eprintln!` warning is emitted at
+> provider creation (`idp_provider_create`, with the provider name) **and** at every insecure use
+> (`saml_verify_and_extract`), routed to stderr → logs/SIEM. Only enable it for a proven legacy IdP.
 
-**Endpoints** (routes PUBLIQUES, exemptées de l'allowlist Host + rate-limit `auth_route`) :
+**Endpoints** (PUBLIC routes, exempt from the Host allowlist + `auth_route` rate-limit):
 
-1. **`GET /api/auth/saml/{name}/start`** — construit l'`AuthnRequest` (HTTP-Redirect : deflate+base64+urlencode
-   via samlify), pose un `RelayState` **signé HMAC** (`saml_relaystate_sign`, réutilise le pattern
-   `oidc_state_sign`) porteur de l'ID d'AuthnRequest, pose un cookie de flux `plume_saml` (Lax, défense en
-   profondeur — peut ne pas survivre au POST cross-site → le RelayState reste autoritatif), 302 vers l'IdP.
-2. **`POST /api/auth/saml/acs`** — l'Assertion Consumer Service SÉCURITÉ-CRITIQUE. `saml-rs::finish_sso`
-   applique **fail-closed** : signature XML-DSig contre le cert **STATIQUEMENT PINNÉ** (`verify_signature`,
-   pas de TOFU métadonnées) ; parade **XSW** (garde SubjectConfirmationData, rejet d'ID dupliqués, rejet
-   multi-racine, liaison stricte référence→élément, couverture d'UNE seule assertion, rejet de référence
-   externe, cert inline non-fiable) ; parsing XXE-safe ; `Audience`==`sp_entity_id` ; `Recipient`/
-   `Destination`==`acs_url` ; `NotBefore`/`NotOnOrAfter` (±skew borné) ; `InResponseTo`==ID du RelayState
-   signé ; anti-rejeu par **cache d'ID d'assertion borné** (`BoundedReplayStore`, anti-OOM comme `auth_fails`) ;
-   `Issuer`==`idp_entity_id` ; `StatusCode`==Success ; **IdP-initiated DÉSACTIVÉ** (on n'utilise que
-   `finish_sso`, jamais `accept_unsolicited_sso`). En amont, **garde d'algorithme anti-SHA-1 par ALLOWLIST**
-   plume (`saml_reject_weak_sig_alg` — saml-rs/bergshamra vérifient SHA-1 « pour compat » et n'ont aucune
-   allowlist d'algo, on le refuse). ⚠️ Cette garde **ne scanne PAS le texte brut** (un denylist de sous-chaînes
-   `#rsa-sha1` est **évadable** par référence de caractère XML — `#rsa-sha&#49;` ne contient pas la sous-chaîne
-   mais bergshamra le décode en `rsa-sha1` à la vérif) : elle **parse le XML avec le PROPRE parseur de saml-rs**
-   (`saml_rs::xml::dom::parse_roots`, valeurs d'attribut char-ref-décodées/normalisées — le MÊME décodage que
-   le vérifieur) et exige que **CHAQUE** `SignatureMethod`/`DigestMethod` porte un `Algorithm` **décodé** dans
-   une allowlist STRICTE d'algos forts (signature : RSA/ECDSA-SHA2, RSA-PSS SHA-256+ ; digest : SHA-256/384/512).
-   Tout le reste (SHA-1, MD5, RIPEMD, inconnu), un `Algorithm` absent, l'absence de toute `SignatureMethod`, ou
-   un XML illisible → **DENY (fail-closed)**. Puis extraction des attributs → `saml_groups_str` → **mapping
-   groupe→rôle réutilisé** (`oidc_role_mode0`/`sso_role`, fail-closed `require_group_match`) → provisioning JIT
-   (`idp_provision_user`) → session (`attach_session_cookies`, **exactement** le même aval qu'OIDC/LDAP).
-   `saml_groups_str` **neutralise les séparateurs `|`/`,` à l'intérieur de chaque valeur de groupe** avant de
-   joindre → une valeur IdP unique `x|plume-admin` ne peut pas se ré-éclater en un groupe `plume-admin`
-   synthétique (anti-élévation de privilège).
-3. **`GET /api/auth/saml/{name}/metadata`** — métadonnée SP (XML public) à fournir à l'IdP.
-4. **SLO** : différé (non implémenté).
+1. **`GET /api/auth/saml/{name}/start`** — builds the `AuthnRequest` (HTTP-Redirect: deflate+base64+urlencode
+   via samlify), sets an **HMAC-signed** `RelayState` (`saml_relaystate_sign`, reuses the
+   `oidc_state_sign` pattern) carrying the AuthnRequest ID, sets a `plume_saml` flow cookie (Lax, defense in
+   depth — may not survive the cross-site POST → the RelayState stays authoritative), 302 to the IdP.
+2. **`POST /api/auth/saml/acs`** — the SECURITY-CRITICAL Assertion Consumer Service. `saml-rs::finish_sso`
+   applies **fail-closed**: XML-DSig signature against the **STATICALLY PINNED** cert (`verify_signature`,
+   no metadata TOFU); **XSW** countermeasure (SubjectConfirmationData guard, rejection of duplicated IDs, rejection of
+   multiple roots, strict reference→element binding, coverage of ONE single assertion, rejection of external
+   reference, untrusted inline cert); XXE-safe parsing; `Audience`==`sp_entity_id`; `Recipient`/
+   `Destination`==`acs_url`; `NotBefore`/`NotOnOrAfter` (±bounded skew); `InResponseTo`==ID of the signed
+   RelayState; anti-replay through a **bounded assertion ID cache** (`BoundedReplayStore`, anti-OOM like `auth_fails`);
+   `Issuer`==`idp_entity_id`; `StatusCode`==Success; **IdP-initiated DISABLED** (only
+   `finish_sso` is used, never `accept_unsolicited_sso`). Upstream, an **anti-SHA-1 algorithm guard by ALLOWLIST**
+   in plume (`saml_reject_weak_sig_alg` — saml-rs/bergshamra verify SHA-1 "for compatibility" and have no algorithm
+   allowlist, so plume refuses it). ⚠️ This guard does **NOT scan the raw text** (a denylist of `#rsa-sha1`
+   substrings is **evadable** through an XML character reference — `#rsa-sha&#49;` does not contain the substring
+   but bergshamra decodes it to `rsa-sha1` at verification): it **parses the XML with saml-rs's OWN parser**
+   (`saml_rs::xml::dom::parse_roots`, attribute values char-ref-decoded/normalized — the SAME decoding as
+   the verifier) and requires that **EVERY** `SignatureMethod`/`DigestMethod` carry a **decoded** `Algorithm` in
+   a STRICT allowlist of strong algorithms (signature: RSA/ECDSA-SHA2, RSA-PSS SHA-256+; digest: SHA-256/384/512).
+   Everything else (SHA-1, MD5, RIPEMD, unknown), an absent `Algorithm`, the absence of any `SignatureMethod`, or
+   unreadable XML → **DENY (fail-closed)**. Then attribute extraction → `saml_groups_str` → **reused group→role
+   mapping** (`oidc_role_mode0`/`sso_role`, fail-closed `require_group_match`) → JIT provisioning
+   (`idp_provision_user`) → session (`attach_session_cookies`, **exactly** the same downstream path as OIDC/LDAP).
+   `saml_groups_str` **neutralizes the `|`/`,` separators inside each group value** before
+   joining → a single IdP value `x|plume-admin` cannot split again into a synthetic `plume-admin`
+   group (anti privilege escalation).
+3. **`GET /api/auth/saml/{name}/metadata`** — SP metadata (public XML) to provide to the IdP.
+4. **SLO**: deferred (not implemented).
 
-**EncryptedAssertion : HORS PÉRIMÈTRE** — on exige l'assertion signée sur TLS (le déchiffrement RSA logiciel
-de XML-Enc, exposé à `RUSTSEC-2023-0071`, reste **désactivé par défaut** dans saml-rs). **Crate choisie :**
-`samlify` 0.3 (re-export de `saml-rs` 0.3, pur-Rust). Verdict d'adéquation : vérification de signature contre
-cert statique **OUI** ; robustesse XSW **OUI** (défenses en profondeur + suite de tests `xsw.rs`/`hardening.rs`
-dédiée en amont). Vecteurs de test adverses (`src/tests/saml.rs`, gated `saml`) : valide/non-signé/altéré/
-mauvaise-audience/mauvais-recipient/mauvais-issuer/expiré/pas-encore-valide/InResponseTo-divergent/rejeu/
-mauvais-cert/SHA-1/**SHA-1-obfusqué-par-char-ref (`&#49;`/`&#x31;`, régression permanente)**/XSW(dup+2e-assertion)/
-statut≠Success ; plus **anti-élévation par séparateur de groupe interne** (`saml_groups_str`).
+**EncryptedAssertion: OUT OF SCOPE** — the signed assertion over TLS is required (software RSA decryption
+of XML-Enc, exposed to `RUSTSEC-2023-0071`, stays **disabled by default** in saml-rs). **Crate chosen:**
+`samlify` 0.3 (re-export of `saml-rs` 0.3, pure Rust). Fitness verdict: signature verification against a
+static cert **YES**; XSW robustness **YES** (defenses in depth + dedicated `xsw.rs`/`hardening.rs` test suite
+upstream). Adversarial test vectors (`src/tests/saml.rs`, gated `saml`): valid/unsigned/tampered/
+wrong-audience/wrong-recipient/wrong-issuer/expired/not-yet-valid/divergent-InResponseTo/replay/
+wrong-cert/SHA-1/**SHA-1-obfuscated-by-char-ref (`&#49;`/`&#x31;`, permanent regression)**/XSW(dup+2nd-assertion)/
+status≠Success; plus **anti escalation through an internal group separator** (`saml_groups_str`).
 
 ## 6. Multi-tenant (mode 1)
 
-Dans cet incrément, IdP/MFA sont **mode-0 uniquement** (comme le provisioning de jetons UI) : en multi-tenant,
-ces routes renvoient **501** (les identités plateforme vivent au control-plane ; l'intégration OIDC/LDAP→tenant
-via les grants `plume-<tenant>-<role>` — déjà supportés par `sso_grants` — est un suivi). Mode 1 reste donc
-**fail-closed et inchangé**.
+In this increment, IdP/MFA are **mode-0 only** (like UI token provisioning): in multi-tenant,
+these routes return **501** (platform identities live in the control plane; OIDC/LDAP→tenant integration
+through the `plume-<tenant>-<role>` grants — already supported by `sso_grants` — is a follow-up). Mode 1 therefore stays
+**fail-closed and unchanged**.

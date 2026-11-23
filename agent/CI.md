@@ -1,96 +1,96 @@
-# plume-agent (#16) — CI & validation runtime cross-OS
+# plume-agent (#16) — CI & cross-OS runtime validation
 
-[Français](CI.md) | [English](CI.en.md)
+[English](CI.md) | [Français](CI.fr.md)
 
-L'agent d'endpoint est un binaire **autonome** qui tourne SUR le poste
-(Linux / Windows / macOS), pas dans le pod SOC. Il lit les sources d'événements
-**natives** de l'OS via du code spécifique à chaque plateforme :
+The endpoint agent is a **standalone** binary that runs ON the desktop
+(Linux / Windows / macOS), not in the SOC pod. It reads the OS's **native**
+event sources through platform-specific code:
 
-| OS      | Source native            | Mécanisme                                   | Garde cfg                        |
+| OS      | Native source            | Mechanism                                   | cfg guard                        |
 |---------|--------------------------|---------------------------------------------|----------------------------------|
-| Linux   | journald                 | sous-processus `journalctl`                 | `cfg(target_os = "linux")`       |
+| Linux   | journald                 | `journalctl` subprocess                     | `cfg(target_os = "linux")`       |
 | Windows | Windows Event Log        | **FFI `windows`-rs 0.58** (EvtQuery/EvtNext/EvtRender/EvtCreateBookmark) + SCM | `cfg(target_os = "windows")` |
-| macOS   | unified log              | sous-processus `log show` + launchd (`launchctl`) | `cfg(target_os = "macos")` |
+| macOS   | unified log              | `log show` subprocess + launchd (`launchctl`) | `cfg(target_os = "macos")` |
 
-Le code Windows/macOS est **cfg-gated** : il n'est **jamais compilé** sur un
-build Linux. Un `cargo build` local sur la box de dev (Linux) ne prouve donc
-**pas** que le FFI Event Log ou le lecteur unified-log compilent et lient. C'est
-là que la CI GitHub Actions intervient.
+The Windows/macOS code is **cfg-gated**: it is **never compiled** in a
+Linux build. A local `cargo build` on the dev box (Linux) therefore does **not**
+prove that the Event Log FFI or the unified-log reader compile and link. That
+is where GitHub Actions CI comes in.
 
-## Où la validation runtime Win/Mac a lieu
+## Where the Win/Mac runtime validation happens
 
-**Sur GitHub Actions, une fois les repos poussés sur GitHub** (plan de lancement
-Semaine 1). Les runners `windows-latest` et `macos-latest` sont de **vraies
-machines** Windows et macOS — pas des émulateurs. Le workflow
-[`.github/workflows/agent-ci.yml`](../.github/workflows/agent-ci.yml) lance une
-**matrice** `[ubuntu-latest, windows-latest, macos-latest]` qui, sur CHAQUE OS :
+**On GitHub Actions, once the repos are pushed to GitHub** (launch plan
+Week 1). The `windows-latest` and `macos-latest` runners are **real
+machines** running Windows and macOS — not emulators. The workflow
+[`.github/workflows/agent-ci.yml`](../.github/workflows/agent-ci.yml) runs a
+**matrix** `[ubuntu-latest, windows-latest, macos-latest]` which, on EACH OS:
 
-1. `cargo build --release` — compile le code natif de cet OS (le FFI Event Log
-   sur Windows, le lecteur unified-log sur macOS) ;
-2. `cargo test` — exécute les tests (parsing + roundtrips spool/curseur) ;
-3. smoke sans réseau — `plume-agent --version` / `--help` (le binaire démarre et
-   parse sa CLI clap).
+1. `cargo build --release` — compiles that OS's native code (the Event Log FFI
+   on Windows, the unified-log reader on macOS);
+2. `cargo test` — runs the tests (parsing + spool/cursor roundtrips);
+3. network-free smoke — `plume-agent --version` / `--help` (the binary starts and
+   parses its clap CLI).
 
-C'est la **validation runtime réelle** : elle ne nécessite PAS que l'opérateur possède
-un Mac ou un hôte Windows.
+This is the **real runtime validation**: it does NOT require the operator to own
+a Mac or a Windows host.
 
-### Comment lire la matrice
+### How to read the matrix
 
-Dans l'onglet **Actions** → run `agent-ci`, trois jobs apparaissent :
+In the **Actions** tab → `agent-ci` run, three jobs appear:
 `agent (ubuntu-latest)`, `agent (windows-latest)`, `agent (macos-latest)`.
 
-- **Les 3 verts** = l'agent compile, ses tests passent et le binaire démarre sur
-  les trois OS.
-- **Rouge isolé sur `windows-latest`** = régression du FFI Event Log ou du SCM
-  (code visible seulement de ce runner).
-- **Rouge isolé sur `macos-latest`** = régression du lecteur unified-log / launchd.
-- `fail-fast: false` : un OS rouge n'annule pas les autres → on voit d'un coup
-  quels OS cassent.
+- **All 3 green** = the agent compiles, its tests pass and the binary starts on
+  all three OSes.
+- **Red only on `windows-latest`** = regression in the Event Log FFI or the SCM
+  (code visible only from that runner).
+- **Red only on `macos-latest`** = regression in the unified-log reader / launchd.
+- `fail-fast: false`: one red OS does not cancel the others → you see at once
+  which OSes break.
 
-Chaque job publie le binaire natif en artefact (`plume-agent-<OS>`).
+Each job publishes the native binary as an artifact (`plume-agent-<OS>`).
 
-### Companion Linux-only : `agent-cross.yml`
+### Linux-only companion: `agent-cross.yml`
 
 [`.github/workflows/agent-cross.yml`](../.github/workflows/agent-cross.yml)
-donne à un contributeur **sans Mac ni Windows** un cross-CHECK depuis Linux :
+gives a contributor **without a Mac or Windows** a cross-CHECK from Linux:
 `make cross-check-win` (cargo-xwin, MSVC), `make cross-check-win-fim-native`
-(même cible, fonctionnalité `fim_windows_native` activée — le backend FIM
-`ReadDirectoryChangesW` n'existe pour le compilateur que sous cette fonctionnalité,
-aucun autre job ne le compile) et `make cross-check-mac` (cargo-zigbuild + zig,
-darwin). Ça **compile/lie** le code cfg-gated Win/Mac mais ne l'**exécute pas** —
-la validation runtime reste la matrice `agent-ci`. La garde
-`.github/scripts/check_every_feature_is_compiled_somewhere.py` (job `shell` de
-`ci.yml`) exige qu'une fonctionnalité déclarée dans un `Cargo.toml` soit activée
-par au moins une commande cargo bloquante d'un workflow.
+(same target, with the `fim_windows_native` feature enabled — the
+`ReadDirectoryChangesW` FIM backend only exists for the compiler under that feature,
+no other job compiles it) and `make cross-check-mac` (cargo-zigbuild + zig,
+darwin). It **compiles/links** the cfg-gated Win/Mac code but does **not run** it —
+runtime validation remains the `agent-ci` matrix. The guard
+`.github/scripts/check_every_feature_is_compiled_somewhere.py` (`shell` job of
+`ci.yml`) requires every feature declared in a `Cargo.toml` to be enabled
+by at least one blocking cargo command in a workflow.
 
-## Hypothèses des tests sur l'hôte CI (ce qui pourrait échouer sur un runner nu)
+## Test assumptions about the CI host (what could fail on a bare runner)
 
-Les tests ont été écrits pour tourner sur un runner **vierge**, sans privilège ni
-service. Points d'attention :
+The tests were written to run on a **pristine** runner, with no privilege and no
+service. Points to watch:
 
-- **Parsing sur chaînes en dur** : les tests Windows (`winxml_to_event`) et macOS
-  (mapping unified-log) opèrent sur des fragments XML/JSON **inline** → ils
-  tournent sur les 3 OS et ne lisent **jamais** le vrai Event Log / journal.
-- **Pas d'accès au journal/Event Log réel requis** : sur une cible non-native,
-  `next_batch()` est un no-op (pas de FFI) ; sur la cible native le FFI n'est pas
-  sollicité par les tests (seulement compilé/lié).
-- **I/O disque via `std::env::temp_dir()`** (tests `buffer`/`ship`) : écrivable
-  sur les 3 runners (y c. `C:\Users\...\AppData\Local\Temp` sur Windows).
-- **`test-ship` EXCLU de la CI** : il charge un fichier de config et POST vers un
-  endpoint d'ingest → exige config + **réseau**. Le smoke CI se limite donc à
-  `--version` / `--help`. Pour un test d'intégration réseau, viser un stub HTTP
-  local dans un futur job dédié (non requis aujourd'hui).
-- **Aucun service installé** : les tests n'appellent ni `systemctl`, ni
-  `launchctl`, ni le SCM — l'install de service n'est pas exercée en CI.
+- **Parsing of hard-coded strings**: the Windows tests (`winxml_to_event`) and macOS
+  tests (unified-log mapping) operate on **inline** XML/JSON fragments → they
+  run on all 3 OSes and **never** read the real Event Log / journal.
+- **No access to the real journal/Event Log required**: on a non-native target,
+  `next_batch()` is a no-op (no FFI); on the native target the FFI is not
+  exercised by the tests (only compiled/linked).
+- **Disk I/O via `std::env::temp_dir()`** (`buffer`/`ship` tests): writable
+  on all 3 runners (incl. `C:\Users\...\AppData\Local\Temp` on Windows).
+- **`test-ship` EXCLUDED from CI**: it loads a config file and POSTs to an
+  ingest endpoint → requires config + **network**. The CI smoke is therefore limited to
+  `--version` / `--help`. For a network integration test, target a local HTTP stub
+  in a future dedicated job (not required today).
+- **No service installed**: the tests call neither `systemctl`, nor
+  `launchctl`, nor the SCM — service installation is not exercised in CI.
 
-## En local
+## Locally
 
 ```sh
 cd agent
-make            # build release natif (Linux)
-make test       # cargo test natif
-# cross-check depuis Linux (nécessite cargo-xwin / cargo-zigbuild + zig) :
+make            # native release build (Linux)
+make test       # native cargo test
+# cross-check from Linux (requires cargo-xwin / cargo-zigbuild + zig):
 make cross-check-win
-make cross-check-win-fim-native   # + feature fim_windows_native (backend FIM Windows)
+make cross-check-win-fim-native   # + feature fim_windows_native (Windows FIM backend)
 make cross-check-mac
 ```

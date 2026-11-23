@@ -1,27 +1,27 @@
 # eBPF (Falco / Tetragon) + Sigma (P5)
 
-[Français](EBPF-SIGMA.md) | [English](EBPF-SIGMA.en.md)
+[English](EBPF-SIGMA.md) | [Français](EBPF-SIGMA.fr.md)
 
-## Falco — détection runtime eBPF (exec, fichiers, réseau, conteneurs)
-1. Installer Falco (https://falco.org) avec le driver moderne : `falco --modern-bpf`.
-2. Activer la sortie JSON fichier dans `/etc/falco/falco.yaml` :
+## Falco — eBPF runtime detection (exec, files, network, containers)
+1. Install Falco (https://falco.org) with the modern driver: `falco --modern-bpf`.
+2. Enable JSON file output in `/etc/falco/falco.yaml`:
    ```yaml
    json_output: true
    file_output:
      enabled: true
      filename: /var/log/falco/events.txt
    ```
-3. Le capteur **plume-falco** (toutes les 2 min) lit ce fichier (offset incrémental) et pousse les
-   détections → events `source=falco` (recherche : `source:falco`, ou règle de détection dessus).
-   Override du chemin : `PLUME_FALCO_LOG`.
+3. The **plume-falco** sensor (every 2 min) reads this file (incremental offset) and pushes the
+   detections → events `source=falco` (search: `source:falco`, or a detection rule on it).
+   Path override: `PLUME_FALCO_LOG`.
 
-> Falco fait <5% CPU en eBPF et apporte exec/privesc/réseau temps-réel — complément idéal d'auditd.
+> Falco uses <5% CPU in eBPF and brings real-time exec/privesc/network — an ideal complement to auditd.
 
-## Tetragon — alternative k8s (+ enforcement)
-Tetragon émet ses events en JSON (`tetra getevents -o json`). Un collecteur du même type (lire le flux →
-`/api/ingest`) le branche au SOC ; pertinent dans le cluster k3s (DaemonSet).
+## Tetragon — k8s alternative (+ enforcement)
+Tetragon emits its events as JSON (`tetra getevents -o json`). A collector of the same kind (read the stream →
+`/api/ingest`) plugs it into the SOC; relevant in the k3s cluster (DaemonSet).
 
-## Sigma — règles communautaires
-Les règles **SigmaHQ** se traduisent en requêtes `GXQL`. Le traducteur **Sigma → GXQL** (parser YAML →
-conditions `search … | stats … | where …`) est la prochaine brique. En attendant, recrée les détections
-clés à la main dans **⚙️ Règles** (le moteur est déjà là). Mapping **MITRE ATT&CK** = tag dans le nom/raison.
+## Sigma — community rules
+**SigmaHQ** rules translate into `GXQL` queries. The **Sigma → GXQL** translator (YAML parser →
+`search … | stats … | where …` conditions) is the next building block. In the meantime, recreate the key
+detections by hand in **⚙️ Rules** (the engine is already there). **MITRE ATT&CK** mapping = tag in the name/reason.

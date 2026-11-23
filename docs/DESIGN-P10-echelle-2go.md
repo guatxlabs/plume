@@ -1,425 +1,425 @@
-# P10 — Tenir sous 2 Go à l'échelle : chaud / froid / bloom / compression
+# P10 — Staying under 2 GB at scale: hot / cold / bloom / compression
 
-[Français](DESIGN-P10-echelle-2go.md) | [English](DESIGN-P10-echelle-2go.en.md)
+[English](DESIGN-P10-echelle-2go.md) | [Français](DESIGN-P10-echelle-2go.fr.md)
 
-> Brainstorm de conception, **ancré sur mesure** (2026-08-06). Ce document n'est PAS une décision
-> figée : c'est la carte du terrain mesuré et l'ordre des leviers qui en découle. Chaque affirmation
-> chiffrée porte sa source. Rien n'est construit sur la foi d'une intuition.
+> Design brainstorm, **anchored in measurement** (2026-08-06). This document is NOT a frozen
+> decision: it is the map of the measured terrain and the order of levers that follows from it. Every
+> figure-bearing claim carries its source. Nothing is built on the strength of an intuition.
 
-## 0. Ce qu'on cherche, et pourquoi c'est DEUX problèmes, pas un
+## 0. What we are after, and why it is TWO problems, not one
 
-L'exigence, formulée plusieurs fois par le mainteneur : « que la base tienne très peu de place, presque autant qu'un zstd,
-tout en assurant fiabilité, confidentialité et sécurité **nativement** — sans dump clair puis zstd
-puis age ». Et : tourner sous **2 Go de RAM** en host-natif / Docker / k3s, tout paramétrable, le
-**défaut = ce qui est en prod**.
+The requirement, stated several times by the maintainer: "that the database take up very little space, almost as little as a zstd,
+while ensuring reliability, confidentiality and security **natively** — without a plaintext dump then zstd
+then age". And: run under **2 GB of RAM** on native host / Docker / k3s, everything configurable, the
+**default = what is in prod**.
 
-Deux problèmes distincts se cachent sous « P10 », et les confondre mène à construire le mauvais
-levier :
+Two distinct problems hide under "P10", and confusing them leads to building the wrong
+lever:
 
-- **TAILLE au repos** (le disque). C'est le « ×81 ». Levier : moins d'octets stockés.
-- **RAM d'une requête** (l'OOM, P6.1-b). Le trieur SQLite matérialise **un enregistrement par ligne
-  BALAYÉE** sur un `stats … by` (cf. P10.0). Levier : moins de lignes à balayer **et** un agrégateur
-  à état borné. **La compression au repos ne réduit PAS la RAM de tri** — une page compressée est
-  déchiffrée+décompressée en RAM avant d'être triée. Il faut les deux leviers.
+- **SIZE at rest** (the disk). This is the "x81". Lever: fewer bytes stored.
+- **RAM of a query** (the OOM, P6.1-b). The SQLite sorter materializes **one record per row
+  SCANNED** on a `stats … by` (see P10.0). Lever: fewer rows to scan **and** an aggregator
+  with bounded state. **Compression at rest does NOT reduce sort RAM** — a compressed page is
+  decrypted+decompressed in RAM before being sorted. Both levers are needed.
 
-## 1. LA MESURE — où partent les octets
+## 1. THE MEASUREMENT — where the bytes go
 
-> ⚠ **CE TABLEAU A DÉJÀ MENTI UNE FOIS, ET IL FAUT SAVOIR POURQUOI.** Sa première version venait du
-> BANC (3,65 M év., base non chiffrée) et annonçait que « les PROPORTIONS sont indépendantes de
-> l'échelle ». La production l'a contredit : **index 32,8 % → 25,4 %**, **FTS5 8,1 % → 18,9 %**. Une
-> proportion de banc n'est pas une loi. **Et un relevé ne fait pas une série** : entre le 08-08
-> (FTS 18,9 %) et le 08-09 (FTS 10,7 %) l'écart pourrait venir de la compaction `4ca6339`, de
-> l'aging, ou d'un creux de trafic — **deux points ne le disent pas**. C'est ce trou qui est
-> désormais fermé : la MÊME mesure est écrite chaque heure dans `metric` par `ventilation_serie`, et
-> le tableau ci-dessous se **re-dérive sans relever quoi que ce soit** :
+> ⚠ **THIS TABLE HAS ALREADY LIED ONCE, AND IT IS WORTH KNOWING WHY.** Its first version came from the
+> BENCH (3.65 M events, unencrypted database) and stated that "the PROPORTIONS are independent of
+> scale". Production contradicted it: **index 32.8% → 25.4%**, **FTS5 8.1% → 18.9%**. A
+> bench proportion is not a law. **And one reading does not make a series**: between 08-08
+> (FTS 18.9%) and 08-09 (FTS 10.7%) the gap could come from compaction `4ca6339`, from
+> aging, or from a traffic dip — **two points do not say**. That is the gap that is
+> now closed: the SAME measurement is written every hour into `metric` by `ventilation_serie`, and
+> the table below is **re-derived without reading anything off by hand**:
 >
 > ```
 > metric plume_db_poste_bytes by poste | timechart span=1d avg(value) by poste
 > ```
 >
-> Les parts se calculent depuis cette série SEULE (la somme des seaux EST le fichier — c'est ce que
-> la comptabilité fermée garantit). Quand la mesure ne peut pas être prise, la série porte un TROU et
-> `plume_db_ventilation_ok` passe à 0 avec sa cause — jamais un zéro d'octets.
+> The shares are computed from this series ALONE (the sum of the buckets IS the file — that is what
+> closed accounting guarantees). When the measurement cannot be taken, the series carries a GAP and
+> `plume_db_ventilation_ok` drops to 0 with its cause — never a zero of bytes.
 
-**Base réelle** (`plume-daemon db-stats --par-objet`, pod live, lecture seule, **2026-08-09**) : une base
-de l'ordre du Gio pour un peu moins de deux millions d'événements ⇒ **de l'ordre du Kio par événement**
-sur disque · freelist **7,3 %** · auto_vacuum=none · comptabilité FERMÉE ✓ · parcours en **une vingtaine
-de secondes par Gio**.
+**Real database** (`plume-daemon db-stats --par-objet`, live pod, read-only, **2026-08-09**): a database
+on the order of a GiB for a little under two million events ⇒ **on the order of a KiB per event**
+on disk · freelist **7.3%** · auto_vacuum=none · accounting CLOSED ✓ · walk in **about twenty
+seconds per GiB**.
 
-| poste | part | objets dominants |
+| item | share | dominant objects |
 |---|---:|---|
-| **données (tables)** | **55,7 %** | `event` **53,4 %** |
-| **index b-tree** | **26,3 %** | `sqlite_autoindex_event_1` 4,6 % · `idx_event_src_srcip` 3,1 % · `idx_event_src_ts` 2,6 % · `idx_event_host` 2,6 % · `idx_event_sev_srcip` 2,1 % · `idx_event_srcip` 2,0 % · `idx_event_ts` 1,6 % · `idx_event_category` 1,6 % |
-| **FTS5 (shadow)** | **10,7 %** | `event_fts_data` 9,3 % |
-| NON CLASSÉ | 0,0 % | — |
-| pages libres | 7,3 % | — |
+| **data (tables)** | **55.7%** | `event` **53.4%** |
+| **b-tree indexes** | **26.3%** | `sqlite_autoindex_event_1` 4.6% · `idx_event_src_srcip` 3.1% · `idx_event_src_ts` 2.6% · `idx_event_host` 2.6% · `idx_event_sev_srcip` 2.1% · `idx_event_srcip` 2.0% · `idx_event_ts` 1.6% · `idx_event_category` 1.6% |
+| **FTS5 (shadow)** | **10.7%** | `event_fts_data` 9.3% |
+| UNCLASSIFIED | 0.0% | — |
+| free pages | 7.3% | — |
 
-**Trois faits qui commandent la conception :**
+**Three facts that drive the design:**
 
-1. **La table `event` est la MOITIÉ de la base, et elle est stockée EN CLAIR-PAGE** (SQLCipher
-   chiffre la page, mais ne la COMPRESSE pas). Les valeurs sont du log SIEM — `message`, `fields`
-   JSON — qui compressent **×10 à ×40** au zstd. C'est le plus gros levier unique, et il est intact.
-2. **Un QUART de la base est de l'index b-tree** (26,3 % en production ; 32,8 % au banc — l'écart
-   est réel, la part de banc était trop haute). La compression n'y peut presque rien (ce sont des
-   clés déjà compactes). Mais un **tier froid colonnaire les ÉLIMINE** : le froid ne porte pas de
-   b-tree, il prune par **bloom + zone-maps** (quelques bits par valeur vs une entrée d'index par
-   ligne).
-3. **FTS ≈ 11 % en production** (contre 8 % annoncés depuis le banc), entièrement **droppable au
-   froid** (une requête froide scanne un row-group borné ou s'appuie sur le bloom ; pas besoin du
-   shadow FTS sur des données rarement fouillées en plein texte). C'est le poste le plus VOLATIL des
-   trois — d'où la série.
+1. **The `event` table is HALF the database, and it is stored IN PLAIN PAGES** (SQLCipher
+   encrypts the page, but does not COMPRESS it). The values are SIEM logs — `message`, `fields`
+   JSON — which compress **x10 to x40** with zstd. It is the biggest single lever, and it is untouched.
+2. **A QUARTER of the database is b-tree indexes** (26.3% in production; 32.8% on the bench — the gap
+   is real, the bench share was too high). Compression can do almost nothing there (these are
+   keys that are already compact). But a **columnar cold tier ELIMINATES them**: the cold tier carries no
+   b-tree, it prunes through **bloom + zone-maps** (a few bits per value vs one index entry per
+   row).
+3. **FTS ≈ 11% in production** (against the 8% announced from the bench), entirely **droppable in the
+   cold tier** (a cold query scans a bounded row-group or relies on the bloom; no need for the
+   FTS shadow on data that is rarely searched in full text). It is the most VOLATILE item of the
+   three — hence the series.
 
-## 2. CE QUI EST DÉJÀ CONSTRUIT (ne pas réinventer)
+## 2. WHAT IS ALREADY BUILT (do not reinvent)
 
-Le **tier froid Parquet** (`daemon/src/cold_store/`, feature `cold_tier`, 14 modules) EXISTE :
-writer colonnaire **Parquet + ZSTD** (row-groups ~256K, RAM d'écriture bornée à un row-group),
-branche d'**aging** hot→froid par jour, **lecteur hot∪cold masqué**, **bloom filters**
-(`crypto.rs`/`reader.rs`/`planner.rs`/`vectorized.rs`), scellé crypto par jour, décodage
-**vectorisé** (×2,7 mesuré, cf. horizon OLAP). **OPT-IN de bout en bout** : gate compile
-`#[cfg(feature="cold_tier")]` + gate runtime `PLUME_COLD_TIER`. ~~**OFF en production.**~~
-**FAUX — corrigé le 2026-08-10 : il est ACTIF sur l'installation de référence** (`PLUME_COLD_TIER=1`,
-des dizaines de fichiers-jour Parquet, des centaines de Mio, plus d'un mois de profondeur). Cette phrase
-contredisait le §3 du MÊME fichier vingt lignes plus
-bas, et elle a survécu à la correction du levier A faite le matin même : voir `P10.10-a`. Elle est
-barrée et non effacée, parce que c'est elle qui a fait classer le levier A en tête pendant
-quatre jours.
+The **Parquet cold tier** (`daemon/src/cold_store/`, feature `cold_tier`, 14 modules) EXISTS:
+columnar **Parquet + ZSTD** writer (row-groups ~256K, write RAM bounded to one row-group),
+hot→cold **aging** branch per day, **masked hot∪cold reader**, **bloom filters**
+(`crypto.rs`/`reader.rs`/`planner.rs`/`vectorized.rs`), crypto seal per day,
+**vectorized** decoding (x2.7 measured, see OLAP horizon). **OPT-IN end to end**: compile gate
+`#[cfg(feature="cold_tier")]` + runtime gate `PLUME_COLD_TIER`. ~~**OFF in production.**~~
+**FALSE — corrected on 2026-08-10: it is ACTIVE on the reference installation** (`PLUME_COLD_TIER=1`,
+dozens of Parquet day-files, hundreds of MiB, more than a month of depth). This sentence
+contradicted §3 of the SAME file twenty lines further
+down, and it survived the correction of lever A made that very morning: see `P10.10-a`. It is
+struck through and not erased, because it is what kept lever A ranked first for
+four days.
 
-Le **chaud** n'a **AUCUNE compression au repos** aujourd'hui : la table `event` est en pages b-tree
-non compressées.
+The **hot tier** has **NO compression at rest** today: the `event` table is in uncompressed b-tree
+pages.
 
-⇒ **La question centrale du brainstorm n'est donc PAS « comment construire le froid » — il est
-construit. C'est : (a) qu'est-ce qui EMPÊCHE de l'activer par défaut, et (b) que reste-t-il pour le
-chaud qui, lui, ne bouge pas.**
+⇒ **The central question of the brainstorm is therefore NOT "how to build the cold tier" — it is
+built. It is: (a) what PREVENTS enabling it by default, and (b) what is left for the
+hot tier, which does not move.**
 
-## 2 bis. RE-DÉRIVATION DE L'ORDRE DEPUIS LES PARTS D'UNE BASE RÉELLE (second relevé du 2026-08-09)
+## 2 bis. RE-DERIVING THE ORDER FROM THE SHARES OF A REAL DATABASE (second reading of 2026-08-09)
 
-Les leviers ci-dessous ont été ordonnés sur une ventilation de **banc** (3,65 M événements), publiée
-avec l'affirmation « les proportions sont indépendantes de l'échelle ». **Une base réelle l'a
-contredite.** Relevé pris par `db-stats --par-objet` (lecture seule vérifiée) sur le pod vivant :
-une base de l'ordre du Gio, un peu moins de deux millions d'événements, comptabilité FERMÉE. *(Le premier appel a REFUSÉ de publier — « écart de 1 page » sous écriture concurrente. Le
-fail-closed fonctionne, et il révèle que le chemin CLI n'a pas le `BEGIN DEFERRED` que
-`ventilation_serie.rs` s'est donné.)*
+The levers below were ordered on a **bench** breakdown (3.65 M events), published
+with the claim "the proportions are independent of scale". **A real database
+contradicted it.** Reading taken by `db-stats --par-objet` (verified read-only) on the live pod:
+a database on the order of a GiB, a little under two million events, accounting CLOSED. *(The first call REFUSED to publish — "gap of 1 page" under concurrent writing. The
+fail-closed behavior works, and it reveals that the CLI path does not have the `BEGIN DEFERRED` that
+`ventilation_serie.rs` gave itself.)*
 
-| poste | part du fichier | part des octets **vivants** | ce que le texte des §3-§5 dit encore |
+| item | share of the file | share of **live** bytes | what the text of §3-§5 still says |
 |---|---:|---:|---|
-| données (tables) | **57,3 %** | 60,2 % | « 51 % » — **périmé** |
-| — dont `event` | 55,0 % | 57,7 % | 5,8× l'objet suivant |
-| **index b-tree** | **27,0 %** | 28,3 % | « 33 % » — **périmé** |
-| FTS5 (shadow) | 10,9 % | 11,5 % | levier E, livré le 08-09 |
-| pages libres | 4,8 % | — | — |
+| data (tables) | **57.3%** | 60.2% | "51%" — **stale** |
+| — of which `event` | 55.0% | 57.7% | 5.8x the next object |
+| **b-tree indexes** | **27.0%** | 28.3% | "33%" — **stale** |
+| FTS5 (shadow) | 10.9% | 11.5% | lever E, delivered on 08-09 |
+| free pages | 4.8% | — | — |
 
-**LE PIÈGE DE LECTURE, à ne pas refaire.** Entre deux relevés du même jour à six heures d'écart,
-`page_count` est **identique** alors que des dizaines de milliers d'événements sont entrés : la
-croissance se paie sur la **freelist**
-(7,3 % → 4,8 %), pas sur le fichier. Rapportée aux octets **vivants**, la composition est **plate**
-(60,1/28,4/11,5 → 60,2/28,3/11,5). Qui comparerait les pourcentages **bruts** « découvrirait » que
-données et index grossissent : ce serait un **artefact de la consommation de freelist**, pas un
-mouvement structurel. Marge restante à ce rythme : moins d'une journée.
+**THE READING TRAP, not to be fallen into again.** Between two readings on the same day six hours apart,
+`page_count` is **identical** while tens of thousands of events came in: the
+growth is paid for out of the **freelist**
+(7.3% → 4.8%), not out of the file. Relative to **live** bytes, the composition is **flat**
+(60.1/28.4/11.5 → 60.2/28.3/11.5). Anyone comparing the **raw** percentages would "discover" that
+data and indexes are growing: that would be an **artifact of freelist consumption**, not a
+structural movement. Margin left at this rate: less than a day.
 
-**Composition MARGINALE**, dérivée des deux relevés, comptabilité fermée à 0,1 % près (l'accroissement
-des trois postes égale, au dixième de pour cent, la freelist consommée) : **~509 o / ~220 o / ~74 o ≈
-802 o par événement net, réparti 63 / 27 / 9 %**. **Le marginal reproduit le stock.** Incertitude : ±3 % (données), ±7 % (index),
-**±22 % (FTS)**.
+**MARGINAL composition**, derived from the two readings, accounting closed to within 0.1% (the increase
+of the three items equals, to a tenth of a percent, the freelist consumed): **~509 B / ~220 B / ~74 B ≈
+802 B per net event, split 63 / 27 / 9%**. **The marginal reproduces the stock.** Uncertainty: ±3% (data), ±7% (indexes),
+**±22% (FTS)**.
 
-**L'ORDRE RE-DÉRIVÉ, et ce qui change :**
+**THE RE-DERIVED ORDER, and what changes:**
 
-| levier | poste visé, **re-mesuré** | ce qui change |
+| lever | targeted item, **re-measured** | what changes |
 |---|---|---|
-| **A** — activer le froid | 60,2 + 28,3 + 11,5 % de ce qu'il sort du chaud | **reste #1**, mais son arithmétique doit être réécrite (51/33 → 57,3/27,0). Sa tâche reste une **mesure** |
-| **D** — index b-tree | **27,0 %** | **LE VRAI CHANGEMENT.** Second gisement, 27 % du stock **et** 27 % du marginal |
-| **B** — compression du chaud | **57,3 %**, pas 51 % | vise **plus** que la carte ne le dit |
-| **C** — agrégation bornée | orthogonal à la taille | inchangé : sa priorité tient à l'OOM, pas aux octets |
-| **E** — compaction FTS | 10,9 % | livré (`4ca6339`) ; maintient le poste à son plancher |
+| **A** — enable the cold tier | 60.2 + 28.3 + 11.5% of what it takes out of the hot tier | **stays #1**, but its arithmetic must be rewritten (51/33 → 57.3/27.0). Its task remains a **measurement** |
+| **D** — b-tree indexes | **27.0%** | **THE REAL CHANGE.** Second largest source, 27% of the stock **and** 27% of the marginal |
+| **B** — hot-tier compression | **57.3%**, not 51% | targets **more** than the map says |
+| **C** — bounded aggregation | orthogonal to size | unchanged: its priority comes from the OOM, not the bytes |
+| **E** — FTS compaction | 10.9% | delivered (`4ca6339`); keeps the item at its floor |
 
-**CE QUE LA MESURE IMPOSE, et c'est la conclusion de cette section.** Le §5.4 dit « ne PAS toucher
-les index restants sans mesure d'usage » — et **personne ne l'a mesuré**. Or ce poste pèse
-**27 % du fichier, plus que tout le FTS (10,9 %) + la freelist (4,8 %) réunis**. `sqlite_autoindex_event_1`
-(un peu moins de 5 % du fichier) porte l'exactly-once de la dédup : hors de question. **Mais les 7 autres
-pèsent 16,0 % du fichier**, derrière un panneau « ne pas toucher » sans mesure derrière.
-À comparer : le levier E, un vrai effort d'ingénierie, gouverne 10,9 %.
-⇒ **la mesure d'usage des index doit être promue à côté de l'étape 1**, pas rester une note de bas
-de page en étape 4. Les deux sont des mesures, les deux sont bon marché, et le poste de D est 2,5×
-celui de E.
-Trois voies faisables, par fidélité croissante : (1) rejeu de `EXPLAIN QUERY PLAN` sur le corpus
-**fermé** (panneaux de `seeds.rs`, table `rule`, `templates.json`, SQL du moteur de détection) —
-énumérable, mais ne couvre pas l'ad hoc analyste ; (2) échantillonnage `1/N` des plans au point de
-passage unique (`run_query_ex`/`soql_glue`), compté dans `metric` **par la machinerie de
-`ventilation_serie` livrée le 08-09** — tick lent, borné, survit au redémarrage, aucune sonde neuve
-dans le vide ; (3) *drop-and-watch*, que le dépôt fait déjà (`drop_redundant_event_indexes_background`),
-mais dont **P6.8-c est la cicatrice** de l'avoir fait sans mesure.
+**WHAT THE MEASUREMENT IMPOSES, and it is the conclusion of this section.** §5.4 says "do NOT touch
+the remaining indexes without a usage measurement" — and **nobody has measured it**. Yet this item weighs
+**27% of the file, more than all of FTS (10.9%) + the freelist (4.8%) put together**. `sqlite_autoindex_event_1`
+(a little under 5% of the file) carries the dedup's exactly-once: out of the question. **But the 7 others
+weigh 16.0% of the file**, behind a "do not touch" sign with no measurement behind it.
+For comparison: lever E, a real engineering effort, governs 10.9%.
+⇒ **the index usage measurement must be promoted next to step 1**, not stay a footnote
+in step 4. Both are measurements, both are cheap, and D's item is 2.5x
+E's.
+Three feasible routes, in increasing fidelity: (1) replaying `EXPLAIN QUERY PLAN` over the **closed**
+corpus (panels of `seeds.rs`, table `rule`, `templates.json`, SQL of the detection engine) —
+enumerable, but does not cover analyst ad hoc queries; (2) `1/N` sampling of plans at the choke
+point (`run_query_ex`/`soql_glue`), counted in `metric` **by the
+`ventilation_serie` machinery delivered on 08-09** — slow tick, bounded, survives restart, no new probe
+in a vacuum; (3) *drop-and-watch*, which the repository already does (`drop_redundant_event_indexes_background`),
+but of which **P6.8-c is the scar** from having done it without measurement.
 
-**NON ÉTABLI, et le doc ne le revendique pas** : la chute FTS 18,9 % → 10,9 % est **cohérente** avec
-la compaction et rien de plus. Trois relevés manuels ne distinguent pas un gain d'un creux
-d'ingestion. C'est la série de ventilation (`c4c20f4`) qui tranchera.
+**NOT ESTABLISHED, and the doc does not claim it**: the FTS drop 18.9% → 10.9% is **consistent** with
+the compaction and nothing more. Three manual readings do not distinguish a gain from an ingestion
+dip. It is the breakdown series (`c4c20f4`) that will settle it.
 
-## 3. LES QUATRE LEVIERS, ordonnés par (impact mesuré ÷ code neuf)
+## 3. THE FOUR LEVERS, ordered by (measured impact ÷ new code)
 
-### ~~Levier A — ACTIVER l'aging froid (construit, OFF)~~ → **CLOS : IL N'A JAMAIS ÉTÉ « OFF » PAR DÉCISION, ET IL TOURNE** *(re-mesuré 2026-08-10)*
+### ~~Lever A — ENABLE cold aging (built, OFF)~~ → **CLOSED: IT WAS NEVER "OFF" BY DECISION, AND IT RUNS** *(re-measured 2026-08-10)*
 
-> **⚠ LA PRÉMISSE DE CE LEVIER ÉTAIT FAUSSE LE JOUR OÙ IL A ÉTÉ ÉCRIT — et la date le prouve.**
-> Ce titre date de `5de5ccd`, **2026-08-06 00:54**. Le tier froid n'a cessé d'écrire que du
-> **2026-08-05 au 2026-08-06** inclus, à cause d'un `Dockerfile` bâti `--features ldap` au lieu de
-> `ldap,cold_tier`. Ces deux jours sont **le seul moment de toute l'histoire du dépôt** où
-> l'observation « le froid ne produit rien » était vraie. **Un défaut de build de trois jours a été
-> promu en état permanent de conception, et l'ORDRE DES QUATRE LEVIERS en a été dérivé.**
-> La cause a été mesurée et écrite **le lendemain** (`6dac62e`, 2026-08-07 11:30) ; ni ce document
-> ni la roadmap n'ont été rectifiés pendant quatre jours.
+> **⚠ THE PREMISE OF THIS LEVER WAS FALSE ON THE DAY IT WAS WRITTEN — and the date proves it.**
+> This heading dates from `5de5ccd`, **2026-08-06 00:54**. The cold tier stopped writing only from
+> **2026-08-05 to 2026-08-06** inclusive, because of a `Dockerfile` built `--features ldap` instead of
+> `ldap,cold_tier`. Those two days are **the only moment in the whole history of the repository** when
+> the observation "the cold tier produces nothing" was true. **A three-day build defect was
+> promoted to a permanent design state, and the ORDER OF THE FOUR LEVERS was derived from it.**
+> The cause was measured and written down **the next day** (`6dac62e`, 2026-08-07 11:30); neither this document
+> nor the roadmap was corrected for four days.
 >
-> **AUCUNE des quatre hypothèses listées ci-dessous n'a jamais eu à être éprouvée : aucune n'était
-> la cause.** Elles sont conservées telles quelles, barrées, parce qu'effacer une hypothèse fausse
-> effacerait la leçon.
+> **NONE of the four hypotheses listed below ever had to be tested: none was
+> the cause.** They are kept as they are, struck through, because erasing a false hypothesis
+> would erase the lesson.
 >
-> **ÉTAT MESURÉ SUR L'INSTALLATION DE RÉFÉRENCE LE 2026-08-10** (vérifié deux fois, indépendamment) :
-> `PLUME_COLD_TIER=1` + 4 autres variables en `env:` du Deployment (aucun ConfigMap ne les porte) ·
-> bannière `[cold] tier froid ACTIF — <n> fichier(s)-jour, <taille>` · symboles dans le binaire QUI
-> TOURNE : `cold_store` **7**, `parquet` **32**, contre un témoin négatif à **0** · des dizaines de
-> fichiers-jour Parquet, des centaines de Mio, plus d'un mois de profondeur.
-> **La fenêtre d'amputation est lisible dans les dates d'écriture** — deux fichiers par jour avant la
-> panne, **RIEN pendant ses deux jours**, puis un rattrapage le jour du correctif.
-> C'est une preuve par mutation que l'histoire a jouée d'elle-même : feature retirée → 0 écrit ;
-> feature rendue → rattrapage le jour même.
+> **STATE MEASURED ON THE REFERENCE INSTALLATION ON 2026-08-10** (checked twice, independently):
+> `PLUME_COLD_TIER=1` + 4 other variables in the Deployment's `env:` (no ConfigMap carries them) ·
+> banner `[cold] tier froid ACTIF — <n> fichier(s)-jour, <taille>` · symbols in the binary THAT
+> RUNS: `cold_store` **7**, `parquet` **32**, against a negative witness at **0** · dozens of
+> Parquet day-files, hundreds of MiB, more than a month of depth.
+> **The amputation window can be read in the write dates** — two files per day before the
+> outage, **NOTHING during its two days**, then a catch-up on the day of the fix.
+> It is a proof by mutation that history ran by itself: feature removed → 0 written;
+> feature restored → catch-up the same day.
 >
-> **CE QUE LE LEVIER A RAPPORTE, MESURÉ ET NON PLUS ESPÉRÉ** (série de ventilation horaire, N=1
-> vieillissement observé, 2026-08-10) : un jour vieilli rend **de l'ordre de la centaine de Mio** à la
-> freelist — données, index et **FTS5** à parts inégales (environ 64 / 22 / 14 %) · fichier **inchangé**.
-> Comptabilité fermée aux deux bornes. Le jour sorti pèse **quelques Mio** au froid. **Un jour vieilli =
-> un ratio d'environ 30× entre octets rendus au chaud et octets écrits au froid** — et il emporte bien
-> les trois postes, ce qui **confirme `P10.2-a`** (l'aging emporte la quote-part FTS) sur une base réelle.
+> **WHAT LEVER A BROUGHT IN, MEASURED AND NO LONGER HOPED FOR** (hourly breakdown series, N=1
+> aging observed, 2026-08-10): an aged day returns **on the order of a hundred MiB** to the
+> freelist — data, indexes and **FTS5** in unequal shares (about 64 / 22 / 14%) · file **unchanged**.
+> Accounting closed at both ends. The day moved out weighs **a few MiB** in the cold tier. **One aged day =
+> a ratio of about 30x between bytes returned to the hot tier and bytes written to the cold tier** — and it does take
+> all three items, which **confirms `P10.2-a`** (aging takes the FTS share) on a real database.
 >
-> **ET VOICI LE VRAI PROBLÈME, QUE PERSONNE NE REGARDAIT** : la freelist se reconsomme à
-> un rythme **supérieur de 10 à 25 %** à ce que l'aging rend par jour (deux fenêtres indépendantes) →
-> **un déficit net, de l'ordre du dixième de ce que rend l'aging**. Au rythme du dernier point, les
-> pages libres s'épuisent en **quelques jours**, après quoi le fichier recommence à croître. **L'aging freine la
-> croissance, il ne l'annule pas.** Ce qui reste sur la table est donc ce qui réduit les octets PAR
-> ÉVÉNEMENT CHAUD — le **levier B** — et non le levier A.
+> **AND HERE IS THE REAL PROBLEM, WHICH NOBODY WAS LOOKING AT**: the freelist is consumed again at
+> a rate **10 to 25% higher** than what aging returns per day (two independent windows) →
+> **a net deficit, on the order of a tenth of what aging returns**. At the rate of the last point, the
+> free pages run out in **a few days**, after which the file starts growing again. **Aging slows
+> growth, it does not cancel it.** What remains on the table is therefore what reduces bytes PER
+> HOT EVENT — **lever B** — and not lever A.
 >
-> **CE QUI RESTE NON MESURÉ, ET C'EST NOMMÉ** : la crête RAM *imputable* au vieillissement.
-> `memory.peak` du cgroup vaut près des trois quarts de la limite et `VmHWM` environ le tiers, mais ce
-> sont des maxima **cumulés et non horodatés** sur près d'une journée — rien ne dit s'ils tombent pendant l'aging ou
-> pendant une requête. Idem pour la durée, le CPU et l'effet sur la latence chaude : **le
-> vieillissement est totalement MUET** (une centaine de Mio libérés sans une ligne de journal), ce qui est
-> exactement `P10.5-a`, toujours ouvert. **LA mesure qui débloque les quatre axes d'un coup** : une
-> ligne de succès par `cold_age_run` portant jour, lignes, octets, durée et crête RSS. ~10 lignes,
-> et trois des quatre axes deviennent observables sans banc ni copie de production.
+> **WHAT REMAINS UNMEASURED, AND IT IS NAMED**: the RAM peak *attributable* to aging.
+> The cgroup's `memory.peak` is close to three quarters of the limit and `VmHWM` about a third, but these
+> are **cumulative, untimestamped** maxima over nearly a day — nothing says whether they fall during aging or
+> during a query. Likewise for the duration, the CPU and the effect on hot latency: **aging
+> is completely SILENT** (a hundred MiB freed without a single log line), which is
+> exactly `P10.5-a`, still open. **THE measurement that unblocks all four axes at once**: a
+> success line per `cold_age_run` carrying day, rows, bytes, duration and RSS peak. ~10 lines,
+> and three of the four axes become observable without a bench or a copy of production.
 >
-> Bornes de conception, lues dans le code et confrontées au réel : écriture plafonnée à un seul
-> row-group (`ROW_GROUP_ROWS = 262 144`) — un jour énorme fait PLUS de fichiers, pas de plus gros ;
-> lecture = `degré × un fichier déchiffré`, soit quatre fichiers-jour de quelques Mio chacun en vol,
-> négligeable devant 2 Gio.
+> Design bounds, read in the code and checked against reality: writing capped at a single
+> row-group (`ROW_GROUP_ROWS = 262 144`) — a huge day makes MORE files, not bigger ones;
+> reading = `degré × un fichier déchiffré`, i.e. four day-files of a few MiB each in flight,
+> negligible next to 2 GiB.
 
-### ~~Levier A (texte d'origine, conservé barré)~~ · impact ÉNORME, code neuf ~0
-Déplacer les jours anciens vers Parquet/ZSTD/bloom retire d'un coup **leurs lignes `event`** (part
-du 51 %) **ET leur quote-part des 33 % d'index** (le froid n'en porte pas) **ET leur FTS**. Sur une
-rétention de 30 j où ~90 % des événements ont plus de N jours, la base chaude fond.
-**Ce que ça fait AUSSI pour l'OOM (P6.1-b) :** le `stats … by` sur la fenêtre chaude balaie **bien
-moins de lignes** → le trieur matérialise bien moins. C'est le seul levier qui attaque les DEUX
-problèmes avec du code **déjà écrit**.
-**LA VRAIE TÂCHE EST DONC UNE MESURE, PAS UN BUILD :** *pourquoi est-ce OFF en prod ?* Hypothèses à
-éprouver, une par une — (i) coût de décompression sur les requêtes froides jamais mesuré sous charge
-réelle ; (ii) le lecteur hot∪cold a-t-il des angles morts (P51 « tronqué en silence » était un
-symptôme, corrigé) ; (iii) crash-safety de l'aging multi-fichiers éprouvée mais jamais en prod ;
-(iv) le scellé crypto par jour ajoute-t-il un coût de clé. **Aucune ne se tranche sans mesure.**
+### ~~Lever A (original text, kept struck through)~~ · ENORMOUS impact, new code ~0
+Moving old days to Parquet/ZSTD/bloom removes in one go **their `event` rows** (part
+of the 51%) **AND their share of the 33% of indexes** (the cold tier carries none) **AND their FTS**. On a
+30 d retention where ~90% of events are older than N days, the hot database melts away.
+**What it ALSO does for the OOM (P6.1-b):** the `stats … by` over the hot window scans **far
+fewer rows** → the sorter materializes far less. It is the only lever that attacks BOTH
+problems with code **already written**.
+**THE REAL TASK IS THEREFORE A MEASUREMENT, NOT A BUILD:** *why is it OFF in prod?* Hypotheses to
+test, one by one — (i) decompression cost on cold queries never measured under real
+load; (ii) does the hot∪cold reader have blind spots (P51 "silently truncated" was a
+symptom, fixed); (iii) crash-safety of multi-file aging tested but never in prod;
+(iv) does the per-day crypto seal add a key cost. **None can be settled without measurement.**
 
-### Levier B — COMPRESSION AU REPOS du CHAUD (à construire) · impact GROS sur les 51 %
-Ce qui reste chaud (la fenêtre récente, la seule indexée+FTS) garde ses grosses colonnes en clair-
-page. **Compresser NATIVEMENT les colonnes volumineuses** (`fields` JSON, `message`) — pas la base,
-les VALEURS — au zstd, transparent au moteur. Deux formes, à départager par mesure :
-- **B1 — par-valeur** : chaque `fields`/`message` stocké zstd (dictionnaire partagé par source pour
-  les petits blobs, sinon zstd simple). Simple, local, réversible ; le prix est un
-  décompresse-à-la-lecture que le besoin **pointe explicitement** (« la décompression peut se coûter si
-  mal fait »). ⇒ mesurer le coût lecture AVANT de généraliser ; garder les colonnes filtrées/
-  indexées (host, src_ip, severity, ts) EN CLAIR pour que l'index et le WHERE ne paient rien.
-- **B2 — par-page** (VFS de compression sous SQLCipher, type `sqlite_zstd`/`cvfs`) : transparent
-  total, mais touche la couche I/O et le chiffrement — **risque de confidentialité** (le temporaire,
-  cf. P10.1-a) et de fiabilité élevé. **Écarté par défaut** sauf preuve qu'il n'ouvre aucun clair.
-**Invariant non négociable (P10.1-a) :** aucune de ces formes ne doit produire un dump clair sur
-disque. La compression se fait EN RAM sur la valeur, avant l'écriture chiffrée SQLCipher. Jamais un
-fichier intermédiaire.
+### Lever B — COMPRESSION AT REST of the HOT tier (to be built) · BIG impact on the 51%
+What stays hot (the recent window, the only one indexed+FTS) keeps its large columns in plain
+pages. **Compress the bulky columns NATIVELY** (`fields` JSON, `message`) — not the database,
+the VALUES — with zstd, transparently to the engine. Two forms, to be decided between by measurement:
+- **B1 — per value**: each `fields`/`message` stored zstd (dictionary shared per source for
+  small blobs, otherwise plain zstd). Simple, local, reversible; the price is a
+  decompress-on-read that the requirement **explicitly points out** ("decompression can be costly if
+  done badly"). ⇒ measure the read cost BEFORE generalizing; keep the filtered/
+  indexed columns (host, src_ip, severity, ts) IN THE CLEAR so that the index and the WHERE pay nothing.
+- **B2 — per page** (compression VFS under SQLCipher, of the `sqlite_zstd`/`cvfs` kind): fully
+  transparent, but touches the I/O layer and encryption — high **confidentiality risk** (the temporary file,
+  see P10.1-a) and reliability risk. **Ruled out by default** unless proven to open no plaintext.
+**Non-negotiable invariant (P10.1-a):** none of these forms may produce a plaintext dump on
+disk. Compression happens IN RAM on the value, before the SQLCipher encrypted write. Never an
+intermediate file.
 
-### Levier C — AGRÉGATION BORNÉE NATIVE (P10.3, à construire) · ferme l'OOM lui-même
-Indépendant de la taille. Le trieur matérialise 1 ligne/événement balayé faute de mécanisme de
-déversement en mémoire (P10.0). **Un agrégateur natif à état borné** — pour `count`, `dc`,
-`count by` — maintient un accumulateur de taille bornée (HyperLogLog pour `dc`, top-N borné pour
-`count by`, cf. `AnswerShape`/`TruncatedAggregate` DÉJÀ en place) au lieu de déléguer au trieur
-SQLite. Rend un résultat **déclaré partiel** quand la cardinalité dépasse le budget — cohérent avec
-l'existant, et **ne coûte AUCUNE confidentialité** (rien ne touche le disque). C'est la vraie
-fermeture de P6.1-b, celle que P10.1-a a explicitement laissée ouverte.
+### Lever C — NATIVE BOUNDED AGGREGATION (P10.3, to be built) · closes the OOM itself
+Independent of size. The sorter materializes 1 row/scanned event for lack of an in-memory
+spill mechanism (P10.0). **A native aggregator with bounded state** — for `count`, `dc`,
+`count by` — maintains an accumulator of bounded size (HyperLogLog for `dc`, bounded top-N for
+`count by`, see `AnswerShape`/`TruncatedAggregate` ALREADY in place) instead of delegating to the SQLite
+sorter. Returns a result **declared partial** when cardinality exceeds the budget — consistent with
+what exists, and **costs NO confidentiality** (nothing touches the disk). It is the real
+closure of P6.1-b, the one that P10.1-a explicitly left open.
 
-### Levier D — RÉDUCTION D'INDEX (déjà entamé) · petit reste
-P10.2-d a retiré 9 index inutiles, P6.8 l'auto-index. Reste, mesuré : `dedup UNIQUE` (6,2 %) est
-**nécessaire** (exactly-once), les composites host/src_ip servent la détection active (P6.8-c l'a
-prouvé douloureusement — ne PAS retoucher sans mesurer l'usage). Peu de gras restant ; **ne pas
-sur-optimiser un poste déjà nettoyé**.
+### Lever D — INDEX REDUCTION (already started) · small remainder
+P10.2-d removed 9 useless indexes, P6.8 the auto-index. What remains, measured: `dedup UNIQUE` (6.2%) is
+**necessary** (exactly-once), the host/src_ip composites serve active detection (P6.8-c proved it
+painfully — do NOT touch again without measuring usage). Little fat left; **do not
+over-optimize an item that has already been cleaned up**.
 
-### Levier F — RÉDUIRE LE MODE DE DÉTAIL DE L'INDEX PLEIN-TEXTE · **PESÉ LE 2026-08-28, ET LA DÉCISION EST « NON » POUR DEUX DES TROIS FORMES**
+### Lever F — REDUCING THE DETAIL MODE OF THE FULL-TEXT INDEX · **WEIGHED ON 2026-08-28, AND THE DECISION IS "NO" FOR TWO OF THE THREE FORMS**
 
-**L'INVENTAIRE D'ABORD, LA DÉCISION ENSUITE** — c'est l'ordre que `P10.2-g` impose, et il est tenu
-ici. La question ouverte était : « réduire le détail supprime des formes de recherche, mais personne
-ne sait si quelqu'un les émet ». **La réponse est : LE PRODUIT LUI-MÊME les émet, par construction,
-et pas par accident d'usage.** `fts_plan` (`daemon/src/soql_glue.rs`) a trois étages, et deux d'entre
-eux produisent des formes que le détail réduit interdit :
+**THE INVENTORY FIRST, THE DECISION SECOND** — that is the order that `P10.2-g` imposes, and it is held
+here. The open question was: "reducing the detail removes forms of search, but nobody
+knows whether anyone emits them". **The answer is: THE PRODUCT ITSELF emits them, by construction,
+and not by accident of usage.** `fts_plan` (`daemon/src/soql_glue.rs`) has three stages, and two of
+them produce forms that reduced detail forbids:
 
-* **étage 1, VERBATIM** — « tout ce qui marche aujourd'hui (`a OR b`, `err*`, `(x OR y)`, `NEAR(…)`)
-  continue de marcher, à l'octet près ». `NEAR(…)` est donc une capacité PUBLIÉE de la barre.
-* **étages 2 et 3, LITTÉRALISATION** — c'est le remède de `P10.7-a` : un terme que le moteur refuse
-  seul est mis **entre guillemets**, ce qui en fait une PHRASE. Et le tokeniseur par défaut découpe
-  sur la ponctuation, si bien qu'une saisie d'une seule « pièce » devient une phrase de plusieurs
-  jetons : `10.0.0.1` -> 4 jetons, `/usr/bin/dash` -> 3.
+* **stage 1, VERBATIM** — "everything that works today (`a OR b`, `err*`, `(x OR y)`, `NEAR(…)`)
+  keeps working, byte for byte". `NEAR(…)` is therefore a PUBLISHED capability of the search bar.
+* **stages 2 and 3, LITERALIZATION** — this is the remedy of `P10.7-a`: a term that the engine refuses
+  on its own is put **in quotes**, which makes it a PHRASE. And the default tokenizer splits
+  on punctuation, so that an input of a single "piece" becomes a phrase of several
+  tokens: `10.0.0.1` -> 4 tokens, `/usr/bin/dash` -> 3.
 
-**MESURE (2026-08-28, `sqlite3` 3.53.4, table `fts5` de la forme livrée).** Les CINQ saisies que
-`P10.7-a` avait mesurées comme cassées, rendues telles que le produit les rend aujourd'hui :
+**MEASUREMENT (2026-08-28, `sqlite3` 3.53.4, `fts5` table of the shipped form).** The FIVE inputs that
+`P10.7-a` had measured as broken, rendered as the product renders them today:
 
-| saisie, RENDUE par `fts_plan` | `detail=full` (livré) | `detail=column` | `detail=none` |
+| input, RENDERED by `fts_plan` | `detail=full` (shipped) | `detail=column` | `detail=none` |
 |---|---|---|---|
-| `"10.0.0.1"` · `"/usr/bin/dash"` · `"kube-audit"` · `"user:root"` · `"exec(1)"` | servies | **`fts5: phrase queries are not supported (detail!=full)`** (5/5) | idem (5/5) |
-| `NEAR(failed password, 5)` | servie | **`NEAR queries are not supported`** | idem |
-| `message:sshd` (filtre de colonne) | servie | servie | **`column queries are not supported`** |
-| `sshd` · `fail*` · `sshd OR sudo` | servies | servies | servies |
+| `"10.0.0.1"` · `"/usr/bin/dash"` · `"kube-audit"` · `"user:root"` · `"exec(1)"` | served | **`fts5: phrase queries are not supported (detail!=full)`** (5/5) | same (5/5) |
+| `NEAR(failed password, 5)` | served | **`NEAR queries are not supported`** | same |
+| `message:sshd` (column filter) | served | served | **`column queries are not supported`** |
+| `sshd` · `fail*` · `sshd OR sudo` | served | served | served |
 
-⇒ **`detail=column` ROUVRIRAIT `P10.7-a`**, fermée le 2026-08-09 : chercher une adresse IP dans son
-SOC redeviendrait une erreur de moteur. Ce n'est pas une capacité théorique perdue, c'est le remède
-livré qui cesse de fonctionner.
+⇒ **`detail=column` WOULD REOPEN `P10.7-a`**, closed on 2026-08-09: searching for an IP address in one's
+SOC would once again be an engine error. This is not a theoretical capability lost, it is the
+delivered remedy that stops working.
 
-**ET CE QUE ÇA RAPPORTE, MESURÉ SUR LE MÊME BANC** (300 000 lignes de type SIEM, `content='event'`,
-après `optimize` + `VACUUM`, pages de 4 Kio) :
+**AND WHAT IT BRINGS IN, MEASURED ON THE SAME BENCH** (300 000 SIEM-like rows, `content='event'`,
+after `optimize` + `VACUUM`, 4 KiB pages):
 
-| forme | `event_fts_data` | `event_fts_docsize` | total FTS | gain vs livré | **reporté aux parts de production du 2026-08-09** (FTS 10,7 %, dont `event_fts_data` 9,3 % — le relevé qui publie LES DEUX) |
+| form | `event_fts_data` | `event_fts_docsize` | FTS total | gain vs shipped | **carried over to the production shares of 2026-08-09** (FTS 10.7%, of which `event_fts_data` 9.3% — the reading that publishes BOTH) |
 |---|---:|---:|---:|---:|---|
-| `detail=full`, `columnsize=1` (**livré**) | 17 412 096 o | 3 612 672 o | 21 045 248 o | — | — |
-| `detail=column` | 15 994 880 o | 3 612 672 o | 19 628 032 o | **−8,1 %** du `_data` | **≈ −0,8 % du fichier** |
-| `detail=none` | 5 947 392 o | 3 612 672 o | 9 580 544 o | **−65,8 %** du `_data` | **≈ −6,1 % du fichier** |
-| `detail=full`, **`columnsize=0`** | 17 412 096 o (**identique à l'octet**) | **absente** | 17 432 576 o | **−17,2 %** du poste FTS | **≈ −1,4 % du fichier au plus** |
+| `detail=full`, `columnsize=1` (**shipped**) | 17 412 096 B | 3 612 672 B | 21 045 248 B | — | — |
+| `detail=column` | 15 994 880 B | 3 612 672 B | 19 628 032 B | **−8.1%** of `_data` | **≈ −0.8% of the file** |
+| `detail=none` | 5 947 392 B | 3 612 672 B | 9 580 544 B | **−65.8%** of `_data` | **≈ −6.1% of the file** |
+| `detail=full`, **`columnsize=0`** | 17 412 096 B (**identical to the byte**) | **absent** | 17 432 576 B | **−17.2%** of the FTS item | **≈ −1.4% of the file at most** |
 
-**LES TROIS DÉCISIONS, ET LEUR RAISON :**
+**THE THREE DECISIONS, AND THEIR REASON:**
 
-1. **`detail=column` : ÉLIMINÉ PAR DOMINANCE.** Il coûte exactement la même famille de capacités que
-   `detail=none` (phrase + `NEAR`) et rapporte **huit fois moins**. Aucun arbitrage ne le choisit.
-2. **`detail=none` : le seul gain réel, et son prix est `P10.7-a` + `NEAR` + les filtres de colonne.**
-   Il n'est PAS engagé : il s'échange contre une capacité de recherche que le produit publie et dont
-   la perte a déjà été mesurée comme un défaut. À rediscuter seulement si la barre de recherche
-   renonce explicitement à la phrase — ce qui est une décision de produit, pas de stockage.
-3. **`columnsize=0` : la seule réduction SANS perte mesurée pour CE produit** — et c'est le résultat
-   neuf de cette pesée. Toutes les formes ci-dessus restent servies, le déclencheur de suppression
-   `event_ad` fonctionne, `merge` fonctionne, et `bm25()` **ne tombe pas en erreur** (il rend une
-   pondération différente : −1,318 contre −1,593 sur la même ligne, parce que les tailles de colonnes
-   ne sont plus stockées). **Personne ne le remarquerait ici : le dépôt n'appelle ni `bm25()`, ni
-   `ORDER BY rank`, ni `snippet()`, ni `highlight()` sur `event_fts`** — le seul `rank` du code est la
-   *commande* `INSERT INTO … (…, rank) VALUES('merge', …)` de `compactage_fts.rs`, qui n'a rien à voir.
-   La recherche ordonne par `e.ts DESC`. **Il n'est PAS engagé non plus**, pour deux raisons écrites :
-   c'est un changement de FORMAT sur disque (il faut RECONSTRUIRE la table, donc une migration et une
-   fenêtre), et le gain est **borné par 1,4 % du fichier** — moins que ce que rend une passe d'aging.
+1. **`detail=column`: ELIMINATED BY DOMINANCE.** It costs exactly the same family of capabilities as
+   `detail=none` (phrase + `NEAR`) and brings in **eight times less**. No trade-off chooses it.
+2. **`detail=none`: the only real gain, and its price is `P10.7-a` + `NEAR` + column filters.**
+   It is NOT committed: it trades against a search capability that the product publishes and whose
+   loss has already been measured as a defect. To be reconsidered only if the search bar
+   explicitly gives up phrases — which is a product decision, not a storage one.
+3. **`columnsize=0`: the only reduction WITHOUT measured loss for THIS product** — and it is the new
+   result of this weighing. All the forms above remain served, the deletion trigger
+   `event_ad` works, `merge` works, and `bm25()` **does not error** (it returns a
+   different weighting: −1.318 against −1.593 on the same row, because column sizes
+   are no longer stored). **Nobody would notice here: the repository calls neither `bm25()`, nor
+   `ORDER BY rank`, nor `snippet()`, nor `highlight()` on `event_fts`** — the only `rank` in the code is the
+   *command* `INSERT INTO … (…, rank) VALUES('merge', …)` of `compactage_fts.rs`, which has nothing to do with it.
+   Search orders by `e.ts DESC`. **It is NOT committed either**, for two written reasons:
+   it is a change of on-disk FORMAT (the table has to be REBUILT, hence a migration and a
+   window), and the gain is **bounded by 1.4% of the file** — less than what one aging pass returns.
 
-**D'OÙ SORT LE « AU PLUS 15 % », ET DONC LE « 1,4 % » — LA DÉRIVATION, ÉCRITE** *(elle manquait ; le
-chiffre circulait sans elle, et il tombait du côté qui MINORE le gain, c'est-à-dire du côté qui soutient
-la conclusion « ne pas l'engager »)*. `columnsize=0` supprime `event_fts_docsize`, et rien d'autre :
-`event_fts_data` est **identique à l'octet** (colonne 1 du tableau). Le gain est donc borné par tout ce
-que le poste FTS contient EN DEHORS de `_data` :
+**WHERE THE "AT MOST 15%", AND THEREFORE THE "1.4%", COMES FROM — THE DERIVATION, WRITTEN DOWN** *(it was missing; the
+figure circulated without it, and it fell on the side that UNDERSTATES the gain, that is, on the side that supports
+the conclusion "do not commit it")*. `columnsize=0` removes `event_fts_docsize`, and nothing else:
+`event_fts_data` is **identical to the byte** (column 1 of the table). The gain is therefore bounded by everything
+the FTS item contains OUTSIDE `_data`:
 
-* relevé de production du 2026-08-09 — le seul qui publie les deux : **FTS 10,7 %** du fichier, dont
-  **`event_fts_data` 9,3 %** ⇒ tout-sauf-`_data` = **1,4 % du fichier**, et c'est la BORNE SUPÉRIEURE
-  du gain ;
-* rapportée à `_data`, cette borne vaut `1,4 / 9,3` = **15,1 %** — c'est exactement le « au plus 15 % »,
-  et c'est sa seule source. Le banc, lui, mesure `3 612 672 / 17 412 096` = **20,7 %** : le corpus
-  synthétique porte proportionnellement plus de `docsize` que la production ;
-* `15 % × 9,3 %` = **1,4 % du fichier**, la dernière colonne.
+* production reading of 2026-08-09 — the only one that publishes both: **FTS 10.7%** of the file, of which
+  **`event_fts_data` 9.3%** ⇒ everything-but-`_data` = **1.4% of the file**, and that is the UPPER BOUND
+  of the gain;
+* relative to `_data`, this bound is `1,4 / 9,3` = **15.1%** — that is exactly the "at most 15%",
+  and it is its only source. The bench, for its part, measures `3 612 672 / 17 412 096` = **20.7%**: the
+  synthetic corpus carries proportionally more `docsize` than production;
+* `15 % × 9,3 %` = **1.4% of the file**, the last column.
 
-**CE QUE CETTE BORNE N'EST PAS.** Elle majore : `event_fts_idx` et `event_fts_config` vivent AUSSI dans
-ce 1,4 %, et leur part n'a **pas** été relevée séparément — le gain réel de `columnsize=0` est donc
-strictement inférieur à 1,4 %, d'autant que ces deux objets pèsent. **PIÈGE DE LECTURE APPARIÉ, et il
-s'est produit ici :** le relevé de production suivant, six heures plus tard le même jour, publie
-**FTS 10,9 %** (freelist 7,3 % → 4,8 %) mais **aucune ventilation `_data`**. Apparier ce 10,9 % au 9,3 %
-de l'autre instantané donne 1,6 % / 17,2 % — deux photos différentes du même jour, dont l'écart est de
-la consommation de freelist, pas de la structure. La colonne cite désormais l'appariement COHÉRENT.
+**WHAT THIS BOUND IS NOT.** It is an upper bound: `event_fts_idx` and `event_fts_config` ALSO live in
+that 1.4%, and their share was **not** read separately — the real gain of `columnsize=0` is therefore
+strictly below 1.4%, all the more so as these two objects weigh something. **MATCHED READING TRAP, and it
+happened here:** the next production reading, six hours later on the same day, publishes
+**FTS 10.9%** (freelist 7.3% → 4.8%) but **no `_data` breakdown**. Pairing that 10.9% with the 9.3%
+of the other snapshot gives 1.6% / 17.2% — two different photos of the same day, whose gap is
+freelist consumption, not structure. The column now cites the CONSISTENT pairing.
 
-**CE QUE CETTE PESÉE NE PROUVE PAS, ET IL FAUT LE DIRE.** Elle est faite contre `sqlite3` **3.53.4**,
-alors que le produit lie **SQLCipher (SQLite 3.39.4 vendoré)**. Les refus mesurés sont des propriétés
-de FTS5 documentées depuis son origine, mais **les tailles n'ont pas été reprises sur le moteur lié**.
-**C'est pourquoi la dernière colonne est dérivée des parts de production et non recopiée du banc** —
-un gain de banc présenté comme un gain de produit serait exactement la faute que le §1 de ce document a
-déjà commise une fois.
+**WHAT THIS WEIGHING DOES NOT PROVE, AND IT MUST BE SAID.** It was done against `sqlite3` **3.53.4**,
+while the product links **SQLCipher (vendored SQLite 3.39.4)**. The measured refusals are properties
+of FTS5 documented since its origin, but **the sizes have not been re-taken on the linked engine**.
+**That is why the last column is derived from the production shares and not copied from the bench** —
+a bench gain presented as a product gain would be exactly the mistake that §1 of this document has
+already made once.
 
-### Levier E — COMPACTER L'INDEX PLEIN-TEXTE (P10.7-b, construit le 2026-08-09) · le seul gratuit
+### Lever E — COMPACTING THE FULL-TEXT INDEX (P10.7-b, built on 2026-08-09) · the only free one
 
-**Ce levier manquait à la liste ci-dessus, et son absence était mesurable.** Les quatre leviers A–D
-supposent tous que l'index plein-texte grossit avec les données. **C'est faux : il grossit AUSSI avec
-les SUPPRESSIONS.** Une table FTS5 à contenu externe ne peut pas retirer un posting en place — le
-déclencheur `event_ad` en écrit un de SUPPRESSION, qui s'AJOUTE — et l'espace n'est rendu qu'à la
-FUSION DES SEGMENTS, que plume ne déclenchait **jamais**. C'est une part de l'écart entre les 8,1 %
-du banc ci-dessus et les 17,9 % relevés sur une base réelle : de la **trace d'aging**, pas de la croissance.
+**This lever was missing from the list above, and its absence was measurable.** The four levers A–D
+all assume that the full-text index grows with the data. **That is false: it ALSO grows with
+DELETIONS.** An external-content FTS5 table cannot remove a posting in place — the
+`event_ad` trigger writes a DELETION one, which is ADDED — and the space is only returned at
+SEGMENT MERGE, which plume **never** triggered. That is part of the gap between the 8.1%
+of the bench above and the 17.9% read on a real database: **aging residue**, not growth.
 
-> **CE QUE LE RELEVÉ SUIVANT DIT — ET CE QU'IL NE DIT PAS.** Le 2026-08-09, au lendemain du
-> déploiement de ce levier, la base réelle mesure **FTS5 = 10,7 %** (`event_fts_data` 9,3 % du
-> fichier). C'est cohérent avec un gain de compaction. **Ce n'est pas une preuve** : trois relevés
-> manuels espacés de jours ne distinguent pas un gain de compaction d'un creux d'ingestion ou d'un
-> aging moins actif. La preuve viendra de la série (`plume_db_poste_bytes{poste="fts"}`, un point par
-> heure depuis ce lot) — c'est exactement la question qu'elle a été construite pour trancher.
+> **WHAT THE NEXT READING SAYS — AND WHAT IT DOES NOT.** On 2026-08-09, the day after
+> this lever was deployed, the real database measures **FTS5 = 10.7%** (`event_fts_data` 9.3% of the
+> file). That is consistent with a compaction gain. **It is not proof**: three manual readings
+> spaced days apart do not distinguish a compaction gain from an ingestion dip or
+> less active aging. The proof will come from the series (`plume_db_poste_bytes{poste="fts"}`, one point per
+> hour since this batch of work) — that is exactly the question it was built to settle.
 
-Mesuré le 2026-08-09 sur la SQLite exacte du produit (SQLCipher 4.5.3 / SQLite 3.39.4 vendorée,
-PRAGMA de `server::tune`), base au profil de `bench/profile-prod.json`, 1 200 000 événements puis un
-`DELETE` réel de 58,4 % :
+Measured on 2026-08-09 on the product's exact SQLite (SQLCipher 4.5.3 / vendored SQLite 3.39.4,
+PRAGMAs of `server::tune`), database with the profile of `bench/profile-prod.json`, 1 200 000 events then a
+real `DELETE` of 58.4%:
 
-| grandeur | avant purge | après purge | après compaction |
+| quantity | before purge | after purge | after compaction |
 |---|---|---|---|
-| `event_fts_docsize` | 14,11 Mio | **5,88 Mio** (−58,3 %, il SUIT) | 5,88 Mio |
-| `event_fts_data` | 135,27 Mio | **185,69 Mio** (+37,3 %, il GROSSIT) | **56,53 Mio** (−69,6 %) |
+| `event_fts_docsize` | 14.11 MiB | **5.88 MiB** (−58.3%, it FOLLOWS) | 5.88 MiB |
+| `event_fts_data` | 135.27 MiB | **185.69 MiB** (+37.3%, it GROWS) | **56.53 MiB** (−69.6%) |
 
-**Le comment compte autant que le combien.** `optimize` et `merge` atteignent le même plancher, mais
-`optimize` le fait en **17,08 s d'un seul tenant sous le verrou d'écriture, avec 192,6 Mio de rafale
-WAL**, et une interruption perd tout ; `merge` à budget **NÉGATIF** (`-500` pages/passe) le fait en
-25 passes de **1,04 s au pire**, avec **13,4 Mio de WAL**, et chaque passe committée survit à un
-`SIGKILL` — la reprise converge à l'octet près. Le budget POSITIF, lui, ne rend **rien du tout** sur
-cet index (aucun niveau n'atteint `usermerge`) : c'est le piège du levier. Ces deux dépenses (verrou,
-WAL) sont fixées par le budget de passe et **ne grandissent pas avec l'index** — vérifié au double du
-volume. La RAM est celle du `cache_size` et rien d'autre (66,3 Mio, identique pour les deux bras).
+**The how matters as much as the how much.** `optimize` and `merge` reach the same floor, but
+`optimize` does it in **17.08 s in a single stretch under the write lock, with a 192.6 MiB
+WAL burst**, and an interruption loses everything; `merge` with a **NEGATIVE** budget (`-500` pages/pass) does it in
+25 passes of **1.04 s at worst**, with **13.4 MiB of WAL**, and each committed pass survives a
+`SIGKILL` — the resumption converges byte for byte. The POSITIVE budget, for its part, returns **nothing at all** on
+this index (no level reaches `usermerge`): that is the lever's trap. These two costs (lock,
+WAL) are set by the pass budget and **do not grow with the index** — checked at twice the
+volume. The RAM is that of `cache_size` and nothing else (66.3 MiB, identical for both arms).
 
-Livré : `daemon/src/compactage_fts.rs`, appelé en fin de `retention_run` (là où le poids mort vient
-d'être créé) et par `plume-daemon fts-compact`. Réglages `PLUME_FTS_COMPACT`(=1) /
-`_PAGES`(=500) / `_PASSES`(=8) / `_REPOS_MS`(=200), tous par `cfg()`. **Ce que ce levier ne fait
-pas** : rétrécir le fichier. Les pages vont à la freelist et sont réemployées par l'ingestion ;
-`page_count` ne bouge pas.
+Delivered: `daemon/src/compactage_fts.rs`, called at the end of `retention_run` (where the dead weight has just
+been created) and by `plume-daemon fts-compact`. Settings `PLUME_FTS_COMPACT`(=1) /
+`_PAGES`(=500) / `_PASSES`(=8) / `_REPOS_MS`(=200), all through `cfg()`. **What this lever does
+not do**: shrink the file. The pages go to the freelist and are reused by ingestion;
+`page_count` does not move.
 
-## 4. LA CIBLE, ET LA FRONTIÈRE CHAUD/FROID
+## 4. THE TARGET, AND THE HOT/COLD BOUNDARY
 
-Décodée des chiffres : **le chaud doit être petit et indexé ; le froid, minuscule et pruné.**
-- **CHAUD** = fenêtre récente (à mesurer : combien de jours restent « souvent requêtés » ?), en
-  SQLite/SQLCipher, indexé + FTS, **grosses colonnes compressées (levier B)**. C'est ce que le
-  trieur balaie, donc **le plus petit possible sans casser l'interactivité**.
-- **FROID** = le reste, en Parquet/ZSTD/bloom (levier A), **sans b-tree, sans FTS**. Requêtes rares,
-  scan de row-group borné + prune bloom/zone-map.
-- **BLOOM** : le mécanisme qui rend le froid interrogeable sans index — un filtre par colonne et par
-  row-group (quelques Kio) répond « la valeur X n'est SÛREMENT pas ici » et écarte le bloc sans le
-  lire. C'est ce qui remplace, à ~1 % du coût, les 33 % d'index b-tree pour les données froides.
+Decoded from the figures: **the hot tier must be small and indexed; the cold tier, tiny and pruned.**
+- **HOT** = recent window (to be measured: how many days remain "often queried"?), in
+  SQLite/SQLCipher, indexed + FTS, **large columns compressed (lever B)**. This is what the
+  sorter scans, hence **as small as possible without breaking interactivity**.
+- **COLD** = the rest, in Parquet/ZSTD/bloom (lever A), **without b-trees, without FTS**. Rare queries,
+  bounded row-group scan + bloom/zone-map pruning.
+- **BLOOM**: the mechanism that makes the cold tier queryable without an index — one filter per column and per
+  row-group (a few KiB) answers "value X is CERTAINLY not here" and discards the block without
+  reading it. That is what replaces, at ~1% of the cost, the 33% of b-tree indexes for cold data.
 
-## 5. ORDRE D'ATTAQUE RECOMMANDÉ (chacun se valide seul, aucun ne bloque le suivant)
+## 5. RECOMMENDED ORDER OF ATTACK (each one validates on its own, none blocks the next)
 
-1. ~~**MESURER pourquoi le froid est OFF** (levier A)~~ → **FAIT, ET LE LEVIER EST CLOS**
-   *(2026-08-10)*. Il n'était pas OFF : la ligne ci-dessus a été écrite **pendant** une panne de
-   build de trois jours, la seule fenêtre où elle était vraie. Il tourne, il rend **de l'ordre de la
-   centaine de Mio par jour** au chaud pour quelques Mio écrits au froid, et **ce gain est déjà DANS la
-   ligne de base relevée** —
-   ce n'est pas un gain à venir. **Ce qui prend sa place en tête n'est pas un des quatre leviers** :
-   c'est **une ligne de succès sur `cold_age_run`** (`P10.5-a`), ~10 lignes, qui rend mesurables
-   d'un coup la durée, le CPU, la crête RAM imputable et l'effet sur la latence — aujourd'hui tous
-   les quatre inconnus parce que le vieillissement est MUET. **Puis le levier B**, seul à attaquer
-   le déficit net de freelist que la mesure fait apparaître.
-2. **CONSTRUIRE l'agrégation bornée native** (levier C / P10.3) — ferme l'OOM par le haut, quelle
-   que soit la taille de la fenêtre chaude. Indépendant, confidentialité-neutre.
-3. **CONSTRUIRE la compression au repos du chaud** (levier B1 par-valeur) — attaque les 51 % qui
-   restent chauds, en gardant les colonnes filtrées en clair. Mesurer le coût de lecture d'abord.
-4. Ne PAS toucher les index restants (levier D) sans mesure d'usage (leçon P6.8-c).
+1. ~~**MEASURE why the cold tier is OFF** (lever A)~~ → **DONE, AND THE LEVER IS CLOSED**
+   *(2026-08-10)*. It was not OFF: the line above was written **during** a three-day build
+   outage, the only window in which it was true. It runs, it returns **on the order of a
+   hundred MiB per day** to the hot tier for a few MiB written to the cold tier, and **this gain is already IN the
+   baseline read off** —
+   it is not a gain to come. **What takes its place at the top is not one of the four levers**:
+   it is **a success line on `cold_age_run`** (`P10.5-a`), ~10 lines, which makes measurable
+   in one go the duration, the CPU, the attributable RAM peak and the effect on latency — today all
+   four unknown because aging is SILENT. **Then lever B**, the only one to attack
+   the net freelist deficit that the measurement brings to light.
+2. **BUILD native bounded aggregation** (lever C / P10.3) — closes the OOM from the top, whatever
+   the size of the hot window. Independent, confidentiality-neutral.
+3. **BUILD hot-tier compression at rest** (lever B1 per value) — attacks the 51% that
+   remain hot, keeping the filtered columns in the clear. Measure the read cost first.
+4. Do NOT touch the remaining indexes (lever D) without a usage measurement (lesson P6.8-c).
 
-## 6. INVARIANTS QUI NE PLIENT PAS (sinon on régresse ce qu'on a fermé)
+## 6. INVARIANTS THAT DO NOT BEND (otherwise we regress what we have closed)
 
-- **Confidentialité (P10.1-a)** : aucun octet d'événement en clair sur disque hors SQLCipher/Parquet-
-  scellé. La compression se fait en RAM sur la valeur. Le froid Parquet est scellé par jour.
-- **Le DÉFAUT = la prod, et tout est paramétrable** (host/Docker/k3s). Un tiers doit obtenir nos
-  chiffres. Chaque levier a son `PLUME_*`, défaut = ce qu'on décidera après mesure.
-- **Générique** (P6.2-a) : les gains se mesurent sur PLUSIEURS profils, pas seulement le nôtre — nos
-  événements de banc sont 4,4× plus gros que notre prod, donc un pire cas honnête.
-- **Aucune perte silencieuse** : un résultat froid ou agrégé partiel se DÉCLARE (`AnswerShape`),
-  jamais un total tronqué présenté comme exact.
-- **Byte-identique en mode 0** : chaque levier OFF laisse le comportement actuel intact.
+- **Confidentiality (P10.1-a)**: no event byte in plaintext on disk outside SQLCipher/sealed
+  Parquet. Compression happens in RAM on the value. The cold Parquet is sealed per day.
+- **The DEFAULT = prod, and everything is configurable** (host/Docker/k3s). A third party must get our
+  figures. Each lever has its `PLUME_*`, default = what we decide after measurement.
+- **Generic** (P6.2-a): gains are measured on SEVERAL profiles, not only ours — our
+  bench events are 4.4x larger than our prod, hence an honest worst case.
+- **No silent loss**: a partial cold or aggregated result is DECLARED (`AnswerShape`),
+  never a truncated total presented as exact.
+- **Byte-identical in mode 0**: each lever OFF leaves the current behavior intact.
 
 ---
-*Prochaine étape concrète : la mesure fondatrice du §5.1 (activer le froid sur copie de banc, mesurer
-les 3 chiffres). Puis P10.3 (agrégation bornée). Ancré, pas supposé.*
+*Next concrete step: the founding measurement of §5.1 (enable the cold tier on a bench copy, measure
+the 3 figures). Then P10.3 (bounded aggregation). Anchored, not assumed.*

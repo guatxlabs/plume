@@ -1,78 +1,78 @@
-# Couverture k8s/k3s — produire la télémétrie cluster, pas seulement l'ingérer
+# k8s/k3s coverage — producing cluster telemetry, not just ingesting it
 
-[Français](K8S.md) | [English](K8S.en.md)
+[English](K8S.md) | [Français](K8S.fr.md)
 
-But : couvrir l'angle mort cluster **par production directe** (pas seulement ingérer), pour pouvoir un jour
-retirer une pile métriques/logs dédiée. Règle : **additif d'abord, run en parallèle + vérif de parité, puis
-suppression**. Ne jamais casser un dépendant (un IPS ou un outil d'astreinte peut lire dans la pile que
-vous comptez retirer — vérifiez avant).
+Goal: cover the cluster blind spot **by direct production** (not just ingestion), so that one day a
+dedicated metrics/logs stack can be removed. Rule: **additive first, parallel run + parity check, then
+removal**. Never break a dependent (an IPS or an on-call tool may read from the stack you
+intend to remove — check before).
 
-## Capteurs (sur l'hôte, OFF par défaut)
-- **kube-state** (`plume-kube-state`, 60s) : `kubectl --no-headers` → metrics `kube_pods_running/pending/total`,
+## Sensors (on the host, OFF by default)
+- **kube-state** (`plume-kube-state`, 60s): `kubectl --no-headers` → metrics `kube_pods_running/pending/total`,
   `kube_restarts_total`, `kube_nodes_ready/total`, `kube_deploy_unavailable`,
-  `secretstore_notready`/`secretstore_total` (magasins de secrets — « Rotation des clés » ci-dessous)
-  + **events** sur problèmes (CrashLoopBackOff/OOMKilled/Error/Failed/Evicted, node NotReady,
-  deployment dégradé, magasin de secrets pas prêt). Sans jq.
-- **pod-logs** (`plume-pod-logs`, 60s) : `/var/log/pods` **filtré** (`PLUME_POD_LOG_FILTER`, défaut error|fail|denied|…)
-  et **borné** (`PLUME_POD_LOG_MAX`=200) → events `source=k8s-log`. Ce n'est PAS un agrégateur exhaustif :
-  c'est une tranche sécurité.
+  `secretstore_notready`/`secretstore_total` (secret stores — "Key rotation" below)
+  + **events** on problems (CrashLoopBackOff/OOMKilled/Error/Failed/Evicted, node NotReady,
+  degraded deployment, secret store not ready). No jq.
+- **pod-logs** (`plume-pod-logs`, 60s): `/var/log/pods` **filtered** (`PLUME_POD_LOG_FILTER`, default error|fail|denied|…)
+  and **bounded** (`PLUME_POD_LOG_MAX`=200) → events `source=k8s-log`. It is NOT an exhaustive aggregator:
+  it is a security slice.
 
-## Rotation des clés : le magasin de secrets (ExternalSecrets/Vault) a son propre signal
+## Key rotation: the secret store (ExternalSecrets/Vault) has its own signal
 
-**CE QU'IL COUVRE.** `kube-state` lit les MAGASINS eux-mêmes — `clustersecretstores` et `secretstores`
-de `external-secrets.io` — et publie `secretstore_notready` **avec son dénominateur**
-`secretstore_total`, plus un **event sév. 4 qui NOMME chaque magasin** et la condition `Ready` qu'il a
-réellement publiée (son absence comprise : un magasin qui n'affirme rien n'est PAS prêt). Ces ressources
-sont **optionnelles** : absentes, rien n'est affirmé ; API du cluster muette, la mesure est déclarée
-**ABSENTE** — jamais convertie en santé. Le daemon en tire **UNE alerte pour tout l'approvisionnement**
-(famille `heartbeat.magasin-de-secrets`, sév. 4), **sans qu'aucune règle n'ait à être créée** — jamais
-une alerte par secret : un coffre scellé arrête *tous* les secrets du cluster à la fois, et une alerte
-par consommateur serait un second défaut. Un relevé ne vaut « sain » que s'il porte, au même instant,
-« aucun magasin pas prêt » **et** « au moins un magasin déclaré » : désinstaller l'opérateur ou vider
-le namespace pendant l'incident n'éteint donc pas l'alerte.
+**WHAT IT COVERS.** `kube-state` reads the STORES themselves — `clustersecretstores` and `secretstores`
+from `external-secrets.io` — and publishes `secretstore_notready` **with its denominator**
+`secretstore_total`, plus a **sev. 4 event that NAMES each store** and the `Ready` condition it has
+actually published (its absence included: a store that asserts nothing is NOT ready). These resources
+are **optional**: if absent, nothing is asserted; if the cluster API is silent, the measurement is declared
+**ABSENT** — never converted into health. The daemon derives **ONE alert for the whole provisioning**
+from it (family `heartbeat.magasin-de-secrets`, sev. 4), **without any rule having to be created** — never
+one alert per secret: a sealed vault stops *all* the secrets of the cluster at once, and one alert
+per consumer would be a second defect. A reading only counts as "healthy" if it carries, at the same instant,
+"no store not ready" **and** "at least one store declared": uninstalling the operator or emptying
+the namespace during the incident therefore does not silence the alert.
 
-**POURQUOI À CE RANG.** Un coffre resté scellé plusieurs jours empêche le rafraîchissement de tout ce
-qu'il approvisionne : l'épisode qui a fait construire ce signal (2026-08-26) portait sur vingt-sept
-secrets externes de tous les namespaces — émetteur de certificats, fournisseur d'identité, tunnel
-d'entrée, pare-feu applicatif — soit une rotation de clés éteinte à l'échelle du cluster, découverte
-en tapant une commande d'inspection. **Le SOC, lui, servait normalement** : il tourne avec les secrets
-**déjà injectés**, donc son bon fonctionnement n'est PAS une preuve que l'approvisionnement vit.
+**WHY AT THIS RANK.** A vault left sealed for several days prevents the refresh of everything
+it provisions: the episode that got this signal built (2026-08-26) involved twenty-seven
+external secrets across all namespaces — certificate issuer, identity provider, ingress
+tunnel, application firewall — that is, key rotation switched off cluster-wide, discovered
+by typing an inspection command. **The SOC, for its part, was serving normally**: it runs with the secrets
+**already injected**, so its working properly is NOT proof that provisioning is alive.
 
-**CE QUI L'ARME, ET CE QUE SON SILENCE VEUT DIRE.** L'unique producteur des deux séries est `kube-state`,
-donc **`plume-kube-state.timer`** — et `bootstrap.sh` le **désactive explicitement** à l'installation,
-comme les autres capteurs de cette page. Tant qu'il n'est pas armé, aucune série n'arrive et le daemon
-**ne conclut RIEN — ni sain, ni malade** ; ce silence **ne vaut pas « tout va bien »**. Et rien ne le
-signale : aucun dead-man's-switch de « capteur muet » ne couvre `kube-state` (il crierait sur tout
-déploiement hors cluster, où ce capteur n'a aucune raison de tourner), donc son absence est absorbée
-comme un tick propre. **Sur un cluster : armez le minuteur ci-dessous, sinon ce paragraphe décrit un
-signal que vous n'avez pas.**
+**WHAT ARMS IT, AND WHAT ITS SILENCE MEANS.** The only producer of both series is `kube-state`,
+hence **`plume-kube-state.timer`** — and `bootstrap.sh` **explicitly disables it** at installation,
+like the other sensors on this page. As long as it is not armed, no series arrives and the daemon
+**concludes NOTHING — neither healthy nor sick**; that silence **does not mean "all is well"**. And nothing
+reports it: no "silent sensor" dead-man's-switch covers `kube-state` (it would cry out on every
+deployment outside a cluster, where this sensor has no reason to run), so its absence is absorbed
+as a clean tick. **On a cluster: arm the timer below, otherwise this paragraph describes a
+signal you do not have.**
 
-## Activer (sur l'hôte, après avoir un central joignable)
+## Enabling (on the host, once a reachable central is in place)
 ```
-# accès cluster : KUBECONFIG=/etc/rancher/k3s/k3s.yaml (par défaut dans l'unit).
-# RBAC : lecture pods/nodes/deployments, ET lecture `secretstores`/`clustersecretstores`
-#        du groupe `external-secrets.io` — sans elle, le signal d'approvisionnement décrit
-#        plus haut ne peut PAS être produit. Corrigé le 2026-08-30 : cette ligne nommait un
-#        RBAC plus ÉTROIT que ce que la page arme, si bien qu'un exploitant l'appliquant à la
-#        lettre aurait obtenu une mesure ABSENTE — honnête, mais silencieuse là où il croyait
-#        avoir armé une alerte. Une mesure absente n'est pas une mesure rassurante.
+# cluster access: KUBECONFIG=/etc/rancher/k3s/k3s.yaml (default in the unit).
+# RBAC: read pods/nodes/deployments, AND read `secretstores`/`clustersecretstores`
+#        of the `external-secrets.io` group — without it, the provisioning signal described
+#        above can NOT be produced. Fixed on 2026-08-30: this line named an
+#        RBAC NARROWER than what the page arms, so that an operator applying it to the
+#        letter would have obtained an ABSENT measurement — honest, but silent where they believed
+#        they had armed an alert. An absent measurement is not a reassuring measurement.
 sudo systemctl enable --now plume-kube-state.timer plume-pod-logs.timer
 ```
-Alternative cluster-native : un **CronJob** dans `deploy/k3s.yaml` (ServiceAccount lecture seule) qui POST vers `/api/ingest`.
+Cluster-native alternative: a **CronJob** in `deploy/k3s.yaml` (read-only ServiceAccount) that POSTs to `/api/ingest`.
 
-## Règles filet-de-sécurité (à créer dans ⚙️ une fois les métriques présentes)
+## Safety-net rules (to create in ⚙️ once the metrics are present)
 - `SELECT value FROM metric WHERE name='kube_deploy_unavailable' ORDER BY ts DESC LIMIT 1` `>` `0` → high
 - `… name='kube_nodes_ready'` vs `kube_nodes_total` (node down)
 - `search source=k8s severity>=3 | stats count` `>` `0` → CrashLoop/OOMKilled/NotReady
-- (Magasin de secrets : **rien à créer ici** — l'alerte est native, cf. « Rotation des clés ».)
-- (PV% : nécessite les métriques kubelet `kubelet_volume_stats_used_bytes` — à ajouter via un scrape kubelet, palier suivant.)
+- (Secret store: **nothing to create here** — the alert is native, see "Key rotation".)
+- (PV%: requires the kubelet metrics `kubelet_volume_stats_used_bytes` — to be added via a kubelet scrape, next tier.)
 
-## Ordre de bascule (méthode)
-1. Poser kube-state + pod-logs (**additif**, rien ne change pour l'existant).
-2. Déployer le central in-cluster (`deploy/k3s.yaml`), always-on.
-3. Créer les règles filet ci-dessus.
-4. **Run parallèle + vérif de parité** (mêmes valeurs, mêmes lignes cherchables) — c'est le seul go/no-go.
-5. Re-pointer les **dépendants** de l'ancienne pile (tout ce qui la requête) avant de la retirer.
-6. Ne retirer qu'ensuite, et **jamais** un composant qui **applique** quelque chose (pare-feu, bans,
-   IdP, admission, gestion de secrets, sauvegardes) : Plume **observe**, il ne remplace pas
-   l'enforcement.
+## Cutover order (method)
+1. Set up kube-state + pod-logs (**additive**, nothing changes for the existing stack).
+2. Deploy the central in-cluster (`deploy/k3s.yaml`), always-on.
+3. Create the safety-net rules above.
+4. **Parallel run + parity check** (same values, same searchable rows) — it is the only go/no-go.
+5. Re-point the **dependents** of the old stack (everything that queries it) before removing it.
+6. Only remove afterwards, and **never** a component that **enforces** something (firewall, bans,
+   IdP, admission, secret management, backups): Plume **observes**, it does not replace
+   enforcement.

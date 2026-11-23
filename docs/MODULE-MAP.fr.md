@@ -3,8 +3,8 @@
 [English](MODULE-MAP.md) | [Français](MODULE-MAP.fr.md)
 
 C'est la carte « quelle boîte ouvrir, et que puis-je toucher sans risque » de `plume-daemon`. Elle
-complète — sans le répéter — [`../ARCHITECTURE.md`](../ARCHITECTURE.md) (conception du système)
-et [`CIM.md`](CIM.md) (taxonomie des événements). Lisez ceux-là pour le *quoi/pourquoi* ; lisez celle-ci
+complète — sans le répéter — [`../ARCHITECTURE.md`](../ARCHITECTURE.fr.md) (conception du système)
+et [`CIM.md`](CIM.fr.md) (taxonomie des événements). Lisez ceux-là pour le *quoi/pourquoi* ; lisez celle-ci
 pour le *où* et le *ne-cassez-pas-ceci*.
 
 Les verdicts d'appropriation (« appropriable seul, sans risque ? ») reflètent une revue de modularité :
@@ -130,7 +130,7 @@ pas une entrée : un nom listé ici ne compte pas comme une ligne pour le contr�
 | `acces_observe.rs` | **Qui a accès, et d'où** — l'inventaire des comptes était `SELECT … FROM user`, c'est-à-dire les comptes que le produit *crée* ; un compte d'annuaire externe (SSO par en-tête) n'y a pas de ligne et n'apparaissait nulle part tout en administrant la console. Chaque identité résolue par le point de passage unique de l'authentification est consignée avec sa provenance (dérivée de la méthode d'authentification plus une recherche, jamais devinée), son rôle effectif, l'origine de ce rôle, et la dernière fois qu'elle a été vue. Aucun secret n'entre jamais dans la table ; l'écriture est lissée par identité et la table est plafonnée | Oui — dérivation + un UPSERT borné |
 | `idp/` (`mod`, `oidc`, `ldap`, `saml`, `totp`), `handlers/idp.rs`, `scim.rs` | IdP natif (OIDC/JWT/TOTP), provisionnement SCIM ; LDAP/SAML cloisonnés par feature | En grande partie — fonctions pures non cloisonnées, liaison réseau cloisonnée |
 | `governance.rs`, `copie_chainee.rs`, `handlers/governance.rs`, `handlers/compliance.rs` | Rétention légale, export du registre et vérificateur hors ligne d'une copie exportée (`copie_chainee` : les deux ancres de la chaîne, une ligne répétée à l'identique mise de côté et comptée), rôles composables, correspondance de conformité | Oui |
-| `purge.rs`, `handlers/purge.rs` | **Purge d'événements** explicite (au-delà de la rétention temporelle) : portée typée (fenêtre temporelle obligatoire + identifiants nommés, pas de prédicat libre), deux phases plan→jeton→application, refus (rétention légale, tier froid, cité par un dossier, désynchronisation FTS), inscription obligatoire au registre chaîné par empreintes | **Gardé — le seul DELETE hors rétention sur `event`.** Voir [PURGE.md](PURGE.md) |
+| `purge.rs`, `handlers/purge.rs` | **Purge d'événements** explicite (au-delà de la rétention temporelle) : portée typée (fenêtre temporelle obligatoire + identifiants nommés, pas de prédicat libre), deux phases plan→jeton→application, refus (rétention légale, tier froid, cité par un dossier, désynchronisation FTS), inscription obligatoire au registre chaîné par empreintes | **Gardé — le seul DELETE hors rétention sur `event`.** Voir [PURGE.md](PURGE.fr.md) |
 | `tenants.rs` | Routage/clé/RBAC multi-tenant (mode `PLUME_MULTI_TENANT`, OFF par défaut) | Gardé — invariant d'isolation par tenant |
 | `field_filter.rs`, `handlers/field_filters.rs` | Masquage au niveau des champs (#45) ; résout appelant → `FieldMaskSet` ; arme l'autorisateur SQLite pour un DENY sur les colonnes réelles | **Gardé — le point de passage du masquage.** |
 

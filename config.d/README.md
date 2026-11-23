@@ -1,22 +1,22 @@
-# config.d — overlays versionnés (Personnalisation Phase 1)
+# config.d — versioned overlays (Customization Phase 1)
 
-[Français](README.md) | [English](README.en.md)
+[English](README.md) | [Français](README.fr.md)
 
-Source de vérité **git-versionnée** pour les **parsers**, **règles de détection** et **playbooks**
-personnalisés du SOC Plume. Tout fichier `*.json` déposé ici est chargé au démarrage du daemon
-(`load_overlays`, juste après les migrations et les seeds) et posé en base avec `managed = 1`.
+**Git-versioned** source of truth for the custom **parsers**, **detection rules** and **playbooks**
+of the Plume SOC. Any `*.json` file dropped here is loaded when the daemon starts
+(`load_overlays`, right after the migrations and the seeds) and stored in the database with `managed = 1`.
 
-> Cet overlay est l'un des *seams* d'extension de Plume. Vue d'ensemble (parser / connecteur / détection /
-> threat-intel / enforcer) et modèle *bring-your-own-vendor* : **[`docs/SDK.md`](../docs/SDK.md)**.
+> This overlay is one of Plume's extension *seams*. Overview (parser / connector / detection /
+> threat-intel / enforcer) and *bring-your-own-vendor* model: **[`docs/SDK.md`](../docs/SDK.md)**.
 
-## Pourquoi un overlay baked et pas `/etc/plume` ?
+## Why a baked overlay and not `/etc/plume`?
 
-Le daemon tourne dans un pod Kubernetes avec `readOnlyRootFilesystem: true` : il n'a **aucun** chemin
-hôte writable (pas de `/etc/plume`). Ce répertoire est donc **baked dans l'image** (comme les assets web
-sous `/usr/local/share/plume/web`) et monté en lecture seule. Le daemon le lit via la variable
-d'environnement `PLUME_CONFIG_DIR` (défaut `/usr/local/share/plume/config.d`).
+The daemon runs in a Kubernetes pod with `readOnlyRootFilesystem: true`: it has **no** writable host
+path (no `/etc/plume`). This directory is therefore **baked into the image** (like the web assets
+under `/usr/local/share/plume/web`) and mounted read-only. The daemon reads it through the
+`PLUME_CONFIG_DIR` environment variable (default `/usr/local/share/plume/config.d`).
 
-## Disposition
+## Layout
 
 ```
 config.d/
@@ -27,57 +27,57 @@ config.d/
 └── cim/         cim.v1.json         → SPEC (miroir machine du CIM, cf. docs/CIM.md ; IGNORÉ par le loader — zéro effet runtime)
 ```
 
-Un fichier = une entité (SAUF `sigma/` : un fichier YAML peut porter **plusieurs** documents `---`). Les
-fichiers sont chargés par ordre alphabétique. Les clés JSON inconnues (ex. `_comment`) sont ignorées —
-pratique pour documenter chaque fichier (JSON n'a pas de commentaires).
+One file = one entity (EXCEPT `sigma/`: a YAML file can carry **several** `---` documents). The
+files are loaded in alphabetical order. Unknown JSON keys (e.g. `_comment`) are ignored —
+handy for documenting each file (JSON has no comments).
 
-> **`sigma/` (Slice #7, pièce 3).** Les règles [Sigma](https://github.com/SigmaHQ/sigma) (standard ouvert
-> de détection, YAML) y sont **traduites en règles Plume** (GXQL `search … | stats count` + `title`/`level`/
-> tags MITRE) au boot par `load_overlay_sigma`, `managed = 1`. Le mapping `logsource → category` passe par
-> le **CIM** (`docs/CIM.md`). Un construit non exprimable en GXQL (OU inter-champs, `1 of them`, agrégation,
-> `|base64`/`|cidr`…) est **signalé + ignoré** (jamais une règle silencieusement fausse). Voir la matrice de
-> couverture dans **`docs/SIGMA-IMPORTER.md`**. Import ponctuel/hors-git : `POST /api/sigma/import` (admin),
-> ou la sous-commande sur le central — `sudo env PLUME_CONFIG=/etc/plume/soc.conf /usr/local/bin/plume-daemon
-> sigma-import <path> [--dry-run]` en hôte natif, `docker compose exec soc plume-daemon sigma-import <path>`
-> en Docker, `kubectl -n soc exec deploy/soc -- plume-daemon sigma-import <path>` en k3s (`<path>` est
-> alors un chemin du conteneur). Sans `--dry-run`, elle écrit dans la base : démarrez le démon une fois
-> avant, sinon elle crée la base en clair
-> ([`docs/INSTALLER-SANS-OUVRIR-DE-BRECHE.md` §1.1](../docs/INSTALLER-SANS-OUVRIR-DE-BRECHE.md#11-démarrer-le-démon-une-fois-avant-toute-sous-commande-qui-écrit-dans-la-base)). `--dry-run`
-> n'ouvre aucune base.
+> **`sigma/` (Slice #7, part 3).** [Sigma](https://github.com/SigmaHQ/sigma) rules (open detection
+> standard, YAML) are **translated into Plume rules** there (GXQL `search … | stats count` + `title`/`level`/
+> MITRE tags) at boot by `load_overlay_sigma`, `managed = 1`. The `logsource → category` mapping goes through
+> the **CIM** (`docs/CIM.md`). A construct that cannot be expressed in GXQL (cross-field OR, `1 of them`, aggregation,
+> `|base64`/`|cidr`…) is **reported + skipped** (never a silently wrong rule). See the coverage
+> matrix in **`docs/SIGMA-IMPORTER.md`**. One-off/out-of-git import: `POST /api/sigma/import` (admin),
+> or the subcommand on the central — `sudo env PLUME_CONFIG=/etc/plume/soc.conf /usr/local/bin/plume-daemon
+> sigma-import <path> [--dry-run]` on a native host, `docker compose exec soc plume-daemon sigma-import <path>`
+> under Docker, `kubectl -n soc exec deploy/soc -- plume-daemon sigma-import <path>` under k3s (`<path>` is
+> then a path inside the container). Without `--dry-run`, it writes to the database: start the daemon once
+> beforehand, otherwise it creates the database unencrypted
+> ([`docs/INSTALLER-SANS-OUVRIR-DE-BRECHE.md` §1.1](../docs/INSTALLER-SANS-OUVRIR-DE-BRECHE.md#11-start-the-daemon-once-before-any-subcommand-that-writes-to-the-database)). `--dry-run`
+> opens no database.
 
-## Sémantique de `managed`
+## Semantics of `managed`
 
-La colonne `managed` (migration schéma v60) distingue l'origine de chaque parser/règle/playbook :
+The `managed` column (schema migration v60) distinguishes the origin of each parser/rule/playbook:
 
-| valeur | origine                                                              |
+| value | origin                                                               |
 |:------:|---------------------------------------------------------------------|
-| `0`    | **builtin / seed** (livré par le code, éditable/désactivable dans l'UI) |
-| `1`    | **overlay-file** — CE répertoire `config.d` (source git, durable)   |
-| `2`    | **ad-hoc UI** — créé via le CRUD de l'interface                      |
+| `0`    | **builtin / seed** (shipped by the code, editable/can be disabled in the UI) |
+| `1`    | **overlay-file** — THIS `config.d` directory (git source, durable)  |
+| `2`    | **ad-hoc UI** — created through the interface's CRUD                 |
 
-`load_overlays` fait un **UPSERT keyé par `name`** : un overlay **gagne** sur un builtin du même nom
-(le builtin est écrasé, `managed` passe à `1`). C'est **idempotent** — re-déployer / redémarrer donne
-le même état — et **durable** : l'override survit au re-seed des builtins.
+`load_overlays` performs an **UPSERT keyed by `name`**: an overlay **wins** over a builtin of the same name
+(the builtin is overwritten, `managed` becomes `1`). It is **idempotent** — redeploying / restarting gives
+the same state — and **durable**: the override survives the re-seeding of the builtins.
 
-## Validation (au boot)
+## Validation (at boot)
 
-Chaque fichier est validé **avant** insertion ; un fichier invalide est **ignoré** (warning dans les
-logs du daemon), il **ne fait jamais crasher** le boot :
+Each file is validated **before** insertion; an invalid file is **skipped** (warning in the
+daemon logs), it **never crashes** the boot:
 
-- **parser** : `pattern` non vide, ≤ 1000 caractères, regex (crate Rust `regex`) qui **compile**.
-- **règle / playbook** : la `query` doit **compiler** (GXQL ou SQL brut, même chemin que l'éval/test).
-- **règle** : `mitre` au format `Txxxx` ou `Txxxx.yyy` (vide = non mappée).
+- **parser**: non-empty `pattern`, ≤ 1000 characters, a regex (Rust `regex` crate) that **compiles**.
+- **rule / playbook**: the `query` must **compile** (GXQL or raw SQL, same path as eval/test).
+- **rule**: `mitre` in `Txxxx` or `Txxxx.yyy` format (empty = unmapped).
 
-## Schémas JSON
+## JSON schemas
 
 ### parser (`parsers/*.json`)
 
 ```json
 {
-  "name": "nginx — méthode + chemin + statut",   // requis, clé de l'UPSERT
-  "source": "nginx",                              // défaut "*" (toutes sources)
-  "pattern": "...regex avec (?P<champ>...)...",    // requis ; groupes nommés = champs extraits
-  "enabled": true                                  // défaut true
+  "name": "nginx — méthode + chemin + statut",   // required, UPSERT key
+  "source": "nginx",                              // default "*" (all sources)
+  "pattern": "...regex avec (?P<champ>...)...",    // required; named groups = extracted fields
+  "enabled": true                                  // default true
 }
 ```
 
@@ -85,16 +85,16 @@ logs du daemon), il **ne fait jamais crasher** le boot :
 
 ```json
 {
-  "name": "...",            // requis, clé de l'UPSERT
-  "enabled": true,          // défaut true
-  "query": "search ... | stats count",  // requis ; doit compiler
-  "is_soql": true,          // défaut true. false = SQL brut (cf. note sécurité ci-dessous)
+  "name": "...",            // required, UPSERT key
+  "enabled": true,          // default true
+  "query": "search ... | stats count",  // required; must compile
+  "is_soql": true,          // default true. false = raw SQL (see security note below)
   "op": ">",                // > >= < <= == !=
-  "threshold": 0,           // seuil numérique
-  "severity": 3,            // 0 info … 4 critique
-  "interval_s": 300,        // période d'évaluation
-  "window_s": 3600,         // fenêtre glissante
-  "mitre": "T1190"          // optionnel, Txxxx[.yyy]
+  "threshold": 0,           // numeric threshold
+  "severity": 3,            // 0 info … 4 critical
+  "interval_s": 300,        // evaluation period
+  "window_s": 3600,         // sliding window
+  "mitre": "T1190"          // optional, Txxxx[.yyy]
 }
 ```
 
@@ -102,67 +102,67 @@ logs du daemon), il **ne fait jamais crasher** le boot :
 
 ```json
 {
-  "name": "...",            // requis, clé de l'UPSERT
-  "enabled": false,         // défaut true
-  "query": "search ... | table src_ip",  // requis ; 1re colonne = cible de l'action
-  "is_soql": true,          // défaut true
+  "name": "...",            // required, UPSERT key
+  "enabled": false,         // default true
+  "query": "search ... | table src_ip",  // required; 1st column = target of the action
+  "is_soql": true,          // default true
   "action_kind": "ban_ip",  // ban_ip | unban_ip | stop_service | ...
   "interval_s": 300,
   "window_s": 3600
 }
 ```
 
-## Notes de sécurité
+## Security notes
 
-- **SQL brut (`is_soql: false`)** lit l'intégralité de la base. Dans le CRUD de l'UI, il est **réservé
-  au rôle `admin`** (durcissement 3a) ; le GXQL (langage borné, lecture seule) reste permis à l'`editor`.
-  Les overlays de ce répertoire sont considérés **trusted (git-reviewés)**, mais la frontière **n'est pas
-  la même selon l'objet** — cette section affirmait un « le SQL brut y est accepté » uniforme que le code
-  contredisait pour la moitié des objets. État réel, vérifié le 2026-08-03 :
+- **Raw SQL (`is_soql: false`)** reads the entire database. In the UI's CRUD, it is **reserved
+  for the `admin` role** (hardening 3a); GXQL (a bounded, read-only language) remains allowed for the `editor`.
+  The overlays in this directory are considered **trusted (git-reviewed)**, but the boundary **is not
+  the same depending on the object** — this section used to assert a uniform "raw SQL is accepted there" that the code
+  contradicted for half of the objects. Actual state, verified on 2026-08-03:
 
-  | Objet d'overlay | `is_soql: false` | Où |
+  | Overlay object | `is_soql: false` | Where |
   |---|---|---|
-  | `rules/`, `playbooks/` | **REFUSÉ** au chargement (WARN + event `config.overlay.reject`) | `overlays.rs` |
-  | `library-panels/`, `dashboards/` | **ACCEPTÉ**, et **tracé** au ledger (`config.overlay.raw_sql`) | `overlays_oac.rs` |
+  | `rules/`, `playbooks/` | **REFUSED** at load (WARN + `config.overlay.reject` event) | `overlays.rs` |
+  | `library-panels/`, `dashboards/` | **ACCEPTED**, and **traced** in the ledger (`config.overlay.raw_sql`) | `overlays_oac.rs` |
 
-  La différence est assumée : une règle s'exécute **toute seule, en boucle**, alors qu'un panneau ne rend
-  que ce que son lecteur a le droit de voir. Dans les deux cas la requête reste **validée** (doit compiler),
-  et l'écriture de ce répertoire est un acte d'**opérateur** (image bakée en lecture seule / ConfigMap,
-  process non-propriétaire) — jamais une action d'utilisateur authentifié.
-- L'**évaluation** des règles et playbooks s'exécute sur une **connexion lecture seule**
-  (`PRAGMA query_only=ON` + `SQLITE_OPEN_READ_ONLY` + garde `stmt.readonly()`) : une règle/playbook ne
-  peut **que lire**, jamais muter la base (durcissement 3b).
+  The difference is deliberate: a rule runs **on its own, in a loop**, whereas a panel only renders
+  what its reader is allowed to see. In both cases the query remains **validated** (must compile),
+  and writing to this directory is an **operator** act (baked read-only image / ConfigMap,
+  non-owner process) — never an action by an authenticated user.
+- **Evaluation** of rules and playbooks runs on a **read-only connection**
+  (`PRAGMA query_only=ON` + `SQLITE_OPEN_READ_ONLY` + `stmt.readonly()` guard): a rule/playbook
+  can **only read**, never mutate the database (hardening 3b).
 
-## Déploiement (pour mémoire — hors de ce répertoire)
+## Deployment (for reference — outside this directory)
 
-- **Dockerfile** : `COPY plume/config.d /usr/local/share/plume/config.d`
-- **Deployment** : exposer `PLUME_CONFIG_DIR=/usr/local/share/plume/config.d` (ou laisser le défaut).
+- **Dockerfile**: `COPY plume/config.d /usr/local/share/plume/config.d`
+- **Deployment**: expose `PLUME_CONFIG_DIR=/usr/local/share/plume/config.d` (or leave the default).
 
-## Multi-déploiement — l'overlay est AGNOSTIQUE au runtime
+## Multi-deployment — the overlay is runtime-AGNOSTIC
 
-L'overlay est lu depuis le **chemin** pointé par la variable `PLUME_CONFIG_DIR` : Plume (et Forge) peuvent
-donc se déployer **standalone**, pas seulement sur k3s. Le baked `/usr/local/share/plume/config.d` reste
-le **fallback par défaut** dans tous les modes (aucune variable -> ce chemin).
+The overlay is read from the **path** pointed to by the `PLUME_CONFIG_DIR` variable: Plume (and Forge) can
+therefore be deployed **standalone**, not only on k3s. The baked `/usr/local/share/plume/config.d` remains
+the **default fallback** in every mode (no variable -> that path).
 
-| Mode | Comment monter l'overlay |
+| Mode | How to mount the overlay |
 |:--|:--|
-| **k3s** | une **ConfigMap** montée sur `PLUME_CONFIG_DIR` (déclarez-la dans votre dépôt GitOps). |
+| **k3s** | a **ConfigMap** mounted on `PLUME_CONFIG_DIR` (declare it in your GitOps repository). |
 | **docker-compose** | bind-mount `./config.d:/etc/plume/config.d` + `PLUME_CONFIG_DIR=/etc/plume/config.d`. |
-| **host-native** | pointer `PLUME_CONFIG_DIR` vers un répertoire de l'hôte (ex. `/etc/plume/config.d`). |
+| **host-native** | point `PLUME_CONFIG_DIR` at a directory on the host (e.g. `/etc/plume/config.d`). |
 
-> Le chemin baked dans l'image (`/usr/local/share/plume/config.d`) sert de défaut si `PLUME_CONFIG_DIR`
-> n'est pas posé — pratique pour un déploiement sans overlay externe.
+> The path baked into the image (`/usr/local/share/plume/config.d`) serves as the default if `PLUME_CONFIG_DIR`
+> is not set — handy for a deployment without an external overlay.
 
-## Rollups par dimension config-driven (`PLUME_ROLLUP_DIMS`)
+## Config-driven per-dimension rollups (`PLUME_ROLLUP_DIMS`)
 
-Indépendamment des fichiers de cet overlay, la variable d'environnement **`PLUME_ROLLUP_DIMS`** ajoute des
-dimensions pré-agrégées (`event_dim_rollup`) **sans recompiler** : un `search source=X | stats count by <dim>`
-est alors servi depuis la table de rollup (réponse en ms) au lieu de scanner la table chiffrée.
+Independently of the files in this overlay, the **`PLUME_ROLLUP_DIMS`** environment variable adds
+pre-aggregated dimensions (`event_dim_rollup`) **without recompiling**: a `search source=X | stats count by <dim>`
+is then served from the rollup table (response in ms) instead of scanning the encrypted table.
 
-- **Format** : `"source1:dim1,dim2;source2:dim3"` (sources séparées par `;`, dims par `,`).
-- **Sémantique** : ADDITIVE (union avec les défauts compilés) — n'enlève jamais une dim built-in ; crée les
-  sources nouvelles. Plafond **6 dims/source**. Idents invalides ignorés silencieusement.
-- ⚠️ **BASSE cardinalité UNIQUEMENT** (`level`, `status`, `verb`, `ns`…). **JAMAIS** `msg`/`time`/`trace_id` :
-  le cap top-N/bucket tronquerait les chiffres ET ces clés explosent la RAM (elles sont listées comme champs à FORTE cardinalité dans `cim/cim.v1.json`, à ne pas envisager d'indexer).
-- **Défaut** : `k8s-log` inclut déjà `ns,pod,level` -> `search source=k8s-log | stats count by level` instantané.
-- Un changement de `PLUME_ROLLUP_DIMS` est pris en compte au **redémarrage** (valeur mise en cache au boot).
+- **Format**: `"source1:dim1,dim2;source2:dim3"` (sources separated by `;`, dims by `,`).
+- **Semantics**: ADDITIVE (union with the compiled defaults) — never removes a built-in dim; creates the
+  new sources. Cap of **6 dims/source**. Invalid identifiers silently ignored.
+- ⚠️ **LOW cardinality ONLY** (`level`, `status`, `verb`, `ns`…). **NEVER** `msg`/`time`/`trace_id`:
+  the top-N/bucket cap would truncate the figures AND these keys blow up the RAM (they are listed as HIGH-cardinality fields in `cim/cim.v1.json`, not to be considered for indexing).
+- **Default**: `k8s-log` already includes `ns,pod,level` -> `search source=k8s-log | stats count by level` is instantaneous.
+- A change to `PLUME_ROLLUP_DIMS` is taken into account on **restart** (value cached at boot).

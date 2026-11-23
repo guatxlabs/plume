@@ -1,63 +1,63 @@
-# Conformité — POSTURE & COUVERTURE (pas certification) — #38
+# Compliance — POSTURE & COVERAGE (not certification) — #38
 
-[Français](COMPLIANCE.md) | [English](COMPLIANCE.en.md)
+[English](COMPLIANCE.md) | [Français](COMPLIANCE.fr.md)
 
-> **Honnêteté (invariant dur).** Plume expose une **posture / couverture de conformité** : quels
-> contrôles réglementaires sont **couverts** (pass/fail SCA ingérés) et quelles **détections** sont
-> mappées à un cadre — le tout adossé au **ledger d'intégrité** (Ed25519, tamper-evident). Plume **ne
-> certifie pas** la conformité et ne produit **pas un audit certifié**. Toute étiquette dit « posture /
-> couverture », jamais « conforme / certifié ».
+> **Honesty (hard invariant).** Plume exposes a **compliance posture / coverage**: which
+> regulatory controls are **covered** (ingested SCA pass/fail) and which **detections** are
+> mapped to a framework — all of it backed by the **integrity ledger** (Ed25519, tamper-evident). Plume **does
+> not certify** compliance and does **not produce a certified audit**. Every label says "posture /
+> coverage", never "compliant / certified".
 
-## Ce que couvre cet incrément
+## What this increment covers
 
-1. **Tags de conformité PAR RÈGLE.** Une règle de détection porte, à côté de son tag MITRE ATT&CK, des
-   tags de cadre réglementaire (`rule.compliance`, schéma **v88**, additif). Format : CSV de
-   `cadre[:contrôle]` — ex `pci_dss:8.7,hipaa:164.312,nist_800_53:AU-2`.
-   - **Vocabulaire de cadres CONTRÔLÉ** (fail-closed) : `guatx_core::cim::COMPLIANCE_FRAMEWORKS` =
-     `pci_dss, hipaa, nist_800_53, gdpr, tsc, iso_27001, cis`. Un cadre hors-vocab est **rejeté**.
-   - **Contrôle LIBRE** mais charset-borné (`A-Za-z0-9 . _ - / ( ) espace`, ≤64) — stocké en valeur,
-     jamais interpolé dans du SQL.
-   - CRUD : API `POST /api/rules` + UI (champ « Conformité » du formulaire de règle). Import **Sigma** :
-     les `tags` du doc (namespaces `pci_dss.*`, `hipaa.*`, `nist.*`, `cis.*`, alias inclus) sont mappés.
+1. **Compliance tags PER RULE.** A detection rule carries, next to its MITRE ATT&CK tag,
+   regulatory framework tags (`rule.compliance`, schema **v88**, additive). Format: CSV of
+   `cadre[:contrôle]` — e.g. `pci_dss:8.7,hipaa:164.312,nist_800_53:AU-2`.
+   - **CONTROLLED framework vocabulary** (fail-closed): `guatx_core::cim::COMPLIANCE_FRAMEWORKS` =
+     `pci_dss, hipaa, nist_800_53, gdpr, tsc, iso_27001, cis`. An out-of-vocabulary framework is **rejected**.
+   - **FREE control** but with a bounded charset (`A-Za-z0-9 . _ - / ( ) espace`, ≤64) — stored as a value,
+     never interpolated into SQL.
+   - CRUD: API `POST /api/rules` + UI ("Compliance" field of the rule form). **Sigma** import:
+     the doc's `tags` (namespaces `pci_dss.*`, `hipaa.*`, `nist.*`, `cis.*`, aliases included) are mapped.
 
-2. **Dashboards de posture PAR CADRE** (seedés au boot, GXQL, vue « Conformité (posture) ») :
-   **PCI DSS**, **HIPAA**, **NIST 800-53**. Chacun filtre la posture SCA ingérée (#57,
-   `category=posture`) au cadre (`posture_framework=*<id>*`) : pass/fail global, échecs par contrôle,
-   par hôte, détail. Lecture via le **chemin GXQL masqué** (#45 field-filters + RBAC hérités).
+2. **Posture dashboards PER FRAMEWORK** (seeded at boot, GXQL, "Conformité (posture)" view):
+   **PCI DSS**, **HIPAA**, **NIST 800-53**. Each one filters the ingested SCA posture (#57,
+   `category=posture`) down to the framework (`posture_framework=*<id>*`): overall pass/fail, failures per control,
+   per host, detail. Read through the **masked GXQL path** (#45 field-filters + RBAC inherited).
 
-3. **Rollup de posture** — `GET /api/compliance/posture[?framework=<id>][&since=<epoch_s>]` (viewer+).
-   Compose **(a)** pass/fail SCA **par contrôle** (posture ingérée, agrégée en Rust — aucune concat SQL)
-   et **(b)** les **détections** qui mappent ce cadre (`rule.compliance`). Sans `framework` : synthèse
-   par cadre. `GET /api/compliance/frameworks` liste le vocabulaire effectif.
+3. **Posture rollup** — `GET /api/compliance/posture[?framework=<id>][&since=<epoch_s>]` (viewer+).
+   Composes **(a)** SCA pass/fail **per control** (ingested posture, aggregated in Rust — no SQL concatenation)
+   and **(b)** the **detections** that map this framework (`rule.compliance`). Without `framework`: a summary
+   per framework. `GET /api/compliance/frameworks` lists the effective vocabulary.
 
-4. **Rapport de posture** — `GET /api/compliance/report?framework=<id>` (viewer+, read-only, JSON
-   exportable). = rollup + **ancrage de preuve en lecture seule** sur le ledger (tête de chaîne + dernier
-   checkpoint signé) + disclaimer d'honnêteté. **Aucune écriture, aucun export d'entrées de ledger.**
+4. **Posture report** — `GET /api/compliance/report?framework=<id>` (viewer+, read-only, exportable
+   JSON). = rollup + **read-only evidence anchoring** on the ledger (chain head + latest signed
+   checkpoint) + honesty disclaimer. **No write, no export of ledger entries.**
 
 ## Vendor-agnostic / extensible
 
-Le vocabulaire est **DONNÉE**, pas un set fermé codé en dur. Le socle (`COMPLIANCE_FRAMEWORKS`, core CIM)
-est **UNIONNÉ** avec une liste additionnelle de config :
+The vocabulary is **DATA**, not a closed set hard-coded in. The base (`COMPLIANCE_FRAMEWORKS`, core CIM)
+is **UNIONED** with an additional list from config:
 
 ```
-PLUME_COMPLIANCE_FRAMEWORKS="soc2,dora"   # CSV, minuscule/_ ; ajouté au socle, sans rebuild
+PLUME_COMPLIANCE_FRAMEWORKS="soc2,dora"   # CSV, lowercase/_; added to the base, no rebuild
 ```
 
-Les IDs sont **alignés Wazuh** (`data.sca.check.compliance.{pci_dss,hipaa,nist_800_53,gdpr,tsc,cis}`,
-cf. `ingest/endpoint.rs::flatten_compliance` -> `posture_framework`/`posture_compliance`) : la posture
-ingérée et le tag de règle **joignent sur le même token**. Ajouter un cadre côté ingestion se fait aussi
-via le DSL de parseur déclaratif (`config.d/parsers/`) en visant `posture_framework`/`posture_compliance`.
+The IDs are **aligned with Wazuh** (`data.sca.check.compliance.{pci_dss,hipaa,nist_800_53,gdpr,tsc,cis}`,
+see `ingest/endpoint.rs::flatten_compliance` -> `posture_framework`/`posture_compliance`): the ingested
+posture and the rule tag **join on the same token**. Adding a framework on the ingestion side can also be done
+through the declarative parser DSL (`config.d/parsers/`) by targeting `posture_framework`/`posture_compliance`.
 
-## Mode 0 / byte-identique
+## Mode 0 / byte-identical
 
-- Migration v88 **additive** : `rule.compliance` NULL pour l'existant -> règle non taguée -> sélection
-  d'ordonnancement (`run_due_rules`), coverage et `rules_list` **inchangés**.
-- Aucun dashboard de conformité défini avant ce boot -> les seeds sont idempotents (par nom) et **VIDES**
-  tant qu'aucune posture SCA n'est ingérée.
+- Migration v88 is **additive**: `rule.compliance` NULL for existing rows -> untagged rule -> scheduling
+  selection (`run_due_rules`), coverage and `rules_list` **unchanged**.
+- No compliance dashboard defined before this boot -> the seeds are idempotent (by name) and **EMPTY**
+  as long as no SCA posture is ingested.
 
-## Différé (sous-tâches #38 séparées — NON construites ici)
+## Deferred (separate #38 subtasks — NOT built here)
 
-- Rétention **WORM / legal-hold**.
-- **Export / streaming du ledger** (sensible — revue sécu séparée).
-- Provisioning **SCIM**.
-- Rôles **RBAC composables / custom**.
+- **WORM / legal-hold** retention.
+- **Ledger export / streaming** (sensitive — separate security review).
+- **SCIM** provisioning.
+- **Composable / custom RBAC** roles.

@@ -1293,16 +1293,24 @@ def juger_statiquement(errs: list) -> dict:
 
 
 # --- P10.32-n : la doc d'installation ne contredit pas le script ---------------------------------
-DOCS_WINDOWS = {
-    # chemin -> (début, fin) de la tranche jugée ; None = tout le fichier
-    "collectors/windows/README.md": None,
-    "docs/INSTALLER-SANS-OUVRIR-DE-BRECHE.md": ("### 2.5 Windows", "\n## 4. "),
+# Chaque doc existe en deux langues ; chacune est jugée avec les phrases de SA langue.
+PHRASES = {
+    "fr": (re.compile(r"jamais[^.]{0,60}champ CIM `action`|champ CIM `action`[^.]{0,30}jamais", re.I),
+           re.compile(r"\blot\b[^.]{0,25}\bperdu", re.I),
+           "`PLUME_TOKEN` ne se pose jamais en variable machine"),
+    "en": (re.compile(r"never[^.]{0,60}CIM `action` field|CIM `action` field[^.]{0,30}never", re.I),
+           re.compile(r"\bbatch\b[^.]{0,25}\blost", re.I),
+           "`PLUME_TOKEN` is never set as a machine variable"),
 }
-# Ce que les deux docs annoncent : « plume.conf ne porte que trois clés ».
+DOCS_WINDOWS = {
+    # chemin -> ((début, fin) de la tranche jugée, ou None = tout le fichier ; langue)
+    "collectors/windows/README.fr.md": (None, "fr"),
+    "docs/INSTALLER-SANS-OUVRIR-DE-BRECHE.fr.md": (("### 2.5 Windows", "\n## 4. "), "fr"),
+    "collectors/windows/README.md": (None, "en"),
+    "docs/INSTALLER-SANS-OUVRIR-DE-BRECHE.md": (("### 2.5 Windows", "\n## 4. "), "en"),
+}
+# Ce que les docs annoncent : « plume.conf ne porte que trois clés ».
 CLES_PLUME_CONF_DOCUMENTEES = {"PLUME_CENTRAL", "PLUME_TOKEN", "PLUME_SHIP_ALLOW_PLAINTEXT"}
-PHRASE_ACTION_JAMAIS = re.compile(r"jamais[^.]{0,60}champ CIM `action`|champ CIM `action`[^.]{0,30}jamais", re.I)
-PHRASE_LOT_PERDU = re.compile(r"\blot\b[^.]{0,25}\bperdu", re.I)
-AVERTISSEMENT_JETON = "`PLUME_TOKEN` ne se pose jamais en variable machine"
 
 
 def texte_juge(brut: str) -> str:
@@ -1326,7 +1334,8 @@ def juger_la_doc(errs: list) -> None:
             errs.append(f"{COLLECTOR}: plume.conf lit {sorted(cles)}, la doc annonce "
                         f"{sorted(CLES_PLUME_CONF_DOCUMENTEES)} (et que `PLUME_TLS_INSECURE` n'y est pas lue).")
     pose_action = bool(re.search(r"\$fields\['action'\]\s*=|\baction\s*=\s*'", src))
-    for chemin, tranche in DOCS_WINDOWS.items():
+    for chemin, (tranche, langue) in DOCS_WINDOWS.items():
+        action_jamais, lot_perdu, avertissement = PHRASES[langue]
         brut = Path(chemin).read_text(encoding="utf-8")
         if tranche:
             a = brut.find(tranche[0]); b = brut.find(tranche[1], a + 1)
@@ -1336,14 +1345,14 @@ def juger_la_doc(errs: list) -> None:
             brut = brut[a:b]
         t = texte_juge(brut)
         if pose_action:
-            for m in PHRASE_ACTION_JAMAIS.finditer(t):
+            for m in action_jamais.finditer(t):
                 errs.append(f"{chemin}: « …{m.group(0)}… » alors que le script pose `fields.action` "
                             f"(table d'issues de {COLLECT_FN}, `blocked` du pare-feu).")
-        for m in PHRASE_LOT_PERDU.finditer(t):
+        for m in lot_perdu.finditer(t):
             errs.append(f"{chemin}: « …{m.group(0)}… » alors qu'un envoi raté ne commet aucun filigrane "
                         f"({COMMIT_FN}) : le run suivant relit, seuls les échantillons sont perdus.")
-        if AVERTISSEMENT_JETON not in t:
-            errs.append(f"{chemin}: la phrase « {AVERTISSEMENT_JETON} » manque, alors que la doc propose "
+        if avertissement not in t:
+            errs.append(f"{chemin}: la phrase « {avertissement} » manque, alors que la doc propose "
                         f"des variables machine (lisibles par tout utilisateur local).")
 
 

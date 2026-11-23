@@ -1,0 +1,456 @@
+# Collecteur Windows
+
+[English](README.md) | [Français](README.fr.md)
+
+Surveille un poste **ou serveur Windows** (perso comme entreprise) et expédie les
+événements au central Plume — équivalent natif PowerShell des collecteurs Linux
+(`collectors/*.sh`). Un seul fichier : [`plume-collector.ps1`](plume-collector.ps1).
+Aucun agent/spool requis : il **POST directement** sur `/api/ingest` (même contrat
+que `ship.sh`, `Authorization: Bearer <token>`).
+
+## Ce qu'il collecte (chaque source dégrade proprement si indisponible)
+
+| source Plume        | contenu                                                        | catégorie |
+|---------------------|----------------------------------------------------------------|-----------|
+| `windows-security`  | sessions 4624/4625, logoff 4634, privilèges 4672, verrouillage 4740, **Kerberos/NTLM 4768/4769/4771/4776**, création de processus 4688, gestion de comptes | auth · exec · account |
+| `windows-firewall`  | connexions **bloquées** par le pare-feu (WFP 5152/5157) + état des profils | firewall |
+| `windows-system`    | arrêts inattendus 6008, échecs de service 7000/7031/7034       | system |
+| `windows-defender`  | détections Microsoft Defender 1006/1015/1116/1117              | malware |
+| `windows-network`   | connexions TCP établies (distantes) + ports en écoute          | network |
+
+Idempotent (filigrane par source + `dedup` côté central) : le lancer souvent ne
+crée pas de doublons. Lecture seule, TLS vérifié par défaut, n'expédie que des
+métadonnées d'événements.
+
+## Prérequis
+
+1. **Windows PowerShell 5.1** (`powershell.exe`, intégré à Windows) : c'est lui que la tâche planifiée
+   ci-dessous lance, et le script exige `#Requires -Version 5.1`. PowerShell 7 (`pwsh`) l'exécute aussi,
+   mais c'est **le seul** que l'intégration continue joue : sous 5.1, rien n'est exécuté en CI. La
+   compatibilité 5.1 y est **jugée sans être exécutée** (`.github/scripts/check_windows_collector_is_honest.py`) :
+   PSScriptAnalyzer, à version épinglée, confronte le script aux profils Windows PowerShell 5.1 qu'il
+   livre (Windows 10 1809, Windows Server 2016 et 2019 : syntaxe, commandes, paramètres, types), et
+   l'arbre syntaxique refuse `??`, le ternaire, `&&`, `?.`/`?[`, `clean`, l'arrière-plan `… &`,
+   `` `u{…} ``, `` `e ``, `-replace` avec un bloc de script écrit, `$IsWindows` et ses pareils, tout type
+   absent d'un seul de ces profils et tout membre statique qui y manque. Ce jugement ne prouve pas le
+   **comportement** de .NET Framework : la lecture d'une adresse par `[System.Uri]` et par
+   `Invoke-RestMethod` 5.1 (proxy, TLS) n'est jouée que sous PowerShell 7. Les redirections ne sont
+   suivies sous aucune des deux versions : l'envoi porte `-MaximumRedirection 0` (voir plus bas).
+   **Le fichier est en UTF-8 avec BOM, et doit le rester** : sans BOM, Windows PowerShell 5.1 lit un
+   script dans la page de code ANSI, et le collecteur ne parsait plus (un « — » y devient un guillemet
+   fermant). Un éditeur qui réenregistre sans BOM casse la tâche planifiée ; la garde le refuse.
+   Le script n'envoie que par `Invoke-RestMethod` : la garde n'admet que les commandes, paramètres,
+   types et méthodes qu'il emploie, ÉCRITS dans le source (liste fermée ; un nom qualifié par module, un
+   chemin vers un `.exe`, un nom de commande calculé, un paramètre abrégé, la table d'un splatting `@p`
+   jugée par ses clés, le membre de `ForEach-Object`, toute chaîne littérale qui commence par `\\` ou
+   `//` sont refusés). Elle ne voit pas un nom fabriqué à l'exécution passé à une commande admise, ni un
+   chemin UNC concaténé ou lu de la configuration.
+2. **Exécuter en compte SYSTEM ou administrateur** (le journal *Security* l'exige).
+3. **Activer les politiques d'audit** pour peupler certains événements.
+
+> **Ce que Windows 11 audite DÉJÀ, et ce qu'il n'audite pas.** *Mesuré le 2026‑08‑02 sur un Windows 11
+> Enterprise 24H2 (build 26100) fraîchement installé, avant toute modification :*
+>
+> | sous-catégorie | par défaut | conséquence sans les commandes ci-dessous |
+> |---|---|---|
+> | `Logon` | **Succès ET échec** | `4624`/`4625` arrivent **out-of-the-box** → `category=auth` est alimentée |
+> | `Process Creation` | **Aucun audit** | **`category=exec` reste VIDE** — aucun `4688` n'est écrit |
+> | `Filtering Platform Connection` | **Aucun audit** | **`category=firewall` ne reçoit que l'état des profils**, aucun `5152`/`5157` |
+>
+> Autrement dit : sans la ligne 2, la surveillance d'exécution de processus est inexistante ; sans la
+> ligne 1, le pare-feu ne remonte aucun blocage. Les trois commandes ont été exécutées **telles quelles**
+> et fonctionnent (`The command was successfully executed.`, 0,16 s au total).
+>
+> **Un SERVEUR n'audite PAS plus qu'un poste — mesuré, et c'est contre-intuitif.** *Le 2026‑08‑02, sur
+> Windows Server 2022 Standard Évaluation (build 20348.587) fraîchement installé, les **59** sous-catégories
+> rendues par `auditpol /get /category:*` ont été comparées entre **Server Core** et **Desktop Experience** :
+> **aucune différence**, et les trois lignes ci-dessus valent **exactement** ce que vaut un Windows 11 —
+> `Logon` = Succès et Échec, `Process Creation` = **Aucun audit**, `Filtering Platform Connection` =
+> **Aucun audit**. Les trois commandes restent donc **obligatoires** sur un serveur.* Ce que le serveur
+> active en plus par défaut (et qu'un poste client n'a pas été mesuré comme ayant) : `Credential Validation`,
+> `Kerberos Authentication Service`, `Kerberos Service Ticket Operations`, `Directory Service Access`,
+> `Computer/Security Group/User Account Management`, `Audit Policy Change` — **tous en Succès seulement**.
+>
+> **`category=exec` n'est pas VIDE sans la ligne 2 : elle est TROMPEUSE.** *Mesuré : audit `Process Creation`
+> à « Aucun audit », Windows écrit quand même **~23 `4688` à CHAQUE démarrage** (les processus créés avant
+> que LSASS n'applique la politique : `wininit`, `csrss`, `winlogon`, `services`, `lsass`…), tous avec un
+> `CommandLine` **vide**, puis plus rien. Un tableau de bord qui compte les `exec` voit donc un chiffre
+> non nul et stable — et ne surveille rien.*
+   ```powershell
+   auditpol /set /subcategory:"Filtering Platform Connection" /success:disable /failure:enable   # 5152/5157 (pare-feu)
+   auditpol /set /subcategory:"Process Creation" /success:enable                                  # 4688
+   auditpol /set /subcategory:"Logon" /success:enable /failure:enable                             # 4624/4625
+   ```
+   Ces noms sont **localisés** : mesurés sur un Windows anglophone, ils échouent sur un Windows en
+   français. Les GUID ne dépendent pas de la langue (forme non jouée ici) — `Filtering Platform
+   Connection` = `{0CCE9226-69AE-11D9-BED3-505054503030}`, `Process Creation` =
+   `{0CCE922B-69AE-11D9-BED3-505054503030}`, `Logon` = `{0CCE9215-69AE-11D9-BED3-505054503030}`, à passer
+   tels quels : `auditpol /set /subcategory:"{0CCE922B-69AE-11D9-BED3-505054503030}" /success:enable`.
+
+## Configuration
+
+Créez un jeton sur le central — **avec le nom de la machine en 2ᵉ argument**, sinon le jeton n'est
+lié à **aucun** hôte :
+
+```sh
+plume-daemon token poste-win01 POSTE-WIN01      # 2e argument = l'hôte AUQUEL le jeton est lié
+```
+
+> **La forme sans hôte (`plume-daemon token poste-win01`) laissait usurper n'importe quelle machine, et
+> elle n'existe plus.** Elle était écrite ici jusqu'au 2026‑08‑02. *Mesuré ce jour‑là : avec le jeton
+> produit par la commande sans hôte, une enveloppe portant `"host":"CONTROLEUR-DE-DOMAINE-USURPE"` est
+> acceptée (**HTTP 202**) et l'événement est **stocké sous ce nom‑là**. Avec un jeton **lié**, la même
+> enveloppe est acceptée mais le `host` est **réécrit** vers l'hôte du jeton (`WS22-LAB`) : le liage MORD.*
+> Le liage est aussi ce qui autorise le responder à agir sur cet hôte. La portée d'un jeton est désormais
+> une **déclaration** : `plume-daemon token <nom> <HOTE>` (machine) ou `plume-daemon token <nom> --relais`
+> (forwarder multi-hôtes, dont l'hôte n'est **pas** attesté). La forme à deux arguments est **refusée**.
+>
+> *Le liage est consulté sur **toutes** les surfaces d'ingestion depuis le 2026‑08‑02. Auparavant il ne
+> l'était que sur `/api/ingest` et `/loki/api/v1/push` — mesuré usurpable avec un jeton lié sur
+> `/api/metrics/prom` (200), `/api/metrics/write` (204) et `/services/collector` (200). Cf. `docs/CIM.md`.*
+
+Puis renseignez `C:\ProgramData\plume\plume.conf`. Le script lit aussi `PLUME_CENTRAL` et `PLUME_TOKEN` dans
+l'**environnement**, et l'environnement **l'emporte** sur le fichier : un `PLUME_TOKEN` posé en variable machine
+(ce qu'une ancienne version de ce README proposait) reste prioritaire en silence et se lit par tout
+utilisateur local. Mettez le jeton dans `plume.conf` seulement, et retirez une telle variable :
+`[Environment]::SetEnvironmentVariable('PLUME_TOKEN',$null,'Machine')`.
+
+```ini
+PLUME_CENTRAL=https://soc.example.org:7000
+PLUME_TOKEN=<le-jeton>
+# PLUME_SHIP_ALLOW_PLAINTEXT=1   # http:// vers un central DISTANT — jeton lisible sur le réseau, voir ci-dessous
+```
+
+`plume.conf` ne porte que ces trois clés : le script n'y lit rien d'autre. **`PLUME_TLS_INSECURE` n'y est
+pas lue** (elle ne vient que de l'environnement) : posée dans ce fichier, elle est sans effet, et la
+vérification TLS reste active. Le fichier porte le jeton : ses droits (SYSTEM et Administrateurs seuls,
+héritage coupé) et la façon de l'écrire sans que le jeton passe par une ligne de commande sont dans
+[`docs/INSTALLER-SANS-OUVRIR-DE-BRECHE.md` §2.5](../../docs/INSTALLER-SANS-OUVRIR-DE-BRECHE.fr.md#25-windows--le-collecteur-plume-collectorps1).
+Une variable d'environnement gagne sur le fichier ; sous la tâche planifiée en SYSTEM, seules les
+variables **machine** sont vues. **`PLUME_TOKEN` ne se pose jamais en variable machine** : elle est
+lisible par tout utilisateur local (clé `HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment`,
+et environnement hérité par chaque processus), ce qui défait les droits du fichier. Le jeton vit dans
+`plume.conf`, et nulle part ailleurs.
+
+> ### Le clair vers un central distant est refusé
+> `PLUME_CENTRAL` en `http://` vers autre chose que la boucle locale (`127.0.0.0/8`,
+> `::1`, `localhost`) est **refusé** : message `REFUS` sur la sortie d'erreur, **code de sortie 2**
+> (visible dans `LastTaskResult` de la tâche planifiée ; une panne du central sort en 1), et cela
+> **avant** toute lecture de journal et tout envoi — rien n'est lu, rien n'est expédié, aucun filigrane
+> n'avance : une fois l'adresse corrigée, le run suivant reprend là où le dernier envoi acquitté s'est
+> arrêté (dans la limite de `-MaxAgeMinutes` au premier run). `https://` et `http://` vers la boucle
+> locale ne changent pas. L'adresse doit commencer par `schéma://` : sans cela (`central.example.org:7000`,
+> `127.0.0.1:7000`, `http:\\central.example.org`, `1http://central.example.org`) elle est refusée, opt-in ou non, car
+> `Invoke-RestMethod` la lit en relatif, autrement que la porte (mesuré : `http:\\central.example.org` et
+> `1http://central.example.org` partaient en clair vers un hôte distant). Avec `schéma://` en tête, l'hôte est celui
+> que `[System.Uri]` extrait, qui est celui qu'`Invoke-RestMethod` appelle (mesuré sous PowerShell 7 ;
+> Windows PowerShell 5.1 n'est pas joué) : `http://127.0.0.1.example.org`, `http://localhost.example.org`
+> ou `http://127.0.0.1@example.org` visent un hôte distant et sont refusés. Tout autre schéma est refusé,
+> opt-in ou non.
+>
+> **Aucune redirection n'est suivie.** La porte juge l'adresse écrite dans `PLUME_CENTRAL`, pas celle
+> vers laquelle une réponse `3xx` renverrait. Sans `-MaximumRedirection 0`, un central admis qui
+> répondait `307`/`308` vers un autre hôte en `http://` y faisait partir tous les événements en clair, et
+> sur `301`/`302` le lot était compté livré alors qu'il n'était arrivé nulle part (mesuré sous
+> PowerShell 7.6.3). Désormais aucune redirection n'est suivie (`-MaximumRedirection 0`), sous 5.1 comme
+> sous 7, et une redirection est un **échec d'envoi** : code de sortie 1, aucun filigrane n'avance, le
+> run suivant relit. Ce n'est pas l'exception qui le décide : Windows PowerShell 5.1, celui que lance la
+> tâche planifiée, ne lève que sur `301`/`302` et rend un `303`, `307` ou `308` comme une réponse normale
+> au corps vide. Le collecteur ne tient donc un lot pour livré que si la réponse porte
+> `"queued":true`, l'accusé du central (`202`) ; une réponse vide, une page HTML de mandataire ou le JSON
+> d'un autre service sont des échecs d'envoi. Joué sous PowerShell 7 (y compris la réponse au corps vide
+> que rend 5.1) ; Windows PowerShell 5.1 lui-même n'est pas exécuté. **Effet sur un poste déjà installé** : si `PLUME_CENTRAL`
+> désigne une adresse qui redirige (un `http://` qu'un frontal renvoie vers `https://`, un chemin que le
+> frontal réécrit, une page de connexion d'un mandataire d'authentification), la tâche planifiée passe
+> en échec (`LastTaskResult` = 1) au lieu de perdre le lot en silence : posez dans `PLUME_CENTRAL`
+> l'adresse finale, celle qui répond sans redirection.
+>
+> `PLUME_SHIP_ALLOW_PLAINTEXT=1` (variable d'environnement ou `plume.conf`, même lecture que
+> `PLUME_CENTRAL`) accepte le clair, avec un avertissement à chaque run. **Le risque est entier** :
+> le jeton `Authorization: Bearer` et chaque événement (comptes, lignes de commande, adresses) passent
+> lisibles sur le réseau ; quiconque écoute le chemin peut rejouer le jeton et injecter des événements
+> sous le nom de ce poste. Ne le posez que sur un lien déjà chiffré (tunnel) ou un réseau dont vous
+> répondez. C'est la même porte, et la même variable, que `ship.sh` côté Linux.
+
+> ### ⚠️ Le jeton ne passe JAMAIS en ligne de commande — et le paramètre a été retiré
+> Le script acceptait `-Token` en paramètre, avec cette consigne de ne pas s'en servir. Une consigne
+> n'est pas une garde : **le paramètre n'existe plus** (le jeton vient de `PLUME_TOKEN` ou de
+> `plume.conf`). Ce qui suit explique pourquoi, et ce qui reste à votre charge.
+> Si l'audit `Process Creation` est actif — c'est-à-dire dès que vous avez suivi les prérequis ci-dessus —
+> **et** que la GPO *« Include command line in process creation events »* est activée, ou simplement que
+> **Sysmon** tourne (Sysmon met la ligne de commande dans son ID 1 **sans aucune GPO**), alors le jeton
+> passé en argv est écrit en clair dans le journal *Security*… **que ce collecteur expédie lui-même au
+> central**. *Mesuré le 2026‑08‑02 : un jeton-appât passé via `-Token` s'est retrouvé lisible dans le SOC
+> par **trois** chemins indépendants — `windows-security`/`exec` (ce script), `WinEventLog:Security`/`exec`
+> (agent Rust) et `WinEventLog:Microsoft-Windows-Sysmon/Operational`/`endpoint` (Sysmon ID 1).* C'est le
+> pendant Windows de la fuite `sudo` mesurée sur Ubuntu, en **plus large** : le mécanisme n'est pas
+> l'outil d'élévation, c'est l'audit d'exécution lui-même. **Écrivez le jeton dans `plume.conf`, jamais
+> en argv** — et si vous l'avez déjà fait, révoquez-le.
+>
+> **Ce qui a été fermé, et ce qui ne peut pas l'être ici.** Fermé côté produit : le paramètre `-Token` de
+> ce script (retiré) et le `--token <valeur>` de l'agent Rust (remplacé par `--token-stdin`, qui lit le
+> jeton sur l'entrée standard). Ce qui reste ouvert, et qui ne se corrige PAS dans ce dépôt : si un
+> opérateur tape lui-même un secret sur **n'importe quelle** ligne de commande, l'audit d'exécution le
+> capture. C'est une propriété de Windows (Sysmon ID 1 sans GPO ; 4688 avec la GPO *« Include command
+> line »*), pas de ces scripts. La contre-mesure est organisationnelle — et, si l'exposition a eu lieu,
+> la révocation du jeton.
+
+> ### Le central est en TLS : préparez la confiance AVANT le premier run
+> Avec un certificat émis par une CA que le poste ne connaît pas, le run échoue sur
+> `Could not establish trust relationship for the SSL/TLS secure channel`, sort en `1` et ne commet
+> aucun filigrane : les événements attendent dans le journal Windows et partent au premier run qui passe
+> (limite 1 ci-dessous). Ne sont pas rejoués les échantillons du run raté (profils, réseau, battement),
+> ni ce que la rotation du journal a emporté entre-temps. Le chemin d'entreprise est de poser la CA interne dans le
+> magasin machine, une fois, avant de planifier la tâche :
+> ```powershell
+> Import-Certificate -FilePath C:\ProgramData\plume\ca.crt -CertStoreLocation Cert:\LocalMachine\Root
+> ```
+> *Mesuré : après cet import, `https://soc.central:7000/healthz` répond 200 avec la vérification TLS
+> ACTIVE ; `PLUME_TLS_INSECURE=1` n'est alors plus nécessaire.* Pensez aussi à `PLUME_HOST` côté central :
+> il doit lister le nom que le poste appelle, sinon la garde anti-rebinding renvoie **421** à tout
+> (cf. `deploy/k3s.yaml`).
+
+## Installation en tâche planifiée (toutes les 5 min, en SYSTEM)
+
+```powershell
+$ps  = "$PSHOME\powershell.exe"
+$arg = "-NoProfile -ExecutionPolicy Bypass -File C:\ProgramData\plume\plume-collector.ps1"
+# copiez plume-collector.ps1 dans C:\ProgramData\plume\ d'abord
+schtasks /Create /TN "Plume Collector" /SC MINUTE /MO 5 /RU SYSTEM /RL HIGHEST `
+  /TR "`"$ps`" $arg" /F
+```
+
+`$PSHOME` est le dossier de la console **où la commande est tapée** : tapée dans Windows PowerShell 5.1,
+elle vise `powershell.exe` 5.1 ; tapée dans `pwsh` 7, elle vise un `powershell.exe` qui n'existe pas
+dans le dossier de `pwsh`, et la tâche échoue à chaque déclenchement (lecture, non jouée). Tapez-la
+dans Windows PowerShell 5.1, ou écrivez le chemin en entier
+(`C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`).
+
+Test manuel (voir les événements arriver dans Plume) :
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\plume-collector.ps1
+```
+
+*La commande `schtasks` ci-dessus a été exécutée **littéralement** le 2026‑08‑02 : elle fonctionne
+(`SUCCESS`, 0,14 s) et la tâche survit au redémarrage.*
+
+## Ce que ça coûte, et en combien de temps ça remonte (mesuré le 2026‑08‑02)
+
+*Windows 11 Enterprise 24H2 (build 26100), VM 2 vCPU / 4 Gio, central plume compilé depuis ce dépôt,
+chemin réseau privé.*
+
+| | valeur mesurée |
+|---|---|
+| durée d'un run complet | **35 s** (312 échantillons à 100 ms) |
+| crête mémoire du run | **191,5 Mio** (`WorkingSet` du `powershell.exe`) |
+| CPU d'un run | 17,4 s, soit **49 % d'un cœur pendant le run** |
+| CPU **amorti** sur la période de 5 min | **5,8 % d'un cœur** |
+| redémarrage → 1er événement dans le SOC | **240 s** |
+
+**La crête de 191 Mio est le vrai chiffre à retenir** : elle est ~17× celle du collecteur Linux
+(11,1 Mio) et ~20× celle de l'agent Rust sur le même poste (9,6 Mio pour un service **permanent**, à
+**0,05 % d'un cœur**). C'est le prix de l'hôte PowerShell, pas celui du travail effectué. Sur un poste
+bureautique c'est absorbable ; sur un serveur chargé ou une VDI dense, préférez l'agent Rust
+(`agent/README.md`), qui remonte en plus **beaucoup** plus vite : **24,6 s** après le redémarrage contre
+240 s ici, sur la même machine et le même boot.
+
+> **Le 1er événement est-il de la sécurité ?** Oui, ici — contrairement à Ubuntu où le premier arrivé
+> était un battement de santé. Le lot est envoyé par paquets de 400 (`BatchSize`) et le battement est
+> ajouté **en dernier** : le premier POST contient donc déjà de l'`auth`. *Mesuré : premier événement
+> reçu = `windows-security`/`auth` (« An account was successfully logged on. »).*
+>
+> **En revanche, le battement de santé n'est PAS un signal de vie à la maille de la tâche.** Son `dedup`
+> est bucketé à l'**heure** (`windows-agent-health-<heure>`) : une tâche cadencée à 5 min produit donc
+> **au plus un battement par heure**. *Mesuré : 6 runs consécutifs → 1 seul événement `category=health`
+> stocké.* Un dead-man's-switch réglé sur « pas de battement depuis 10 min » lèverait de faux positifs.
+
+## Windows Server 2022 : ce que le serveur change (mesuré le 2026‑08‑02)
+
+*Deux VM QEMU 2 vCPU / 4 Gio, Windows Server 2022 Standard Évaluation build 20348.587 : `WS22-LAB` en
+**Server Core** (sans interface graphique) et `WS22-GUI` en **Desktop Experience**, promue **contrôleur de
+domaine** en fin de campagne. Central plume compilé depuis ce dépôt, chemin réseau privé.*
+
+| | Server Core | Desktop Experience | Windows 11 (fiche précédente) |
+|---|---|---|---|
+| installation sans TPM ni Secure Boot | **oui** — VM lancée sur OVMF nu, aucun `swtpm` | **oui** | non : `swtpm` absent = friction |
+| durée d'installation sans surveillance | **216 s** (mise sous tension → 1ᵉʳ contact du harnais dans l'invité) | même ordre — **non chronométré à la même précision** (sonde relevée par intervalle : entre 250 s et 341 s) | non chiffrée |
+| `auditpol` par défaut (59 sous-catégories) | *(identiques, cf. encadré des prérequis)* | **identique à Core** | identique sur les 3 lignes mesurées |
+| collecteur PowerShell | **fonctionne intégralement** | fonctionne | fonctionne |
+| durée d'un run | 6,7 s à 11,2 s | **9,3 s** | 35 s |
+| crête mémoire du run | **177,3 Mio** | **176,8 Mio** | 191,5 Mio |
+| CPU d'un run | 9,5 s (141 % d'un cœur : PowerShell est multi-thread) | 8,4 s (90 %) | 17,4 s (49 %) |
+| agent Rust en service | **7,9 Mio** | 7,8 Mio | 9,6 Mio |
+| mise sous tension → 1ᵉʳ event, agent Rust | **8,6 s** (2ᵉ mesure : 11,1 s) | — | 24,6 s *(convention non consignée)* |
+| mise sous tension → 1ᵉʳ event, collecteur ps1 | **138,4 s** | — | 240,2 s *(idem)* |
+
+> **Convention de la ligne « mise sous tension »** : t0 = **lancement de la VM, machine éteinte avant**.
+> Un premier essai chronométré depuis l'**ordre de redémarrage** a donné 17,6 s / 112,9 s — chiffres
+> **écartés** : l'arrêt propre de Windows produit des événements que l'agent expédie *pendant* l'extinction,
+> donc ils ne mesurent pas le délai de reprise. La fiche Windows 11 ne consigne pas laquelle des deux
+> conventions elle emploie : les 24,6 s / 240,2 s ne sont **pas** directement comparables aux chiffres
+> ci-dessus, seul l'ordre de grandeur et le rapport agent/collecteur le sont.
+>
+> **Le 1ᵉʳ événement du serveur n'est ni de la santé, ni catégorisé.** *Mesuré : le premier événement de
+> l'agent après mise sous tension vient du canal `Application` (Core) et arrive avec une catégorie
+> **VIDE** — voir plus bas les 36,7 % d'événements sans catégorie. Le premier événement du collecteur
+> PowerShell, lui, est bien `windows-security`/`auth`, comme sur Windows 11.*
+
+**Server Core ne coûte RIEN au collecteur.** *Mesuré : `Import-Certificate` (0,41 s), `schtasks /Create`
+(0,06 s), `Get-NetFirewallProfile`, `Get-MpComputerStatus` (Defender **est** présent et actif par défaut),
+`Get-WinEvent`, `Expand-Archive` — tout répond sur Core. L'agent Rust y installe et démarre son service SCM
+(`install` → `Running`), et `test-ship` répond **202**.* Aucune dépendance à l'interface graphique n'a été
+trouvée, dans le collecteur comme dans l'agent.
+
+> ### Sur un contrôleur de domaine, le collecteur était AVEUGLE à Kerberos — corrigé, et le trou suivant se déclare tout seul
+> *Mesuré après promotion de `WS22-GUI` en contrôleur du domaine `lab.plume`
+> (`Install-WindowsFeature AD-Domain-Services` **43,4 s**, `Install-ADDSForest` **54,9 s**, +1 redémarrage,
+> DC opérationnel **70 s** après) : la création d'un compte et deux authentifications ont produit **2 × 4768**
+> (ticket TGT) et **8 × 4769** (ticket de service) dans le journal `Security`. Côté SOC, ces événements
+> n'existaient QUE par l'agent Rust (`WinEventLog:Security`, `category=auth`) : le collecteur PowerShell en
+> avait remonté **0**, parce que sa liste d'identifiants ne contenait ni `4768`, ni `4769`, ni `4771`, ni
+> `4776`.*
+>
+> **Ce qui a changé, et pourquoi ce n'est pas « quatre identifiants de plus ».** Les quatre sont là. Mais
+> ajouter une liste laisse le trou SUIVANT au prochain relecteur, alors :
+> - la liste d'identifiants est désormais **DÉRIVÉE d'une table `identifiant → issue`** — on ne peut plus
+>   collecter un identifiant sans dire s'il vaut `success`, `failure`, `session_open`… (ou `'-'`, « pas
+>   d'issue », qui est une déclaration qu'il faut écrire). Une garde de CI refuse tout appel `-Ids` nu ;
+> - le collecteur **RECENSE** à chaque run ce que le canal a produit et qu'il ne collecte pas, et l'émet en
+>   `category=config type=collector-coverage` (`uncollected_ids`, `uncollected_events`, `census_capped`).
+>   Le trou n'attend plus une relecture de code : il est **mesurable depuis le SOC, sur chaque hôte**.
+>   Ce jour-là, il aurait affiché `Security : 10 événement(s) non collecté(s), identifiants [4768,4769]`.
+>
+> Le recensement est borné (au plus quelques milliers d'enregistrements par run) et **dit quand il a été
+> borné** : un recensement qui se croirait complet mentirait à son tour.
+>
+> **La promotion en DC n'ajoute AUCUNE couverture d'audit.** *Mesuré : les 59 sous-catégories avant/après
+> `dcpromo` ne diffèrent que des 2 lignes activées à la main par les commandes des prérequis. La stratégie
+> « Default Domain Controllers » ne réveille donc rien de ce que Plume attend — et, bonne nouvelle
+> symétrique, elle n'écrase pas non plus les réglages `auditpol` posés avant la promotion.*
+
+> ### Sysmon sur un serveur : 2 s à installer, 11 Mio — et il rend la ligne de commande sans AUCUNE GPO
+> *Mesuré : `Sysmon64.exe -accepteula -i` (v15.21) = **2,11 s** sur Core, **1,6 s** sur Desktop
+> (désinstallation `-u` : 3,5 s) ; le service tourne à **11,0 Mio** et 0,03 s de CPU cumulé après démarrage.
+> Sur `WS22-LAB`, machine dont **aucune** politique d'audit n'a jamais été touchée (`Process Creation` =
+> « Aucun audit », GPO ligne de commande **absente**), l'appât `APPAT-CORE-SYSMON-…` passé en argv d'un
+> `cmd.exe` n'a produit **aucun** `4688` — mais **2 événements Sysmon ID 1 le portant en clair**.*
+> Autrement dit : **installer Sysmon suffit à faire remonter toutes les lignes de commande au SOC**, secrets
+> en argv compris, sans qu'aucun réglage d'audit n'ait été fait. Avec la GPO *« Include command line… »*
+> activée (et `gpupdate /force` — *mesuré : sans lui le réglage ne mord pas*), l'appât est ressorti par
+> **deux** chemins indépendants : `windows-security`/`exec` (ce script) et `WinEventLog:Security`/`exec`
+> (agent Rust) ; sans elle, **0** des `4688` portait une ligne de commande non vide.
+>
+> **Un `exec` sans ligne de commande a l'air complet, et ne l'est pas — le collecteur le dit maintenant.**
+> C'était la forme exacte du défaut : l'événement arrivait entier (utilisateur, image, hôte), une recherche
+> sur `CommandLine` rendait zéro, et rien n'expliquait pourquoi. À chaque run, le collecteur COMPTE les
+> `4688` collectés sans ligne de commande et émet, si le compte n'est pas nul, un
+> `category=config type=collector-coverage gap=exec-cmdline` portant `cmdline_absent` / `cmdline_present`.
+> Aucune valeur n'est inventée : on ne fabrique pas une ligne de commande, on déclare qu'elle manque.
+>
+> ⚠️ **Sysmon installé APRÈS l'agent** : ses événements sont bien lus (le canal est dans la liste par
+> défaut de l'agent, et le signet l'inclut dès le run suivant) — c'est le piège de flotte ci-dessous, et
+> non un problème de canal, qui les faisait disparaître.
+
+> ### Le piège de la FLOTTE : deux serveurs se volaient leurs événements (corrigé le 2026‑08‑02)
+> `event.dedup` est **UNIQUE au niveau de la base** du central, pas de l'hôte, et les identifiants
+> d'enregistrement du journal Windows **repartent de 1 sur chaque machine**. Les clés produites ici
+> (`windows-security-<record_id>`, `windows-agent-health-<heure>`, `windows-fwprofile-<profil>-<heure>`…)
+> ne portaient **pas** le nom de l'hôte : la 2ᵉ machine enrôlée voyait ses événements écartés **en silence**
+> par l'`INSERT OR IGNORE` du central.
+> *Mesuré avec deux serveurs sur un même central : sur les **311** enregistrements du canal Sysmon de
+> `WS22-LAB`, **266 sont arrivés et 45 ont disparu** — exactement les 45 que `WS22-GUI` avait déjà expédiés ;
+> et le battement de santé horaire de `WS22-GUI` n'a **jamais** été stocké, la clé étant déjà prise.*
+> **Correctif (1er temps, côté émetteur)** : le nom de l'hôte est préfixé une fois pour toutes dans
+> `Add-Event` (et dans `winxml_to_event` côté agent) — impossible d'oublier l'hôte en ajoutant une source.
+>
+> **Correctif (2e temps, côté central — 2026‑08‑02)** : le piège n'était pas windowsien. Mesuré côté
+> Linux le même jour, en faisant tourner les **36 capteurs livrés** sur deux hôtes auxquels il manque les
+> mêmes prérequis : **36 clés produites par machine, dont 26 identiques**, et à l'ingestion **78
+> événements envoyés → 52 stockés, 26 perdus**, tous sur la 2ᵉ machine (39 lignes pour la 1ʳᵉ, **13** pour
+> la 2ᵉ). Corriger émetteur par émetteur n'était donc pas une correction : 40 clés fabriquées dans 30
+> fichiers livrés, 5 langages, plus les capteurs qu'écriront les clients. Le central **cloisonne
+> désormais `event.dedup` par l'hôte de la ligne** à l'écriture (`dedup_scoped_by_host`,
+> `daemon/src/ingest/store.rs`) : deux lignes dont la colonne `host` diffère ne peuvent plus se supprimer
+> l'une l'autre, quelle que soit la clé fabriquée par l'émetteur. Les préfixes posés ici deviennent
+> **redondants et sont conservés** (un collecteur doit rester correct face à un central plus ancien).
+> *Vérifié APRÈS correctif, sur les mêmes machines : `WS22-LAB` porte désormais **323 clés Sysmon
+> continues de 1 à 323** (plus aucun trou), et `WS22-GUI` a enfin son battement
+> (`WS22-GUI-windows-agent-health-…`).* **Conséquence de mise à jour** : les clés changent de forme, donc
+> le premier run après mise à jour ré-expédie une fois les événements encore dans la fenêtre du filigrane
+> (doublons ponctuels, jamais de perte).
+> ⚠️ **Le même piège vaut pour tout émetteur** dont la clé n'inclut pas l'hôte : c'est une propriété du
+> central, pas du collecteur Windows. *Lecture de code (NON mesurée) : plusieurs collecteurs Linux
+> (`update-<image>-<digest>`, `ban-<jail>-<ip>-<heure>`, `clamav-<fichier>-<signature>`…) forment des clés
+> identiques d'une machine à l'autre et sont donc exposés au même effacement silencieux — à vérifier par la
+> mesure avant de conclure.*
+
+## Limites connues, mesurées — à lire avant de déployer en flotte
+
+1. ~~**Aucun spool : un POST qui échoue perd le lot.**~~ **CORRIGÉ le 2026‑08‑02.** Le défaut était réel et
+   mesuré : `Flush-Events` attrapait l'échec, écrivait un `Write-Warning` (qui, sous tâche planifiée, ne va
+   **nulle part**), vidait le tampon **inconditionnellement**, et `Set-Watermark` avait **déjà** avancé le
+   filigrane. *Mesuré (harnais pwsh exécutant ce script TEL QUEL, journal Windows et central simulés) :
+   central indisponible pendant UN run, **42** événements éligibles → **0 arrivés**, filigrane avancé quand
+   même → **42 perdus DÉFINITIVEMENT**, 0 rattrapé au rétablissement. Même harnais, central disponible :
+   0 perdu / 42 arrivés.*
+   **Ce qui change** : le filigrane n'est plus écrit là où il est calculé — il est **mis en attente**
+   (`Stage-Watermark`) et n'est **commis** qu'après un POST **acquitté**, par `Complete-Run`, seul endroit
+   du fichier qui écrive sur le disque d'état. **Le journal Windows EST le spool** : tant que le filigrane
+   ne bouge pas, le run suivant relit exactement ce qui n'est pas passé (at‑least‑once ; les réémissions
+   sont absorbées par le `dedup`, cloisonné par hôte côté central). *Re‑mesuré après correctif, même
+   scénario : **0 perdu, 42 rattrapés**.*
+   > ⚠️ **Changement de comportement à connaître avant de déployer** : un POST non acquitté **LÈVE** et le
+   > run sort **non nul** (le `Write-Warning` muet a disparu). Sous `schtasks`, cela remonte dans
+   > `LastTaskResult` — un central indisponible devient **visible** au lieu d'être silencieux. C'est
+   > voulu : c'est le seul canal qui subsiste quand le central est injoignable.
+   >
+   > **Ce qui n'est PAS rejoué** : les ÉCHANTILLONS d'un run perdu (profils pare‑feu, instantané réseau,
+   > battement) ne sont pas dans un journal — ils sont **recalculés** au run suivant. Aucune HISTOIRE
+   > n'est perdue ; un point d'échantillonnage l'est. Pour un spool disque en bonne et due forme,
+   > l'agent Rust reste la réponse (`spool_cap`, at‑least‑once sur disque).
+2. ~~**Un capteur qui ne peut pas collecter ne le dit pas.**~~ **CORRIGÉ le 2026‑08‑02.** *Mesuré avant :
+   journal `Security` en **accès refusé** (le cas du technicien qui lance le script hors SYSTEM) → **12**
+   événements attendus, **0 arrivé, 0 aveu**, code de retour **0**, et le battement de santé annonçait
+   quand même « plume windows collector ok ».*
+   Le script porte désormais le miroir PowerShell de la partition fermée de `collectors/lib.sh` :
+   `Plume-Unavailable` (incapacité) · `Plume-Disabled` (coupé par l'opérateur) · `Plume-NoData` (rien de
+   neuf — silence **légitime**, aucun octet). Le discriminant entre « rien de neuf » et « aveugle » est le
+   `FullyQualifiedErrorId` de `Get-WinEvent`, **jamais** le message : les messages Windows sont
+   **localisés**, et un test sur le texte classerait une vraie cécité en « calme » dès que la machine
+   n'est pas anglophone. La partition penche du côté sûr : **seul** `NoMatchingEventsFound` vaut silence.
+   *Re‑mesuré après correctif, même scénario : **5 aveux** `collect_status=unavailable`
+   (3 × `windows-security`, 1 × `windows-firewall`, 1 × `windows-defender`).*
+   Les aveux ont le format de `plume_report_availability` (`category=config`,
+   `collect_status=unavailable`, `reason` du **même vocabulaire fermé** que les capteurs shell), donc la
+   règle **existante** `config.d/rules/catalog/de-collector-unavailable.json` les couvre sans être touchée.
+   Voir qui est aveugle : `search category=config collect_status=unavailable | table host, source, reason, detail`.
+   **Garde de CI** : `.github/scripts/check_windows_collector_is_honest.py` (AST PowerShell réel) exige que
+   tout `catch` classe ou relève, qu'aucune erreur ne soit avalée (`-ErrorAction SilentlyContinue` interdit),
+   et qu'aucun filigrane ne s'écrive avant un envoi acquitté. *Prouvée par mutation : 11 mutations, 11 rouges.*
+3. **L'inventaire de champs ne couvre pas ce collecteur.** `daemon/src/collected.rs` déclare 12 champs
+   pour `plume-collector.ps1` ; *mesuré, ce collecteur en a réellement émis **55 distincts*** (tout
+   l'`EventData` du journal : `SubjectUserName`, `NewProcessName`, `LogonType`, `CommandLine`…). L'écart
+   n'est pas un oubli de déclaration : les noms viennent du XML **à l'exécution**
+   (`foreach ($k in $d.Keys)`), donc l'extracteur **statique** de la garde ne peut pas les voir. La
+   garde reste verte tout en sous-couvrant ce chemin — c'est une limite de méthode, pas une dérive.
+4. **Sysmon n'est pas lu.** Ce script ne touche pas au canal `Microsoft-Windows-Sysmon/Operational`.
+   Pour de la télémétrie Sysmon, il faut l'agent Rust (`agent/README.md`).
+5. ~~**Le champ CIM `action` n'est JAMAIS posé.**~~ **Périmé** (lecture du script, non re-mesuré) :
+   `Collect-Log` prend désormais une table `identifiant -> issue` et pose `fields.action` (`failure` pour
+   `4625`/`4771`, `success` pour `4688` et les comptes, `session_open`…), et le pare-feu pose `blocked` ;
+   le compte « 0 des 1 505 » ci-dessous est celui d'**avant** ce correctif. *Mesuré le 2026‑08‑02 sur les deux Windows Server 2022 :
+   **0 des 1 505** événements de ce collecteur porte `action` — comme les **0 / 6 962** de l'agent Rust
+   (`docs/CIM.md` §4c en fait pourtant le vocabulaire neutre de composition).* En revanche ce collecteur
+   pose **toujours** une `category` (**0 / 1 505** sans catégorie), là où l'agent en laisse 36,7 % vides :
+   sur ce point précis, le collecteur PowerShell est le plus complet des deux.
+6. ~~**Kerberos manque sur un contrôleur de domaine**~~ **Périmé** : `4768`/`4769`/`4771`/`4776` sont
+   dans la table d'issues de `win-auth` (lecture du script) — cf. la section Windows Server 2022
+   ci-dessus, qui dit le trou mesuré et sa correction.
+
+## Étendre
+
+Besoin d'une source spécifique (un journal applicatif, une clé de registre, un
+compteur) ? Ajoutez un appel `Collect-Log` (pour un journal d'événements) ou un
+petit bloc `Add-Event` dans le script — ou, sans toucher au script, utilisez un
+**scripted input** générique côté Linux qui interroge la machine Windows à distance
+(cf. section « Ajouter vos sources » du README principal).

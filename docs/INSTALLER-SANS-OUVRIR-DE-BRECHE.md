@@ -1,809 +1,809 @@
-# Installer plume sans ouvrir de brèche — pas à pas, dans les trois modes
+# Installing plume without opening a breach — step by step, in all three modes
 
-[Français](INSTALLER-SANS-OUVRIR-DE-BRECHE.md) | [English](INSTALLER-SANS-OUVRIR-DE-BRECHE.en.md)
+[English](INSTALLER-SANS-OUVRIR-DE-BRECHE.md) | [Français](INSTALLER-SANS-OUVRIR-DE-BRECHE.fr.md)
 
-Cette page s'adresse à la personne qui installe plume chez elle, sur une machine qu'elle administre, et
-qui ne veut **rien exposer de plus que ce qu'elle a choisi**. Elle suit l'ordre des gestes : ce qui est
-ouvert par défaut, l'installation de chaque mode, où vivent les secrets, ce que chaque capteur fait
-entrer dans le SIEM, le transport, les risques que le produit assume, et la preuve que tout remonte.
+This page is for the person who installs plume at home, on a machine they administer, and
+who wants to **expose nothing more than what they have chosen**. It follows the order of operations: what is
+open by default, the installation of each mode, where the secrets live, what each sensor brings
+into the SIEM, the transport, the risks the product accepts, and the proof that everything reports in.
 
-Elle ne répète pas les pages qui existent : le même geste dans les trois modes est dans
-[`TROIS-MODES.md`](TROIS-MODES.md), le contrat de fil des agents dans
-[`AGENTS-PROTOCOLE.md`](AGENTS-PROTOCOLE.md), le chiffrement au repos dans
-[`CHIFFREMENT-COMPRESSION.md`](CHIFFREMENT-COMPRESSION.md), le récepteur syslog dans
-[`../deploy/SYSLOG.md`](../deploy/SYSLOG.md), le capteur de boîtes aux lettres dans
-[`../deploy/MAIL.md`](../deploy/MAIL.md), le langage de recherche dans [`GXQL.md`](GXQL.md).
+It does not repeat the pages that exist: the same operation in all three modes is in
+[`TROIS-MODES.md`](TROIS-MODES.md), the agents' wire contract in
+[`AGENTS-PROTOCOLE.md`](AGENTS-PROTOCOLE.md), at-rest encryption in
+[`CHIFFREMENT-COMPRESSION.md`](CHIFFREMENT-COMPRESSION.md), the syslog receiver in
+[`../deploy/SYSLOG.md`](../deploy/SYSLOG.md), the mailbox sensor in
+[`../deploy/MAIL.md`](../deploy/MAIL.md), the search language in [`GXQL.md`](GXQL.md).
 
-> **Ce qui n'a pas été exécuté.** Les commandes de cette page sont reprises des installateurs et des
-> manifestes livrés (`bootstrap.sh`, `bootstrap-agent.sh`, `docker-compose.yml`, `deploy/k3s.yaml`) et
-> chaque comportement annoncé a été relu dans le code qui le tient. Aucune séquence d'installation n'a
-> été jouée sur une machine pour écrire cette page. Un geste qui échoue chez vous est un défaut à
-> signaler.
+> **What has not been executed.** The commands on this page are taken from the shipped installers and
+> manifests (`bootstrap.sh`, `bootstrap-agent.sh`, `docker-compose.yml`, `deploy/k3s.yaml`) and
+> every announced behaviour has been reread in the code that holds it. No installation sequence has
+> been run on a machine to write this page. An operation that fails on your side is a defect to
+> report.
 
-Les noms d'hôte des exemples sont `soc.example.org` (le central) et `agent.example.org` (un agent).
+The host names in the examples are `soc.example.org` (the central) and `agent.example.org` (an agent).
 
 ---
 
-## 1. Ce qui est ouvert par défaut, mode par mode
+## 1. What is open by default, mode by mode
 
-| | hôte natif (`bootstrap.sh`) | Docker (`docker-compose.yml`) | k3s (`deploy/k3s.yaml`) |
+| | native host (`bootstrap.sh`) | Docker (`docker-compose.yml`) | k3s (`deploy/k3s.yaml`) |
 |---|---|---|---|
-| écoute du démon | `127.0.0.1:7000` et `[::1]:7000`, HTTP | `0.0.0.0:7000` **dans** le conteneur, publié sur `127.0.0.1:7000` de l'hôte seulement | `0.0.0.0:7000` dans le pod, joignable par l'`Ingress` et le namespace `soc` |
-| TLS | aucun : à poser (§2.1) | aucun : à poser (§2.3) | **actif** sur l'`Ingress`, entrée `websecure` seule, certificat du `Secret` `soc-tls` |
-| compte admin | hash posé, sinon **mode SETUP** (jeton d'installation à usage unique) | idem | hash du `Secret` `soc-auth` |
-| base au repos | **neuve = chiffrée** (clé engendrée en `0600` à côté de la base), si le démon l'ouvre le premier (§1.1) | idem, clé sur le volume `soc-data` | idem, clé sur le PVC |
-| sortie réseau du démon | celle de l'hôte | celle du pont Docker | **refusée** sauf DNS du cluster (`NetworkPolicy`), si le CNI l'applique |
-| gestes sensibles (créer un compte, frapper un jeton…) | **refusés** tant que le secret des gestes n'est pas posé | idem | idem |
+| daemon listener | `127.0.0.1:7000` and `[::1]:7000`, HTTP | `0.0.0.0:7000` **inside** the container, published on the host's `127.0.0.1:7000` only | `0.0.0.0:7000` in the pod, reachable by the `Ingress` and the `soc` namespace |
+| TLS | none: to be set up (§2.1) | none: to be set up (§2.3) | **active** on the `Ingress`, `websecure` entrypoint only, certificate from the `Secret` `soc-tls` |
+| admin account | hash set, otherwise **SETUP mode** (single-use installation token) | same | hash from the `Secret` `soc-auth` |
+| database at rest | **new = encrypted** (key generated as `0600` next to the database), if the daemon opens it first (§1.1) | same, key on the `soc-data` volume | same, key on the PVC |
+| daemon network egress | the host's | the Docker bridge's | **refused** except the cluster DNS (`NetworkPolicy`), if the CNI enforces it |
+| sensitive operations (creating an account, minting a token…) | **refused** as long as the gesture secret is not set | same | same |
 
-Une base **déjà en service et restée en clair** n'est jamais convertie par un démarrage : poser une clé
-dessus fait **refuser** le démarrage, avec le nom du geste explicite (`plume-daemon chiffrer-au-repos`).
-Le détail, et la façon de mettre la clé engendrée à l'abri, sont dans
-[`CHIFFREMENT-COMPRESSION.md` §1](CHIFFREMENT-COMPRESSION.md#1-la-base-au-repos--neuve--chiffrée--existante--jamais-touchée-par-un-démarrage).
-**Perdre la clé, c'est perdre la base et toutes ses sauvegardes** : copiez-la hors de la machine dès le
-premier démarrage, puis posez `PLUME_DB_KEY_ESCROWED=1`.
+A database **already in service and left in plaintext** is never converted by a start: setting a key
+on it makes the start **refuse**, with the name of the explicit operation (`plume-daemon chiffrer-au-repos`).
+The details, and how to store the generated key safely, are in
+[`CHIFFREMENT-COMPRESSION.md` §1](CHIFFREMENT-COMPRESSION.md#1-the-database-at-rest-new--encrypted-existing--never-touched-by-a-startup).
+**Losing the key means losing the database and all its backups**: copy it off the machine from the
+first start, then set `PLUME_DB_KEY_ESCROWED=1`.
 
-### 1.1 Démarrer le démon une fois avant toute sous-commande qui écrit dans la base
+### 1.1 Start the daemon once before any subcommand that writes to the database
 
-« Neuve = chiffrée » n'est vrai que si le **démon** est le premier à ouvrir la base : la clé n'est
-engendrée qu'à son démarrage, et seulement sur une base qui n'existe pas encore. Les sous-commandes
-qui ouvrent la base pour y écrire — `token`, `sigma-import` (sans `--dry-run`), `retention`,
-`fts-compact`, `purge`, `restore-drill record`, et `backup` une fois sa sauvegarde écrite — **créent**
-la base si elle manque,
-avec la seule clé déjà posée (`PLUME_DB_KEY`, `PLUME_DB_KEY_FILE` ou un fichier de clé déjà engendré).
-Sans aucune, la base naît **en clair**. Le démarrage suivant la trouve existante, sans clé, et n'y
-touche pas : elle reste en clair, et le démarrage ne le refuse pas, jusqu'au geste
-`plume-daemon chiffrer-au-repos`. Que la sous-commande refuse elle-même une base absente est une clé
-ouverte côté démon (`P10.33-g`) : d'ici là, l'ordre ci-dessous est la seule protection. Deux
-sous-commandes de lecture ne font pas naître de base : `verify` ouvre en lecture seule et ne crée rien ;
-`ledger-export` crée au plus un fichier vide, que le démarrage suivant traite encore comme une base
-neuve.
+"New = encrypted" is only true if the **daemon** is the first to open the database: the key is only
+generated at its start, and only on a database that does not exist yet. The subcommands
+that open the database to write to it — `token`, `sigma-import` (without `--dry-run`), `retention`,
+`fts-compact`, `purge`, `restore-drill record`, and `backup` once its backup is written — **create**
+the database if it is missing,
+with only the key already set (`PLUME_DB_KEY`, `PLUME_DB_KEY_FILE` or a key file already generated).
+Without any, the database is born **in plaintext**. The next start finds it existing, without a key, and does not
+touch it: it stays in plaintext, and the start does not refuse it, until the operation
+`plume-daemon chiffrer-au-repos`. That the subcommand itself should refuse a missing database is an open key
+on the daemon side (`P10.33-g`): until then, the order below is the only protection. Two
+read subcommands do not give birth to a database: `verify` opens read-only and creates nothing;
+`ledger-export` creates at most an empty file, which the next start still treats as a new
+database.
 
-L'ordre sûr, dans les trois modes : installer, **démarrer le démon une fois** — `bootstrap.sh` le fait
-en fin d'installation, `docker compose up -d`, `kubectl apply` —, vérifier que la clé existe
-(`/var/lib/plume/db/soc.db.key` sur un hôte, `/data/plume-at-rest.key` en conteneur), et seulement
-ensuite lancer une sous-commande. Les formes `docker compose exec soc …` et `kubectl -n soc exec
-deploy/soc -- …` passent par le conteneur où le démon tourne déjà : elles respectent cet ordre par
-construction. `docker compose run --rm soc <sous-commande>` lance un conteneur **sans** démon : en
-premier geste, il fait naître la base en clair sur le volume.
+The safe order, in all three modes: install, **start the daemon once** — `bootstrap.sh` does it
+at the end of installation, `docker compose up -d`, `kubectl apply` —, check that the key exists
+(`/var/lib/plume/db/soc.db.key` on a host, `/data/plume-at-rest.key` in a container), and only
+then run a subcommand. The forms `docker compose exec soc …` and `kubectl -n soc exec
+deploy/soc -- …` go through the container where the daemon is already running: they respect this order by
+construction. `docker compose run --rm soc <sous-commande>` starts a container **without** the daemon: as the
+first operation, it gives birth to the database in plaintext on the volume.
 
 ---
 
-## 2. Installer, pas à pas
+## 2. Installing, step by step
 
-### 2.1 Hôte natif — le central (`bootstrap.sh`)
+### 2.1 Native host — the central (`bootstrap.sh`)
 
-**Prérequis** : une distribution systemd, un accès root, un Rust stable (`cargo`) et un accès réseau au
-premier build (aucun binaire n'est publié). `auditd` est facultatif mais sans lui le capteur d'exécution
-ne collecte rien (et le dit).
+**Prerequisites**: a systemd distribution, root access, a stable Rust (`cargo`) and network access for the
+first build (no binary is published). `auditd` is optional but without it the execution sensor
+collects nothing (and says so).
 
-1. **Compiler.** `cd daemon && cargo build --release && cd ..` — ajoutez `--features cold_tier,ldap`
-   pour le tier froid et l'annuaire (les deux formes sont légitimes, l'installateur dit laquelle il a posée).
-2. **Installer SANS secret dans la ligne de commande.** `sudo bash bootstrap.sh`. Sans hash, le fichier
-   `/etc/plume/soc.conf` (`0640 root:soc`) est écrit avec un hash vide, et le démon démarre en **mode
-   SETUP**. N'écrivez pas `sudo env PLUME_PASS_HASH=… bash bootstrap.sh`, la forme que l'en-tête du
-   script montre encore : `sudo` journalise sa ligne complète, et le capteur `journal`, que ce même
-   script active, la fait entrer dans le SIEM, où tout lecteur verrait le hash — de quoi tenter le mot de
-   passe hors ligne.
-3. **Poser le hash par un tube.** `hashpw` lit l'entrée standard quand l'argument manque :
+1. **Compile.** `cd daemon && cargo build --release && cd ..` — add `--features cold_tier,ldap`
+   for the cold tier and the directory (both forms are legitimate, the installer says which one it has set up).
+2. **Install WITHOUT a secret on the command line.** `sudo bash bootstrap.sh`. Without a hash, the file
+   `/etc/plume/soc.conf` (`0640 root:soc`) is written with an empty hash, and the daemon starts in **SETUP
+   mode**. Do not write `sudo env PLUME_PASS_HASH=… bash bootstrap.sh`, the form the script's header
+   still shows: `sudo` logs its full line, and the `journal` sensor, which this same
+   script enables, brings it into the SIEM, where any reader would see the hash — enough to attack the
+   password offline.
+3. **Set the hash through a pipe.** `hashpw` reads standard input when the argument is missing:
    ```sh
    read -rs PW && printf '%s' "$PW" | ./daemon/target/release/plume-daemon hashpw \
      | sed 's/^/PLUME_PASS_HASH=/' | sudo tee -a /etc/plume/soc.conf >/dev/null; unset PW
    sudo systemctl restart plume-daemon
    ```
-   La ligne ajoutée gagne sur la ligne vide (le lecteur de configuration garde la **dernière**
-   occurrence d'une clé). Un `$` du hash n'y est pas interprété : ce fichier n'est pas lu par un shell.
-   Sans ce geste, l'assistant web fait la même chose : le jeton d'installation est dans
-   `sudo journalctl -u plume-daemon` et dans `/var/lib/plume/db/setup-token.txt` (`0600`) ; quiconque
-   joint la console **et** détient ce jeton crée le compte admin — ne laissez pas le mode SETUP ouvert.
-4. **Poser le secret des gestes** (sinon, frapper un jeton d'agent par la console est refusé) :
-   [`TROIS-MODES.md` §3.11](TROIS-MODES.md#311-poser-le-secret-des-gestes).
-5. **Choisir l'exposition.** Par défaut rien ne sort de la boucle locale. Pour le réseau, deux voies :
-   - **un mandataire TLS devant** (Caddy, nginx, Traefik — exemples dans
-     [`../deploy/CONFIDENTIALITE.md`](../deploy/CONFIDENTIALITE.md)), le démon restant sur `127.0.0.1` ;
-     posez `PLUME_HOST` sur le nom servi, `PLUME_TRUSTED_PROXIES` sur l'adresse exacte du mandataire, et
-     `PLUME_TLS_TERMINATED_UPSTREAM=1` dans `/etc/plume/soc.conf` si le mandataire ne sert ce nom qu'en
-     HTTPS (§6.2) ;
-   - **le TLS natif** : `PLUME_TLS_CERT` et `PLUME_TLS_KEY` (chemins PEM lisibles par l'utilisateur
-     `soc`), `PLUME_ADDR` sur l'interface voulue, `PLUME_HOST` sur le nom du certificat. L'unité du démon
-     n'a **aucune capacité** : choisissez un port au-dessus de 1024. Un certificat illisible **arrête** le
-     démon au lieu de le faire retomber en HTTP. Avec ce TLS actif, le démon pose HSTS et l'attribut
-     `Secure` de ses cookies.
-6. **Prouver** :
+   The appended line wins over the empty line (the configuration reader keeps the **last**
+   occurrence of a key). A `$` in the hash is not interpreted there: this file is not read by a shell.
+   Without this operation, the web wizard does the same thing: the installation token is in
+   `sudo journalctl -u plume-daemon` and in `/var/lib/plume/db/setup-token.txt` (`0600`); whoever
+   reaches the console **and** holds this token creates the admin account — do not leave SETUP mode open.
+4. **Set the gesture secret** (otherwise, minting an agent token from the console is refused):
+   [`TROIS-MODES.md` §3.11](TROIS-MODES.md#311-setting-the-gesture-secret).
+5. **Choose the exposure.** By default nothing leaves the loopback. For the network, two ways:
+   - **a TLS proxy in front** (Caddy, nginx, Traefik — examples in
+     [`../deploy/CONFIDENTIALITE.md`](../deploy/CONFIDENTIALITE.md)), the daemon staying on `127.0.0.1`;
+     set `PLUME_HOST` to the served name, `PLUME_TRUSTED_PROXIES` to the exact address of the proxy, and
+     `PLUME_TLS_TERMINATED_UPSTREAM=1` in `/etc/plume/soc.conf` if the proxy only serves that name over
+     HTTPS (§6.2);
+   - **native TLS**: `PLUME_TLS_CERT` and `PLUME_TLS_KEY` (PEM paths readable by the `soc`
+     user), `PLUME_ADDR` on the desired interface, `PLUME_HOST` on the certificate's name. The daemon's unit
+     has **no capability**: choose a port above 1024. An unreadable certificate **stops** the
+     daemon instead of letting it fall back to HTTP. With this TLS active, the daemon sets HSTS and the
+     `Secure` attribute of its cookies.
+6. **Prove**:
    ```sh
    systemctl is-active plume-daemon                 # active
-   ss -ltn | grep ':7000'                           # 127.0.0.1 et [::1] seulement, tant que rien n'est ouvert
+   ss -ltn | grep ':7000'                           # 127.0.0.1 and [::1] only, as long as nothing is opened
    curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:7000/readyz   # 200
-   curl -sS -u admin http://127.0.0.1:7000/api/me   # curl DEMANDE le mot de passe : rien dans l'historique
+   curl -sS -u admin http://127.0.0.1:7000/api/me   # curl PROMPTS for the password: nothing in the history
    ```
-   La dernière réponse doit porter `"role":"admin"`. Avec le TLS natif, la même chose en
-   `https://soc.example.org:<port>/readyz`, et `curl -sv` doit montrer votre certificat.
+   The last response must carry `"role":"admin"`. With native TLS, the same thing at
+   `https://soc.example.org:<port>/readyz`, and `curl -sv` must show your certificate.
 
-### 2.2 Hôte natif — un agent (`bootstrap-agent.sh`)
+### 2.2 Native host — an agent (`bootstrap-agent.sh`)
 
-**Prérequis** : root, systemd, `curl`. Le central doit être joignable en `https://` (voir §5).
+**Prerequisites**: root, systemd, `curl`. The central must be reachable over `https://` (see §5).
 
-1. **Sur le central, frapper un jeton lié à l'hôte**, après le premier démarrage du démon (§2.1) :
+1. **On the central, mint a host-bound token**, after the daemon's first start (§2.1):
    ```sh
    sudo env PLUME_CONFIG=/etc/plume/soc.conf /usr/local/bin/plume-daemon token agent-web agent.example.org
    ```
-   Il s'affiche **une fois** ; seul son SHA-256 est gardé en base. `PLUME_CONFIG` n'est posé que par
-   l'unité `plume-daemon.service`, et `sudo` ne le transmet pas. Sans lui, la sous-commande lit
-   `/etc/plume/plume.conf` et écrit dans `/var/lib/plume/db/plume.db`, pas dans la `soc.db` du démon :
-   elle affiche un jeton et rend 0, puis le central refuse l'agent. L'ordre compte aussi : sur une base
-   absente, la sous-commande crée la base sans engendrer de clé, donc en clair (§1.1).
-2. **Sur l'agent, écrire la configuration par l'entrée standard**, jamais par argument :
+   It is displayed **once**; only its SHA-256 is kept in the database. `PLUME_CONFIG` is only set by
+   the `plume-daemon.service` unit, and `sudo` does not pass it on. Without it, the subcommand reads
+   `/etc/plume/plume.conf` and writes to `/var/lib/plume/db/plume.db`, not to the daemon's `soc.db`:
+   it displays a token and returns 0, then the central refuses the agent. The order matters too: on a missing
+   database, the subcommand creates the database without generating a key, hence in plaintext (§1.1).
+2. **On the agent, write the configuration through standard input**, never through an argument:
    ```sh
    umask 077
    printf 'PLUME_CENTRAL=%s\nPLUME_TOKEN=%s\n' 'https://soc.example.org' '<jeton>' \
      | sudo tee /etc/plume/plume.conf >/dev/null
    sudo chmod 0600 /etc/plume/plume.conf
-   sudo bash bootstrap-agent.sh       # conf présente -> conservée, resserrée en 0600 root:root
+   sudo bash bootstrap-agent.sh       # conf present -> kept, tightened to 0600 root:root
    ```
-   Pour installer des capteurs de plus, la conf restant en place :
-   `sudo env PLUME_EXTRA_COLLECTORS="journal auditd" bash bootstrap-agent.sh` — aucune valeur secrète
-   dans la ligne. L'installateur **installe sans activer**, sauf `resources`, `integrity` et `ship`.
-3. **Prouver** : `sudo systemctl start plume-ship.service && journalctl -u plume-ship -n 20` ne doit
-   porter ni `REFUS` ni code HTTP d'erreur ; sur le central, `search host=agent.example.org
-   source=integrity | stats count` rend un compte non nul une fois le premier passage du FIM expédié.
+   To install more sensors, with the conf staying in place:
+   `sudo env PLUME_EXTRA_COLLECTORS="journal auditd" bash bootstrap-agent.sh` — no secret value
+   on the line. The installer **installs without enabling**, except `resources`, `integrity` and `ship`.
+3. **Prove**: `sudo systemctl start plume-ship.service && journalctl -u plume-ship -n 20` must
+   carry neither `REFUS` nor an HTTP error code; on the central, `search host=agent.example.org
+   source=integrity | stats count` returns a non-zero count once the first FIM run has been shipped.
 
 ### 2.3 Docker (`docker-compose.yml`)
 
-**Prérequis** : Docker avec BuildKit et Compose ; aucune chaîne Rust sur l'hôte.
+**Prerequisites**: Docker with BuildKit and Compose; no Rust toolchain on the host.
 
-1. **Construire d'abord**, puis poser le hash : la recette, ses apostrophes et son filtre sont dans le
-   [`README`](../README.md#a-docker-le-plus-simple). Si `docker` s'appelle par `sudo`, la ligne `hashpw
-   '<mot de passe>'` part au journal `sudo` comme au §2.1 : lancez `docker` sans `sudo`, ou passez le mot
-   de passe par l'entrée standard (`hashpw` sans argument la lit ; ce tube à travers `docker compose run`
-   n'a pas été joué ici).
-2. **Démarrer** : `docker compose up -d` — avant toute sous-commande (§1.1). Le port n'est publié que
-   sur `127.0.0.1:7000` de l'hôte, en HTTP.
-3. **Choisir l'exposition.** Dans les deux voies, posez `PLUME_HOST` dans `.env` sur le nom servi
-   (`PLUME_HOST=soc.example.org`) : le défaut est `soc.localhost`, et une requête qui arrive sous un autre
-   nom que ceux de `PLUME_HOST` ou que la boucle locale reçoit `421`.
-   - **un mandataire TLS devant**, sur l'hôte : la ligne `ports:` reste `127.0.0.1:7000:7000`, le
-     mandataire vise `http://127.0.0.1:7000`. `PLUME_TRUSTED_PROXIES` n'est pas énumérée par le service :
-     le démon garde son défaut, qui fait confiance aux pairs privés et de boucle locale.
-     `PLUME_TLS_TERMINATED_UPSTREAM`, elle, l'est : posez-la à `1` dans `.env` si le mandataire ne sert
-     ce nom qu'en HTTPS (§6.2) ;
-   - **le TLS natif** : `PLUME_TLS_CERT` et `PLUME_TLS_KEY` sont **énumérées** dans le bloc
-     `environment:` (sans quoi `.env` ne servirait à rien) ; décommentez le montage
-     `./tls:/etc/plume/tls:ro` et posez des chemins **du conteneur**, la clé lisible par l'utilisateur
-     `soc` de l'image (uid `10001`). Le démon sert alors **HTTPS seul** sur son port — mais tant que la
-     ligne `ports:` vaut `127.0.0.1:7000:7000`, il ne l'offre qu'à l'hôte lui-même. Pour l'exposer,
-     publiez le port sur l'interface voulue, par exemple `"192.0.2.10:7000:7000"`, et rien de plus large
-     que ce dont vous avez besoin.
-4. **Mettre la clé engendrée à l'abri** : `docker compose exec soc cat /data/plume-at-rest.key`, rangée
-   hors de la machine, puis `PLUME_DB_KEY_ESCROWED=1` dans `.env`.
-5. **Prouver** : `curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:7000/readyz` (200),
-   `ss -ltn | grep ':7000'` (`127.0.0.1` seulement, tant que la ligne `ports:` n'a pas changé), et
-   `docker compose exec soc cat /sys/fs/cgroup/memory.swap.max` (`0`, la borne d'échange tient). Avec le
-   TLS natif, la première commande devient `curl -sS --resolve soc.example.org:7000:127.0.0.1
-   https://soc.example.org:7000/readyz`, et `curl -sv` doit montrer votre certificat.
+1. **Build first**, then set the hash: the recipe, its quotes and its filter are in the
+   [`README`](../README.md#a-docker-the-simplest). If `docker` is called through `sudo`, the line `hashpw
+   '<mot de passe>'` goes to the `sudo` log as in §2.1: run `docker` without `sudo`, or pass the
+   password through standard input (`hashpw` without an argument reads it; this pipe through `docker compose run`
+   has not been tested here).
+2. **Start**: `docker compose up -d` — before any subcommand (§1.1). The port is only published
+   on the host's `127.0.0.1:7000`, over HTTP.
+3. **Choose the exposure.** In both ways, set `PLUME_HOST` in `.env` to the served name
+   (`PLUME_HOST=soc.example.org`): the default is `soc.localhost`, and a request that arrives under a name other
+   than those of `PLUME_HOST` or the loopback receives `421`.
+   - **a TLS proxy in front**, on the host: the `ports:` line stays `127.0.0.1:7000:7000`, the
+     proxy targets `http://127.0.0.1:7000`. `PLUME_TRUSTED_PROXIES` is not listed by the service:
+     the daemon keeps its default, which trusts private and loopback peers.
+     `PLUME_TLS_TERMINATED_UPSTREAM`, on the other hand, is: set it to `1` in `.env` if the proxy only serves
+     that name over HTTPS (§6.2);
+   - **native TLS**: `PLUME_TLS_CERT` and `PLUME_TLS_KEY` are **listed** in the
+     `environment:` block (otherwise `.env` would be of no use); uncomment the mount
+     `./tls:/etc/plume/tls:ro` and set **container** paths, the key readable by the image's `soc`
+     user (uid `10001`). The daemon then serves **HTTPS only** on its port — but as long as the
+     `ports:` line is `127.0.0.1:7000:7000`, it only offers it to the host itself. To expose it,
+     publish the port on the desired interface, for example `"192.0.2.10:7000:7000"`, and nothing broader
+     than what you need.
+4. **Store the generated key safely**: `docker compose exec soc cat /data/plume-at-rest.key`, kept
+   off the machine, then `PLUME_DB_KEY_ESCROWED=1` in `.env`.
+5. **Prove**: `curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:7000/readyz` (200),
+   `ss -ltn | grep ':7000'` (`127.0.0.1` only, as long as the `ports:` line has not changed), and
+   `docker compose exec soc cat /sys/fs/cgroup/memory.swap.max` (`0`, the swap bound holds). With
+   native TLS, the first command becomes `curl -sS --resolve soc.example.org:7000:127.0.0.1
+   https://soc.example.org:7000/readyz`, and `curl -sv` must show your certificate.
 
-Le central en conteneur **n'est pas son propre agent** : aucun capteur shell n'est dans l'image. Les
-capteurs tournent sur l'hôte Docker, installés par `bootstrap-agent.sh`, et poussent vers
-`http://127.0.0.1:7000` — le clair est admis vers la boucle locale, et vers elle seule (§5).
+The containerized central **is not its own agent**: no shell sensor is in the image. The
+sensors run on the Docker host, installed by `bootstrap-agent.sh`, and push to
+`http://127.0.0.1:7000` — plaintext is allowed towards the loopback, and towards it alone (§5).
 
 ### 2.4 k3s (`deploy/k3s.yaml`)
 
-**Prérequis** : un cluster k3s (Traefik est le contrôleur d'`Ingress` livré), Docker pour construire
-l'image, `kubectl`.
+**Prerequisites**: a k3s cluster (Traefik is the shipped `Ingress` controller), Docker to build
+the image, `kubectl`.
 
-1. **Construire et importer l'image** : `docker build -t soc:latest . && docker save soc:latest | sudo k3s
+1. **Build and import the image**: `docker build -t soc:latest . && docker save soc:latest | sudo k3s
    ctr images import -`.
-2. **Remplir une copie locale du manifeste** (non versionnée) : le hash dans le `Secret` `soc-auth`
-   (`hashpw` lit l'entrée standard, comme au §2.1), et `soc.tondomaine.tld` remplacé **aux deux
-   endroits** — `PLUME_HOST` et l'`Ingress` ; un écart rend `421`. Un hash laissé à
-   `REMPLACER_PAR_LE_HASH` n'arme **pas** le mode SETUP (il n'exige qu'une valeur vide) : personne
-   n'entre, sans message.
-3. **Poser le certificat** avant d'appliquer : `kubectl -n soc create secret tls soc-tls --cert=<crt>
-   --key=<key>`, ou un `Certificate` cert-manager dont `secretName` vaut `soc-tls`. Tant qu'il manque,
-   Traefik présente son certificat auto-signé : le navigateur avertit, rien ne passe en clair. Un autre
-   contrôleur d'`Ingress` ignore les annotations Traefik : sa redirection HTTP vers HTTPS est alors à
-   poser, et `kube-system` est à remplacer par son namespace dans la `NetworkPolicy`.
-4. **Appliquer** : `kubectl apply -f <copie>.yaml`. Le pod tourne non-root (uid `10001`), racine en
-   lecture seule, sans capacité, profil seccomp `RuntimeDefault`, **sans jeton de compte de service**
-   monté.
-5. **Mettre la clé à l'abri** : `kubectl -n soc exec deploy/soc -- cat /data/plume-at-rest.key`, puis
-   décommentez `PLUME_DB_KEY_ESCROWED`.
-6. **Prouver** :
+2. **Fill in a local copy of the manifest** (not versioned): the hash in the `Secret` `soc-auth`
+   (`hashpw` reads standard input, as in §2.1), and `soc.tondomaine.tld` replaced **in both
+   places** — `PLUME_HOST` and the `Ingress`; a mismatch returns `421`. A hash left at
+   `REMPLACER_PAR_LE_HASH` does **not** arm SETUP mode (it only requires an empty value): nobody
+   gets in, without a message.
+3. **Set the certificate** before applying: `kubectl -n soc create secret tls soc-tls --cert=<crt>
+   --key=<key>`, or a cert-manager `Certificate` whose `secretName` is `soc-tls`. As long as it is missing,
+   Traefik presents its self-signed certificate: the browser warns, nothing goes through in plaintext. Another
+   `Ingress` controller ignores the Traefik annotations: its HTTP to HTTPS redirect then has to be
+   set up, and `kube-system` has to be replaced by its namespace in the `NetworkPolicy`.
+4. **Apply**: `kubectl apply -f <copie>.yaml`. The pod runs non-root (uid `10001`), root filesystem
+   read-only, with no capability, seccomp profile `RuntimeDefault`, **with no service account token**
+   mounted.
+5. **Store the key safely**: `kubectl -n soc exec deploy/soc -- cat /data/plume-at-rest.key`, then
+   uncomment `PLUME_DB_KEY_ESCROWED`.
+6. **Prove**:
    ```sh
    kubectl -n soc rollout status deploy/soc
-   curl -sv https://soc.example.org/readyz 2>&1 | grep -E 'subject:|HTTP/'   # votre certificat, puis 200
-   kubectl -n soc exec deploy/soc -- curl -sS --max-time 5 https://example.com   # DOIT échouer
+   curl -sv https://soc.example.org/readyz 2>&1 | grep -E 'subject:|HTTP/'   # your certificate, then 200
+   kubectl -n soc exec deploy/soc -- curl -sS --max-time 5 https://example.com   # MUST fail
    ```
-   Si la troisième commande aboutit, le CNI n'applique pas la `NetworkPolicy` (cluster démarré avec
-   `--disable-network-policy`, ou CNI sans support) : l'egress n'est pas coupé.
+   If the third command succeeds, the CNI does not enforce the `NetworkPolicy` (cluster started with
+   `--disable-network-policy`, or a CNI without support): egress is not cut off.
 
-Les agents du cluster poussent **par l'`Ingress`** (`PLUME_CENTRAL=https://soc.example.org`) : c'est le
-chemin que la `NetworkPolicy` livrée laisse entrer (contrôleur dans `kube-system`, ou pods du namespace
-`soc`). Les capteurs Kubernetes tournent sur le **nœud**, pas dans le pod (§4, §6.1).
+The cluster's agents push **through the `Ingress`** (`PLUME_CENTRAL=https://soc.example.org`): it is the
+path that the shipped `NetworkPolicy` lets in (controller in `kube-system`, or pods of the `soc`
+namespace). The Kubernetes sensors run on the **node**, not in the pod (§4, §6.1).
 
-### 2.5 Windows — le collecteur (`plume-collector.ps1`)
+### 2.5 Windows — the collector (`plume-collector.ps1`)
 
-Un poste ou un serveur Windows n'est pas un mode du central : c'est un **émetteur** qui pousse vers un
-central installé par l'un des trois modes ci-dessus. Le collecteur est un fichier unique,
-[`../collectors/windows/plume-collector.ps1`](../collectors/windows/plume-collector.ps1), lancé par une
-tâche planifiée ; il lit les journaux Windows et **poste directement** sur `/api/ingest`, sans spool
-disque. Son mode d'emploi détaillé, ses mesures et ses limites sont dans
-[`../collectors/windows/README.md`](../collectors/windows/README.md). Ce qui suit est l'ordre des gestes.
+A Windows desktop or server is not a mode of the central: it is an **emitter** that pushes to a
+central installed by one of the three modes above. The collector is a single file,
+[`../collectors/windows/plume-collector.ps1`](../collectors/windows/plume-collector.ps1), launched by a
+scheduled task; it reads the Windows logs and **posts directly** to `/api/ingest`, without a disk
+spool. Its detailed instructions, its measurements and its limits are in
+[`../collectors/windows/README.md`](../collectors/windows/README.md). What follows is the order of operations.
 
-> **Ce qui a été joué, et ce qui ne l'a pas été.** Le README consigne l'exécution réelle de
-> `auditpol /set` (noms anglais des sous-catégories, sur un Windows anglophone), d'`Import-Certificate`
-> et de `schtasks /Create` sur des machines Windows de test. Tout le reste de cette page est fait de
-> commandes Windows standard **non jouées** pour l'écrire : `auditpol /set` par GUID, `auditpol /backup`
-> et `/restore`, `icacls`, `Get-Acl`, `schtasks /Run`, `Get-ScheduledTaskInfo` et la désinstallation. La porte de transport du script est exécutée en
-> intégration continue sous `pwsh` 7 seulement : **Windows PowerShell 5.1, celui que lance la tâche,
-> n'y est exécuté nulle part** (`.github/scripts/check_windows_collector_is_honest.py`).
+> **What has been tested, and what has not.** The README records the real execution of
+> `auditpol /set` (English subcategory names, on an English-language Windows), of `Import-Certificate`
+> and of `schtasks /Create` on Windows test machines. Everything else on this page is made of
+> standard Windows commands **not run** to write it: `auditpol /set` by GUID, `auditpol /backup`
+> and `/restore`, `icacls`, `Get-Acl`, `schtasks /Run`, `Get-ScheduledTaskInfo` and uninstallation. The script's transport gate is executed in
+> continuous integration under `pwsh` 7 only: **Windows PowerShell 5.1, the one the task launches,
+> is executed nowhere there** (`.github/scripts/check_windows_collector_is_honest.py`).
 
-**Prérequis**
+**Prerequisites**
 
-- **Windows PowerShell 5.1** (`powershell.exe`, présent sur tout Windows pris en charge). C'est lui que
-  la tâche lance, et le script porte `#Requires -Version 5.1`. `pwsh` 7 l'exécute aussi, mais deux
-  réglages du script y sont sans effet, parce qu'ils passent par `ServicePointManager`, que les
-  commandes web de PowerShell 7 n'emploient pas (lecture, non jouée) : `PLUME_TLS_INSECURE` (étape 5)
-  et l'imposition de TLS 1.2 (ci-dessous).
-- Une console **élevée** (administrateur) pour l'installation ; la tâche tourne en **SYSTEM** : la
-  lecture du journal *Security* l'exige.
-- Les politiques d'audit : sans elles, `category=exec` est trompeuse et le pare-feu ne remonte aucun
-  blocage ([README, Prérequis](../collectors/windows/README.md#prérequis)). Relevez l'état d'avant pour
-  pouvoir le rendre à la désinstallation. Les noms de sous-catégories sont **localisés** (un Windows
-  en français refuse `"Process Creation"`) ; leurs GUID ne le sont pas :
+- **Windows PowerShell 5.1** (`powershell.exe`, present on every supported Windows). It is the one
+  the task launches, and the script carries `#Requires -Version 5.1`. `pwsh` 7 runs it too, but two
+  of the script's settings have no effect there, because they go through `ServicePointManager`, which
+  PowerShell 7's web commands do not use (read from the code, not run): `PLUME_TLS_INSECURE` (step 5)
+  and enforcing TLS 1.2 (below).
+- An **elevated** console (administrator) for the installation; the task runs as **SYSTEM**: reading
+  the *Security* log requires it.
+- The audit policies: without them, `category=exec` is misleading and the firewall reports no
+  block ([README, Prerequisites](../collectors/windows/README.md#prerequisites)). Record the prior state to
+  be able to restore it at uninstallation. Subcategory names are **localized** (a French-language
+  Windows refuses `"Process Creation"`); their GUIDs are not:
   ```powershell
   auditpol /backup /file:$env:USERPROFILE\auditpol-avant-plume.csv
   auditpol /set /subcategory:"{0CCE9226-69AE-11D9-BED3-505054503030}" /success:disable /failure:enable  # Filtering Platform Connection
   auditpol /set /subcategory:"{0CCE922B-69AE-11D9-BED3-505054503030}" /success:enable                  # Process Creation
   auditpol /set /subcategory:"{0CCE9215-69AE-11D9-BED3-505054503030}" /success:enable /failure:enable  # Logon
   ```
-  `auditpol /get /subcategory:"{0CCE922B-69AE-11D9-BED3-505054503030}"` relit l'état ; les GUID sont
-  ceux que publie Microsoft pour ces sous-catégories (forme par GUID non jouée ici).
-- Le central joignable en `https://`, sous un nom que son `PLUME_HOST` liste (sinon `421` à tout), et qui
-  accepte **TLS 1.2** : le script impose `Tls12` au protocole de sécurité de .NET, ce qui, sous 5.1,
-  écarte TLS 1.3 (lecture du script). Sous `pwsh` 7, cette imposition est sans effet : la version se
-  négocie selon le système.
+  `auditpol /get /subcategory:"{0CCE922B-69AE-11D9-BED3-505054503030}"` reads the state back; the GUIDs are
+  the ones Microsoft publishes for these subcategories (GUID form not tested here).
+- The central reachable over `https://`, under a name its `PLUME_HOST` lists (otherwise `421` to everything), and which
+  accepts **TLS 1.2**: the script forces `Tls12` on .NET's security protocol, which, under 5.1,
+  rules out TLS 1.3 (reading of the script). Under `pwsh` 7, this enforcement has no effect: the version is
+  negotiated according to the system.
 
-1. **Sur le central, frapper un jeton LIÉ à cette machine.** Le second argument est l'hôte du jeton ;
-   donnez-lui la valeur exacte de `$env:COMPUTERNAME` sur le poste, le nom que le collecteur déclare :
+1. **On the central, mint a token BOUND to this machine.** The second argument is the token's host;
+   give it the exact value of `$env:COMPUTERNAME` on the desktop, the name the collector declares:
    ```sh
-   sudo env PLUME_CONFIG=/etc/plume/soc.conf /usr/local/bin/plume-daemon token poste-win01 POSTE-WIN01   # hôte natif
+   sudo env PLUME_CONFIG=/etc/plume/soc.conf /usr/local/bin/plume-daemon token poste-win01 POSTE-WIN01   # native host
    docker compose exec soc plume-daemon token poste-win01 POSTE-WIN01                                   # Docker
    kubectl -n soc exec deploy/soc -- plume-daemon token poste-win01 POSTE-WIN01                         # k3s
    ```
-   Le jeton s'affiche **une fois**. Un jeton lié **réécrit** l'hôte de chaque ligne vers le sien : les
-   événements sont stockés sous le nom donné ici, quel que soit le `host` que l'enveloppe déclare. Un
-   jeton `--relais` laisserait le poste écrire sous n'importe quel nom : il n'est pas fait pour une
-   machine ([`AGENTS-PROTOCOLE.md` §3](AGENTS-PROTOCOLE.md#3-lauthentification-et-ce-que--lié-à-lhôte--veut-dire)).
-2. **Créer le répertoire, et couper ses droits AVANT d'y écrire le jeton.** Le script lit
-   `C:\ProgramData\plume\plume.conf` et écrit ses filigranes sous `C:\ProgramData\plume\state` :
+   The token is displayed **once**. A bound token **rewrites** the host of each row to its own: the
+   events are stored under the name given here, whatever `host` the envelope declares. A
+   `--relais` token would let the desktop write under any name: it is not meant for a
+   machine ([`AGENTS-PROTOCOLE.md` §3](AGENTS-PROTOCOLE.md#3-authentication-and-what-bound-to-the-host-means)).
+2. **Create the directory, and cut down its permissions BEFORE writing the token into it.** The script reads
+   `C:\ProgramData\plume\plume.conf` and writes its watermarks under `C:\ProgramData\plume\state`:
    ```powershell
    New-Item -ItemType Directory -Force -Path C:\ProgramData\plume | Out-Null
-   (Get-Acl C:\ProgramData\plume).Owner      # Administrateurs ou SYSTEM (noms localisés), rien d'autre
+   (Get-Acl C:\ProgramData\plume).Owner      # Administrators or SYSTEM (localized names), nothing else
    icacls C:\ProgramData\plume /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F"
-   icacls C:\ProgramData\plume               # deux entrées : SYSTEM et Administrateurs, aucune héritée
+   icacls C:\ProgramData\plume               # two entries: SYSTEM and Administrators, none inherited
    ```
-   `*S-1-5-18` est SYSTEM et `*S-1-5-32-544` le groupe Administrateurs : les SID ne dépendent pas de la
-   langue du système, leurs noms si. `/inheritance:r` retire les droits hérités de `C:\ProgramData`, qui
-   donne par défaut aux utilisateurs locaux la lecture et la création dans ses sous-répertoires (vérifiable par
-   `icacls C:\ProgramData`) ; `/grant:r` remplace les droits explicites de ces deux comptes. **Si le répertoire existait déjà**
-   (réinstallation, essai antérieur), supprimez-le et recréez-le plutôt que de le resserrer : `icacls`
-   sans `/T` ne touche que la racine, et un sous-répertoire comme `state` créé ou possédé par un autre
-   compte garderait ses droits explicites — un propriétaire peut toujours réécrire les siens. La
-   recréation efface les filigranes : le premier run rattrape alors `-MaxAgeMinutes` (étape 6).
-   **Pourquoi personne d'autre ne doit lire ce répertoire.** Le jeton y est en clair. Qui le lit
-   s'identifie comme ce poste sur les chemins machine du central (§3) : il écrit des événements que le
-   central range sous le nom du poste — de fausses ouvertures de session, ou assez de bruit pour noyer
-   les vraies. Qui peut **écrire** dans le répertoire fait pire : avancer un filigrane rend le
-   collecteur aveugle aux événements d'avant, et remplacer `plume-collector.ps1` fait exécuter son
-   code en SYSTEM au prochain déclenchement.
-3. **Écrire `plume.conf` sans que le jeton passe par une ligne de commande**, puis copier le script :
+   `*S-1-5-18` is SYSTEM and `*S-1-5-32-544` the Administrators group: SIDs do not depend on the
+   system's language, their names do. `/inheritance:r` removes the permissions inherited from `C:\ProgramData`, which
+   by default gives local users read and create access in its subdirectories (verifiable with
+   `icacls C:\ProgramData`); `/grant:r` replaces the explicit permissions of these two accounts. **If the directory already existed**
+   (reinstallation, earlier attempt), delete it and recreate it rather than tightening it: `icacls`
+   without `/T` only touches the root, and a subdirectory such as `state` created or owned by another
+   account would keep its explicit permissions — an owner can always rewrite their own. The
+   recreation erases the watermarks: the first run then catches up `-MaxAgeMinutes` (step 6).
+   **Why nobody else must read this directory.** The token is in plaintext there. Whoever reads it
+   identifies as this desktop on the central's machine paths (§3): they write events that the
+   central files under the desktop's name — fake logons, or enough noise to drown
+   the real ones. Whoever can **write** to the directory does worse: advancing a watermark makes the
+   collector blind to earlier events, and replacing `plume-collector.ps1` gets their
+   code executed as SYSTEM at the next trigger.
+3. **Write `plume.conf` without the token going through a command line**, then copy the script:
    ```powershell
    notepad C:\ProgramData\plume\plume.conf
    Copy-Item .\plume-collector.ps1 C:\ProgramData\plume\
-   icacls C:\ProgramData\plume\plume.conf    # mêmes deux entrées, héritées du répertoire
+   icacls C:\ProgramData\plume\plume.conf    # same two entries, inherited from the directory
    ```
-   Le contenu, collé dans l'éditeur :
+   The content, pasted into the editor:
    ```ini
    PLUME_CENTRAL=https://soc.example.org:7000
    PLUME_TOKEN=<le-jeton>
    ```
-   Le jeton ne se tape **jamais** dans une console ni sur une ligne de commande, et pour deux raisons
-   distinctes. Passé en argument à un processus (le paramètre `-Token` du script n'existe plus, mais
-   `powershell -Command "…"` ou `cmd /c echo … >` en créent un), il est écrit dans le `4688` dès que
-   l'audit `Process Creation` inclut la ligne de commande — et ce collecteur expédie lui-même ce `4688`
-   au SIEM ([README](../collectors/windows/README.md#configuration)) ; Sysmon, s'il tourne, l'écrit aussi
-   dans son propre canal. Tapé dans une console PowerShell, un `Set-Content … PLUME_TOKEN=…` ne crée
-   aucun processus, mais la ligne reste dans l'historique de PSReadLine
-   (`%APPDATA%\Microsoft\Windows\PowerShell\PSReadLine\ConsoleHost_history.txt`) et, si la
-   journalisation des blocs de script est active, dans l'événement `4104` du journal
-   *Microsoft-Windows-PowerShell/Operational* (lecture, non jouée). L'éditeur n'a ni l'un ni l'autre.
-   `plume.conf` ne porte que trois clés : `PLUME_CENTRAL`, `PLUME_TOKEN` et
-   `PLUME_SHIP_ALLOW_PLAINTEXT`. Une variable d'environnement gagne sur le fichier, et sous SYSTEM seules
-   les variables **machine** sont vues ; mais **`PLUME_TOKEN` ne se pose jamais en variable machine** :
-   elle est lisible par tout utilisateur local (clé
-   `HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment`, et environnement hérité par
-   chaque processus), ce qui défait l'étape 2. Le jeton vit dans `plume.conf`, et nulle part ailleurs.
-4. **`PLUME_CENTRAL` en `https://`.** Une adresse `http://` vers autre chose que la boucle locale
-   (`127.0.0.0/8`, `::1`, `localhost`) est **refusée** : message `REFUS` sur la sortie d'erreur,
-   **code 2**, avant toute lecture de journal et tout envoi — rien n'est lu, aucun filigrane n'avance.
-   Une adresse sans `schéma://` est refusée elle aussi, boucle locale comprise. `PLUME_SHIP_ALLOW_PLAINTEXT=1`
-   (environnement ou `plume.conf`) accepte le clair avec un avertissement à chaque run ; **le risque est
-   entier** : le jeton et chaque événement (comptes, lignes de commande, adresses) passent lisibles, et
-   qui écoute le chemin rejoue le jeton et écrit sous le nom de ce poste. Seulement sur un lien déjà
-   chiffré ou un réseau dont vous répondez (§5).
-5. **Certificat.** La vérification TLS est **active par défaut**. Pour un central signé par une autorité
-   interne, posez-la dans le magasin machine avant le premier run, faute de quoi chaque run échoue
-   (`LastTaskResult` à `1`) sans rien commettre : les événements attendent dans le journal Windows et
-   partent au premier run qui passe, tant que la rotation du journal ne les a pas emportés (étape 7) :
+   The token is **never** typed into a console or on a command line, for two separate
+   reasons. Passed as an argument to a process (the script's `-Token` parameter no longer exists, but
+   `powershell -Command "…"` or `cmd /c echo … >` create one), it is written into the `4688` as soon as
+   the `Process Creation` audit includes the command line — and this collector itself ships that `4688`
+   to the SIEM ([README](../collectors/windows/README.md#configuration)); Sysmon, if it runs, also writes it
+   into its own channel. Typed into a PowerShell console, a `Set-Content … PLUME_TOKEN=…` creates
+   no process, but the line stays in the PSReadLine history
+   (`%APPDATA%\Microsoft\Windows\PowerShell\PSReadLine\ConsoleHost_history.txt`) and, if
+   script block logging is active, in event `4104` of the
+   *Microsoft-Windows-PowerShell/Operational* log (read from the code, not run). The editor has neither.
+   `plume.conf` only carries three keys: `PLUME_CENTRAL`, `PLUME_TOKEN` and
+   `PLUME_SHIP_ALLOW_PLAINTEXT`. An environment variable wins over the file, and under SYSTEM only
+   **machine** variables are seen; but **`PLUME_TOKEN` is never set as a machine variable**:
+   it is readable by every local user (key
+   `HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment`, and environment inherited by
+   every process), which undoes step 2. The token lives in `plume.conf`, and nowhere else.
+4. **`PLUME_CENTRAL` over `https://`.** An `http://` address towards anything other than the loopback
+   (`127.0.0.0/8`, `::1`, `localhost`) is **refused**: `REFUS` message on standard error,
+   **code 2**, before any log read and any send — nothing is read, no watermark advances.
+   An address without `schéma://` is refused too, loopback included. `PLUME_SHIP_ALLOW_PLAINTEXT=1`
+   (environment or `plume.conf`) accepts plaintext with a warning at every run; **the risk is
+   whole**: the token and each event (accounts, command lines, addresses) go through readable, and
+   whoever listens on the path replays the token and writes under this desktop's name. Only on an already
+   encrypted link or a network you answer for (§5).
+5. **Certificate.** TLS verification is **active by default**. For a central signed by an internal
+   authority, put the authority in the machine store before the first run, failing which every run fails
+   (`LastTaskResult` at `1`) without committing anything: the events wait in the Windows log and
+   leave at the first run that succeeds, as long as log rotation has not carried them away (step 7):
    ```powershell
    Import-Certificate -FilePath C:\ProgramData\plume\ca.crt -CertStoreLocation Cert:\LocalMachine\Root
    ```
-   `PLUME_TLS_INSECURE=1` coupe la vérification. Elle n'est lue **que dans l'environnement** — posée
-   dans `plume.conf`, elle est sans effet —, donc pour la tâche en SYSTEM, comme variable machine :
-   `[Environment]::SetEnvironmentVariable('PLUME_TLS_INSECURE','1','Machine')`. Le risque est celui du
-   clair face à un intermédiaire actif : il présente n'importe quel certificat, reçoit le jeton et les
-   événements, et répond à la place du central. Réservé à un central de test en certificat auto-signé ;
-   retirez-la par `[Environment]::SetEnvironmentVariable('PLUME_TLS_INSECURE',$null,'Machine')`.
-   Sous `pwsh` 7, ce réglage passe par `ServicePointManager`, que les commandes web de PowerShell 7
-   n'emploient pas : la vérification y reste active (lecture, non jouée).
-6. **Tâche planifiée, toutes les 5 minutes, en SYSTEM.** Tapée dans **Windows PowerShell 5.1** élevé —
-   `$PSHOME` est le dossier de la console où la commande est tapée, et celui de `pwsh` 7 ne contient
-   pas de `powershell.exe` :
+   `PLUME_TLS_INSECURE=1` turns verification off. It is read **only from the environment** — set
+   in `plume.conf`, it has no effect —, hence for the task as SYSTEM, as a machine variable:
+   `[Environment]::SetEnvironmentVariable('PLUME_TLS_INSECURE','1','Machine')`. The risk is that of
+   plaintext against an active intermediary: it presents any certificate, receives the token and the
+   events, and answers in place of the central. Reserved for a test central with a self-signed certificate;
+   remove it with `[Environment]::SetEnvironmentVariable('PLUME_TLS_INSECURE',$null,'Machine')`.
+   Under `pwsh` 7, this setting goes through `ServicePointManager`, which PowerShell 7's web commands
+   do not use: verification stays active there (read from the code, not run).
+6. **Scheduled task, every 5 minutes, as SYSTEM.** Typed into an elevated **Windows PowerShell 5.1** —
+   `$PSHOME` is the folder of the console where the command is typed, and that of `pwsh` 7 does not contain
+   a `powershell.exe`:
    ```powershell
    $ps  = "$PSHOME\powershell.exe"
    $arg = "-NoProfile -ExecutionPolicy Bypass -File C:\ProgramData\plume\plume-collector.ps1"
    schtasks /Create /TN "Plume Collector" /SC MINUTE /MO 5 /RU SYSTEM /RL HIGHEST `
      /TR "`"$ps`" $arg" /F
    ```
-   `-ExecutionPolicy Bypass` ne vaut que pour ce processus ; il fait exécuter un script non signé, d'où
-   l'exigence que seuls SYSTEM et les Administrateurs puissent l'écrire (étape 2). Le script accepte
-   `-MaxAgeMinutes` (défaut `60`, la profondeur de rattrapage du **premier** run, sans filigrane) et
-   `-BatchSize` (défaut `400` événements par envoi) ; ni l'un ni l'autre n'est nécessaire. **Seul le
-   compte SYSTEM a été joué.** Un compte de service dédié ne l'a été nulle part : il lui faudrait la
-   lecture de `plume.conf`, l'écriture sous `state` (deux entrées de plus dans les `icacls` ci-dessus), et
-   ce qu'il ne pourra pas lire, le collecteur l'avouera (`collect_status=unavailable`) plutôt que de se
-   taire.
-7. **Prouver.** Un premier run, puis son code de retour :
+   `-ExecutionPolicy Bypass` only applies to this process; it gets an unsigned script executed, hence
+   the requirement that only SYSTEM and the Administrators can write it (step 2). The script accepts
+   `-MaxAgeMinutes` (default `60`, the catch-up depth of the **first** run, without a watermark) and
+   `-BatchSize` (default `400` events per send); neither is necessary. **Only the
+   SYSTEM account has been tested.** A dedicated service account has been tested nowhere: it would need
+   read access to `plume.conf`, write access under `state` (two more entries in the `icacls` above), and
+   whatever it cannot read, the collector will admit (`collect_status=unavailable`) rather than stay
+   silent.
+7. **Prove.** A first run, then its return code:
    ```powershell
    schtasks /Run /TN "Plume Collector"
-   Get-ScheduledTaskInfo -TaskName "Plume Collector"    # une fois le run fini : LastTaskResult : 0
+   Get-ScheduledTaskInfo -TaskName "Plume Collector"    # once the run is over: LastTaskResult : 0
    ```
-   Interrogée pendant que le run tourne, la tâche rend `267009` (en cours) ; `267011` dit qu'elle n'a
-   jamais tourné. Attendez que `(Get-ScheduledTask -TaskName "Plume Collector").State` revienne à `Ready`.
-   `LastTaskResult` vaut `2` pour un refus de transport (rien lu ni expédié), `1` pour une clé manquante ou un envoi non
-   acquitté (central injoignable, jeton refusé, certificat non reconnu) : le filigrane n'avance pas et
-   le run suivant relit. Sur le central, pour l'hôte donné au jeton :
+   Queried while the run is in progress, the task returns `267009` (running); `267011` says it has
+   never run. Wait until `(Get-ScheduledTask -TaskName "Plume Collector").State` returns to `Ready`.
+   `LastTaskResult` is `2` for a transport refusal (nothing read or shipped), `1` for a missing key or an
+   unacknowledged send (central unreachable, token refused, certificate not recognized): the watermark does not advance and
+   the next run rereads. On the central, for the host given to the token:
    ```text
    search host=POSTE-WIN01 source=windows-security | stats count
    search host=POSTE-WIN01 source=windows-agent category=health | stats count
    search host=POSTE-WIN01 category=config collect_status=unavailable | table host, source, reason, detail
    ```
-   Le premier compte doit être non nul. Le battement de santé est bucketé à l'**heure** : un par heure au
-   plus, quelle que soit la cadence de la tâche. La troisième requête doit être vide ; une ligne y nomme
-   une source aveugle et sa raison (journal refusé, cmdlet absente).
-8. **Désinstaller.**
+   The first count must be non-zero. The health heartbeat is bucketed by the **hour**: one per hour at
+   most, whatever the task's cadence. The third query must be empty; a row there names
+   a blind source and its reason (log refused, cmdlet missing).
+8. **Uninstall.**
    ```powershell
    schtasks /Delete /TN "Plume Collector" /F
    Remove-Item -Recurse -Force C:\ProgramData\plume
    auditpol /restore /file:$env:USERPROFILE\auditpol-avant-plume.csv
    ```
-   Puis, sur le central, **révoquez le jeton** par son nom : gestion des jetons de la console (admin), ou
-   `DELETE /api/tokens/poste-win01`, qui révoque tous les jetons de ce nom. Retirez aussi
-   `PLUME_TOKEN` et `PLUME_TLS_INSECURE` s'ils ont été posés en variables machine
-   (`[Environment]::SetEnvironmentVariable('PLUME_TOKEN',$null,'Machine')` : l'environnement l'emporte sur
-   `plume.conf`, et une variable machine se lit par tout utilisateur local), et l'autorité importée dans `Cert:\LocalMachine\Root` si
-   rien d'autre ne s'en sert. Les événements déjà reçus restent au central, soumis à sa rétention.
+   Then, on the central, **revoke the token** by its name: token management in the console (admin), or
+   `DELETE /api/tokens/poste-win01`, which revokes all tokens of that name. Also remove
+   `PLUME_TOKEN` and `PLUME_TLS_INSECURE` if they were set as machine variables
+   (`[Environment]::SetEnvironmentVariable('PLUME_TOKEN',$null,'Machine')`: the environment wins over
+   `plume.conf`, and a machine variable is readable by every local user), and the authority imported into `Cert:\LocalMachine\Root` if
+   nothing else uses it. The events already received stay at the central, subject to its retention.
 
-**Ce que le collecteur ne fait pas**
+**What the collector does not do**
 
-- **Pas de spool disque.** Le journal Windows en tient lieu tant que le filigrane n'avance pas ; un
-  central injoignable plus longtemps que la rotation du journal *Security* perd ce qui a tourné (lecture). Les
-  échantillons d'un run perdu (profils de pare-feu, connexions, battement) ne sont pas rejoués.
-- **Pas un service.** Rien ne tourne entre deux déclenchements, et le battement horaire n'est pas un
-  signal de vie à la maille de la tâche.
-- **Aucune action.** Il ne reçoit ni n'exécute aucune action de réponse, n'ouvre aucun port et ne lit
-  aucun contenu de fichier.
-- **Il ne masque rien.** Le champ `CommandLine` des `4688` part tel quel : un secret tapé sur une ligne
-  de commande du poste arrive dans le SIEM.
-- **Il ne lit pas Sysmon** (l'agent Rust le fait, [`../agent/README.md`](../agent/README.md)). Il pose en
-  revanche le champ CIM `action` (`failure`, `success`, `session_open`, `blocked`…) sur
-  l'authentification, l'exécution, les comptes, le système, Defender et le pare-feu, d'après la table
-  d'issues de chaque journal : une règle `category=auth action=failure` voit les `4625` (lecture du
-  script ; la mesure du README qui disait le contraire date d'avant cette table).
-- **Sous Windows PowerShell 5.1, rien n'est exécuté en intégration continue** : ni la syntaxe de la
-  porte de transport, ni la lecture d'adresse de .NET Framework. Sous `pwsh` 7, `PLUME_TLS_INSECURE` et
-  l'imposition de TLS 1.2 sont sans effet (*Prérequis*, étape 5).
+- **No disk spool.** The Windows log stands in for it as long as the watermark does not advance; a
+  central unreachable for longer than the *Security* log rotation loses what has rotated out (reading). The
+  samples of a lost run (firewall profiles, connections, heartbeat) are not replayed.
+- **Not a service.** Nothing runs between two triggers, and the hourly heartbeat is not a
+  sign of life at the task's granularity.
+- **No action.** It neither receives nor executes any response action, opens no port and reads
+  no file content.
+- **It masks nothing.** The `CommandLine` field of the `4688` goes out as is: a secret typed on a command
+  line of the desktop arrives in the SIEM.
+- **It does not read Sysmon** (the Rust agent does, [`../agent/README.md`](../agent/README.md)). It does, on the other hand,
+  set the CIM field `action` (`failure`, `success`, `session_open`, `blocked`…) on
+  authentication, execution, accounts, system, Defender and the firewall, from the outcome
+  table of each log: a rule `category=auth action=failure` sees the `4625` (reading of the
+  script; the README measurement that said otherwise predates this table).
+- **Under Windows PowerShell 5.1, nothing is executed in continuous integration**: neither the syntax of the
+  transport gate, nor .NET Framework's address parsing. Under `pwsh` 7, `PLUME_TLS_INSECURE` and
+  enforcing TLS 1.2 have no effect (*Prerequisites*, step 5).
 
 ---
 
-## 3. Où vivent les secrets, et ce qu'ils permettent
+## 3. Where the secrets live, and what they allow
 
-| Secret | Où | Droits | Ce qu'il permet |
+| Secret | Where | Permissions | What it allows |
 |---|---|---|---|
-| jeton d'agent | `/etc/plume/plume.conf` de l'agent | `0600 root:root`, resserré à chaque passage de l'installateur | s'identifier sur la **liste fermée** des chemins machine (ingestion, métriques, traces, canal de réponse, engagements actifs) — jamais l'interface ; un jeton lié à l'hôte écrit **sous cet hôte**, quel que soit le `host` déclaré |
-| le même jeton, recopié | `/etc/plume/responder.conf`, `/etc/plume/engagement-adapter.conf` (modules optionnels) | `0600` | réclamer les actions **de son hôte** sur le canal de réponse |
-| jeton du collecteur Windows | `C:\ProgramData\plume\plume.conf` | SYSTEM et Administrateurs seuls, héritage coupé (§2.5, étape 2) ; jamais en variable machine | les mêmes chemins machine que le jeton d'agent, sous l'hôte auquel il est lié ; qui peut **écrire** le répertoire fait aussi exécuter son code en SYSTEM (script remplacé) |
-| jeton du relais MinIO | `/etc/plume/minio-audit.token` | `0640 root:soc` (le relais tourne sous `soc`) | déposer des événements d'audit objet dans le spool de l'hôte |
-| jetons Cloudflare | `/etc/plume/cloudflare.conf` | `0600` | lecture d'analytique de la zone (posez un jeton en lecture seule) |
-| jeton (ou identifiant et mot de passe) du scrape Prometheus | `/etc/plume/prom.conf` (central, mode natif) | `0600 root:root`, resserré à chaque passage de `bootstrap.sh` ; seul lecteur `plume-prom-scrape`, qui tourne en root | pousser des séries sur le central ; un jeton `--relais` n'a pas d'hôte lié, l'hôte déclaré passe tel quel : il **usurpe n'importe quel hôte** sur les chemins machine ([`AGENTS-PROTOCOLE.md` §3](AGENTS-PROTOCOLE.md#3-lauthentification-et-ce-que--lié-à-lhôte--veut-dire)) ; avec identifiant et mot de passe, ceux d'un compte de la console |
-| paramètres d'URL des cibles scrapées | `/etc/plume/prom-targets` (central, mode natif) | `0600 root:root`, resserré à chaque passage | lire le `/metrics` d'une cible qui s'authentifie par paramètre d'URL |
-| hash admin, clé de base explicite | `/etc/plume/soc.conf` (hôte) · `.env` (Docker) · `Secret` `soc-auth` (k3s) | `0640 root:soc` sur l'hôte | ouvrir la console en admin (hash à attaquer hors ligne) ; ouvrir la base |
-| clé de base engendrée | `<PLUME_DB>.key` (hôte) · `/data/plume-at-rest.key` (Docker, k3s) | `0600`, relue après création | **déchiffrer la base et toutes ses archives** |
-| jeton d'installation | `setup-token.txt` à côté de la base, et le journal du démon | `0600`, effacé dès qu'un admin existe | créer le premier compte admin |
+| agent token | the agent's `/etc/plume/plume.conf` | `0600 root:root`, tightened at every run of the installer | identifying on the **closed list** of machine paths (ingestion, metrics, traces, response channel, active engagements) — never the interface; a host-bound token writes **under that host**, whatever `host` is declared |
+| the same token, copied | `/etc/plume/responder.conf`, `/etc/plume/engagement-adapter.conf` (optional modules) | `0600` | claiming the actions **of its host** on the response channel |
+| Windows collector token | `C:\ProgramData\plume\plume.conf` | SYSTEM and Administrators only, inheritance cut (§2.5, step 2); never as a machine variable | the same machine paths as the agent token, under the host it is bound to; whoever can **write** to the directory also gets their code executed as SYSTEM (replaced script) |
+| MinIO relay token | `/etc/plume/minio-audit.token` | `0640 root:soc` (the relay runs as `soc`) | dropping object audit events into the host's spool |
+| Cloudflare tokens | `/etc/plume/cloudflare.conf` | `0600` | reading the zone's analytics (set a read-only token) |
+| Prometheus scrape token (or username and password) | `/etc/plume/prom.conf` (central, native mode) | `0600 root:root`, tightened at every run of `bootstrap.sh`; sole reader `plume-prom-scrape`, which runs as root | pushing series to the central; a `--relais` token has no bound host, the declared host goes through as is: it **impersonates any host** on the machine paths ([`AGENTS-PROTOCOLE.md` §3](AGENTS-PROTOCOLE.md#3-authentication-and-what-bound-to-the-host-means)); with username and password, those of a console account |
+| URL parameters of the scraped targets | `/etc/plume/prom-targets` (central, native mode) | `0600 root:root`, tightened at every run | reading the `/metrics` of a target that authenticates by URL parameter |
+| admin hash, explicit database key | `/etc/plume/soc.conf` (host) · `.env` (Docker) · `Secret` `soc-auth` (k3s) | `0640 root:soc` on the host | opening the console as admin (hash to be attacked offline); opening the database |
+| generated database key | `<PLUME_DB>.key` (host) · `/data/plume-at-rest.key` (Docker, k3s) | `0600`, reread after creation | **decrypting the database and all its archives** |
+| installation token | `setup-token.txt` next to the database, and the daemon's log | `0600`, erased as soon as an admin exists | creating the first admin account |
 
-Le fichier vaut mieux que la variable pour un secret : l'environnement d'un processus se lit dans
-`/proc/<pid>/environ`. Le détail des droits d'un jeton d'agent, et pourquoi « lié à l'hôte » est une
-réécriture et non un refus, est dans [`AGENTS-PROTOCOLE.md` §3](AGENTS-PROTOCOLE.md#3-lauthentification-et-ce-que--lié-à-lhôte--veut-dire).
+A file is better than a variable for a secret: a process's environment can be read in
+`/proc/<pid>/environ`. The details of an agent token's permissions, and why "host-bound" is a
+rewrite and not a refusal, are in [`AGENTS-PROTOCOLE.md` §3](AGENTS-PROTOCOLE.md#3-authentication-and-what-bound-to-the-host-means).
 
 ---
 
-## 4. Les capteurs, un par un
+## 4. The sensors, one by one
 
-**Dans les trois modes, un capteur est un artefact d'HÔTE.** L'image conteneur n'embarque aucun script
-de `collectors/` : en Docker ils tournent sur l'hôte Docker, en k3s sur le nœud, installés par
-`bootstrap-agent.sh` (ou par `bootstrap.sh` sur un central natif). Ceux qui lisent la machine
-(journald, `auditd`, FIM, pare-feu…) lisent donc l'hôte Docker ou le nœud, jamais l'intérieur du
-conteneur du central. `backup` n'a de sens qu'en hôte natif : en conteneur, le planificateur interne du
-démon le remplace.
+**In all three modes, a sensor is a HOST artifact.** The container image embeds no script
+from `collectors/`: in Docker they run on the Docker host, in k3s on the node, installed by
+`bootstrap-agent.sh` (or by `bootstrap.sh` on a native central). Those that read the machine
+(journald, `auditd`, FIM, firewall…) therefore read the Docker host or the node, never the inside of the
+central's container. `backup` only makes sense on a native host: in a container, the daemon's internal scheduler
+replaces it.
 
-Sauf mention, l'unité systemd d'un capteur tourne en **root sans borne de capacités** ; « root, capacités
-bornées à … » veut dire que l'unité restreint son ensemble de capacités à celles nommées. Le drop-in
-de durcissement commun (filtre d'appels système `@system-service`, `ProtectSystem=strict`, écriture
-limitée au spool et à l'état) est posé, **le même fichier** sur le central et sur l'agent, sur les douze
-capteurs du central par `bootstrap.sh`, et sur l'agent sur ceux que pose `install_collector` — les trois
-du défaut et ceux de `PLUME_EXTRA_COLLECTORS`. Les modules `PLUME_WITH_*` de `bootstrap-agent.sh` posent
-leur unité **sans** ce drop-in : ils n'ont que le bac à sable de leur propre unité.
-Deux réglages n'y sont **pas**, et chaque unité porte le sien : `PrivateTmp=` (un `/tmp` privé, sauf
-pour `yara`, qui doit voir le vrai `/tmp` pour le scanner) et `RestrictAddressFamilies=` (les familles
-de sockets que l'unité peut ouvrir : AF_INET/AF_INET6 pour qui parle au réseau — `ship`, `kubectl`,
-`cscli`, `curl` —, AF_NETLINK pour qui lit le noyau — `nft`, `auditctl`, `ss` —, AF_UNIX pour tous).
-Un réglage scalaire du drop-in écraserait celui de l'unité, une liste s'y ajouterait : c'est ainsi
-que `yara` avait perdu `/tmp` sur l'agent quand il était posé par `PLUME_EXTRA_COLLECTORS=yara` (posé
-par `PLUME_WITH_YARA=1`, sans drop-in, il le voyait), et que les capteurs que l'agent posait avec le
-drop-in recevaient les quatre familles. La CI dérive les familles de chaque unité de ce que son script
-appelle et refuse tout écart ; `controls` et `custom`, qui exécutent les commandes de l'exploitant
-(`/etc/plume/controls.d/*.check`, `/etc/plume/custom.d`), gardent les quatre : un contrôle `kubectl`,
-`nft` ou `ss` doit pouvoir ouvrir son socket. La table outil → famille est lue dans le code des outils,
-pas mesurée sous systemd.
-Pour `yara`, `PrivateTmp=true` ou `PrivateTmp=disconnected`, et `DynamicUser=yes` (qui impose un `/tmp`
-privé quelle que soit la valeur de `PrivateTmp=`), lui retirent `/tmp` et `/var/tmp` : la CI le refuse
-dans les fichiers livrés (unité et drop-in), un drop-in que vous posez après l'installation lui échappe.
+Unless stated otherwise, a sensor's systemd unit runs as **root with no capability bound**; "root, capabilities
+bounded to …" means that the unit restricts its capability set to the ones named. The common hardening
+drop-in (system call filter `@system-service`, `ProtectSystem=strict`, writes
+limited to the spool and the state) is installed, **the same file** on the central and on the agent, on the twelve
+sensors of the central by `bootstrap.sh`, and on the agent on those that `install_collector` installs — the three
+of the default and those of `PLUME_EXTRA_COLLECTORS`. The `PLUME_WITH_*` modules of `bootstrap-agent.sh` install
+their unit **without** this drop-in: they only have their own unit's sandbox.
+Two settings are **not** in it, and each unit carries its own: `PrivateTmp=` (a private `/tmp`, except
+for `yara`, which must see the real `/tmp` to scan it) and `RestrictAddressFamilies=` (the socket
+families the unit may open: AF_INET/AF_INET6 for whoever talks to the network — `ship`, `kubectl`,
+`cscli`, `curl` —, AF_NETLINK for whoever reads the kernel — `nft`, `auditctl`, `ss` —, AF_UNIX for all).
+A scalar setting in the drop-in would overwrite the unit's, a list would be added to it: that is how
+`yara` had lost `/tmp` on the agent when it was installed by `PLUME_EXTRA_COLLECTORS=yara` (installed
+by `PLUME_WITH_YARA=1`, without the drop-in, it saw it), and how the sensors the agent installed with the
+drop-in received all four families. CI derives each unit's families from what its script
+calls and refuses any deviation; `controls` and `custom`, which execute the operator's commands
+(`/etc/plume/controls.d/*.check`, `/etc/plume/custom.d`), keep all four: a `kubectl`,
+`nft` or `ss` check must be able to open its socket. The tool → family table is read from the tools' code,
+not measured under systemd.
+For `yara`, `PrivateTmp=true` or `PrivateTmp=disconnected`, and `DynamicUser=yes` (which forces a private `/tmp`
+whatever the value of `PrivateTmp=`), take `/tmp` and `/var/tmp` away from it: CI refuses this
+in the shipped files (unit and drop-in), a drop-in you install after the installation escapes it.
 
-La colonne **Preuve** donne la requête qui montre que la source remonte. ♥ marque un capteur qui émet un
-**battement** (`category=health`) à chaque passage, même quand la source est calme : son silence est
-alors anormal. Deux le font seulement après une lecture : `auditd` (aucun battement quand le journal
-d'audit n'a pas grandi) et `web` (aucun quand le passage n'a lu aucune requête neuve : journal vide,
-ou figé parce que Traefik n'écrit plus). Pour les capteurs sans ♥,
-une source calme ne produit rien, et la preuve est de jouer le capteur à la main (code de sortie 0, puis
-fichier dans `/var/lib/plume/spool/`), comme le fait le
-[`README`](../README.md#de-bout-en-bout-sans-rien-supposer-de-connu) pour `custom`.
+The **Proof** column gives the query that shows the source reports in. ♥ marks a sensor that emits a
+**heartbeat** (`category=health`) at every run, even when the source is quiet: its silence is
+then abnormal. Two do so only after a read: `auditd` (no heartbeat when the audit log
+has not grown) and `web` (none when the run has read no new request: empty log,
+or frozen because Traefik no longer writes). For sensors without ♥,
+a quiet source produces nothing, and the proof is to run the sensor by hand (exit code 0, then
+a file in `/var/lib/plume/spool/`), as the
+[`README`](../README.md#end-to-end-assuming-nothing-is-known) does for `custom`.
 
-| Capteur (`source`) | Lit · prérequis | Privilèges | Ce qui entre dans le SIEM | Risque · réglage sûr | Preuve |
+| Sensor (`source`) | Reads · prerequisites | Privileges | What enters the SIEM | Risk · safe setting | Proof |
 |---|---|---|---|---|---|
-| `resources` (métriques) | `/proc`, `/sys`, `df` | root, **aucune** capacité | CPU, mémoire, disque, température, réseau → table `metric` | aucun secret | `metric cpu_pct \| timechart avg(value)` |
-| `integrity` | fichiers sensibles, unités systemd, persistance | root, capacités bornées à `CAP_DAC_READ_SEARCH` | chemins, empreintes SHA-256, nature du changement | les chemins disent ce que la machine porte | `search source=integrity \| stats count` ♥ |
-| `ship` | le spool | root, lit `/etc/plume/plume.conf` | *(n'émet rien : il expédie)* | refuse le clair distant (§5) | `journalctl -u plume-ship` |
-| `journal` (`sshd`, `sudo`, `su`) | journald | root, **aucune** capacité | lignes d'authentification, **ligne de commande `sudo` complète** dans `message` | tout secret tapé dans une commande `sudo` entre dans le SIEM : ne passez jamais de secret en argument | `search source=journal category=health \| table ts, host, message` ♥ |
-| `auditd` | `/var/log/audit/audit.log` · `auditd` + règles chargées (§6.4) | root | exécutions (`exe`, `comm`, `auid` — pas les arguments), comptes, échecs d'authentification, accès des clés `plume_*` | volume ; plafond `PLUME_AUDIT_MAX` (§6.3) | `search source=auditd category=health \| table ts, host, message` ♥ |
-| `audit` | `ausearch` | root, capacités bornées à `CAP_AUDIT_READ CAP_DAC_READ_SEARCH` | *(remplacé par `auditd` ; `bootstrap.sh` le désactive)* | ne pas activer avec `auditd` | — |
-| `controls` | `systemctl`, `sysctl`, catalogues `/etc/plume/controls.d` | root, capacités bornées à `CAP_NET_ADMIN CAP_NET_RAW` | un **instantané** : les défenses attendues tournent-elles | aucun secret | instantané, affiché par la vue d'ensemble : `search` ne le voit pas |
-| `firewall` | ruleset `nft` / `iptables` | root, capacités bornées à `CAP_NET_ADMIN CAP_NET_RAW` | un **instantané** : empreinte du ruleset | — | instantané, affiché par la vue d'ensemble : `search` ne le voit pas |
-| `nft` | compteurs des sets `nft` · `nft`, `jq` | root | compteurs → `metric` | — | `metric nft_blocked_total \| timechart avg(value)` |
-| `ufw` | `ufw` | root | blocages vus, règles autorisées | — | `search source=ufw category=health \| table ts, message` ♥ |
-| `conntrack` | `ss` | root | flux entrants et sortants : adresses, ports, processus | cartographie du trafic de l'hôte | `search source=conntrack \| stats count by dir` |
-| `origin-drop` | `journalctl -k`, préfixe `ORIGIN-DROP:` que vous posez | root | paquets rejetés à l'origine | — | `search source=origin-drop category=health \| table ts, message` ♥ |
-| `portscan` · `portprobe` | table `nft` `plume-portscan` · `nft`, `jq` | root | adresses qui balaient, ports | — | `search source=portscan category=health \| table ts, message` ♥ |
-| `bans` (`fail2ban`) | `cscli`, `fail2ban-client` (ou dans un pod) | root ; **kubeconfig** si les moteurs sont dans le cluster | bans actifs, `category=ban` | `kubectl exec` dans le pod du moteur (§6.1) | `search source=fail2ban category=health \| table ts, message` ♥ |
-| `crowdsec` | `cscli` (ou dans le pod LAPI) · `jq` | root ; **kubeconfig** en k3s | alertes, et un battement qui dit ce que le moteur **lit** | derrière un mandataire, la liste blanche des adresses privées aveugle le moteur ; la cause suit la répartition par liste blanche, le refus attend `PLUME_CROWDSEC_SANS_SCENARIO_MAX_HEURES` (24) ; une poignée mTLS refusée n'est pas vue (§6.5) | `search source=crowdsec category=health \| table ts, acq_verdict, message` ♥ |
-| `falco` | sortie JSON de Falco | root, capacités bornées à `CAP_DAC_READ_SEARCH` | détections eBPF | — | `search source=falco \| stats count` |
-| `suricata` | `eve.json` | root | alertes IDS | — | `search source=suricata \| stats count` |
-| `clamav` | `clamscan` / `clamdscan` sur les fichiers nouveaux | root | fichier, signature | noms de fichiers échappés | `search source=clamav \| stats count` |
-| `yara` | `yara` + vos règles dans `/etc/plume/yara.d` ; scanne par défaut `/home /tmp /var/tmp /dev/shm` | root, `/home` en lecture seule, **`/tmp` de l'hôte visible** (`PrivateTmp=false`, ses temporaires vont sous `/var/lib/plume/state`) | fichier, règle, SHA-256 | sans `yara` ou sans règle, ne scanne rien et le dit (`unavailable`) | `search source=yara \| stats count` |
-| `vuln` | `trivy`, `crictl` | root | CVE des images déployées (`category=vuln`) | — | `search source=vuln \| stats count by severity` |
-| `imgdrift` (`update`) | `skopeo`, `crictl` | root | nouveau digest sur un même tag | — | `search source=update \| stats count` |
-| `containerd` | `crictl`, `jq` | root | images tirées, conteneurs démarrés | — | `search source=containerd \| stats count` |
-| `kube-state` (`k8s`) | `kubectl` | root ; l'unité pose `KUBECONFIG` sur le fichier **d'administration** de k3s | état du cluster → `metric` + events | droits d'admin du cluster (§6.1) | `metric kube_pods_running \| timechart avg(value)` |
-| `kube-audit` | fichier d'audit de l'API | root | verbe, ressource, utilisateur, décision | — | `search source=kube-audit \| stats count by verb` |
-| `kube-rbac` | `kubectl` | root ; **kubeconfig** | qui peut quoi (liaisons, rôles) | — | `search source=kube-rbac \| stats count` |
-| `pod-logs` (`k8s-log`) | `/var/log/pods` | root, capacités bornées à `CAP_DAC_READ_SEARCH` | lignes de journaux de pods **filtrées** (seuil `PLUME_POD_LOG_MIN_SEV`, défaut 3) | une ligne de journal d'application peut porter une donnée personnelle ou un secret ; exclusions par drop-in local (§6.6) | `search source=k8s-log category=health \| table ts, message` ♥ |
-| `web` | journal d'accès Traefik (`kubectl logs` ou fichier) | root ; **kubeconfig** en mode k3s | requêtes : méthode, chemin tel que Traefik l'écrit, statut, adresse | un jeton passé en paramètre d'URL entre avec le chemin ; borne de lecture `PLUME_WEB_MAX` (§6.2) | `search source=web category=health \| table ts, message` ♥ |
-| `mail` | journal du serveur mail (fichier, conteneur Docker ou pod ; source détectée dans cet ordre k3s, Docker, fichier quand `PLUME_MAIL_SRC` n'est pas posé, valeur posée prioritaire) | root ; **kubeconfig** si le serveur est dans le cluster | connexions, verdicts DKIM/DMARC/SPF, sortant, file, ClamAV | **parties locales masquées** partout (`*@domaine`), sauf l'expéditeur d'un envoi **originaire** de ce serveur (règle d'envoi massif) ; le destinataire **local** d'un virus ou d'une pièce bannie reste masqué sauf `PLUME_MAIL_DEMASQUER_DESTINATAIRE_LOCAL=1` avec `PLUME_MAIL_DOMAINES_LOCAUX` (risque et réglage : `deploy/CONFIDENTIALITE.md`) | `search source=mail \| stats count by category` |
-| `collector-mail` | maildir de l'hôte | root, lit `/etc/plume/mail.conf` | compte, dossier, domaine de l'expéditeur, motif trouvé ; URL **coupée** au chemin (requête, fragment, identifiants retirés) ; **objet non émis** sauf `PLUME_MAIL_EMIT_SUBJECT=1` ; une boîte nommée dans `PLUME_MAIL_EXCLURE_COMPTES` n'est **jamais ouverte** (comparaison exacte, compte d'exclus dans le battement, `deploy/MAIL.md`) | un chemin d'URL peut porter un jeton (`/reset/<jeton>`) : il sort borné, pas retiré | `search source=mail \| stats count` |
-| `collector-syslog` | UDP/TCP 514 | **utilisateur `soc`**, seule capacité `CAP_NET_BIND_SERVICE` | lignes syslog d'équipements (FortiGate, générique) | syslog n'est authentifié par **rien** (§5) | `search source=fortigate \| stats count` |
-| `minio-audit-relay.py` (`minio-audit`) | webhook d'audit MinIO | **utilisateur `soc`** | seau, objet, opération, clé d'accès, adresse | refuse de démarrer sans jeton (§5) | `search source=minio-audit \| stats count` |
-| `minio` | `mc` | root ; **kubeconfig** | politiques, seaux publics, utilisateurs | — | `search source=minio \| stats count by kind` |
-| `dataaccess` | règles d'audit d'accès | root, capacités bornées à `CAP_AUDIT_READ CAP_DAC_READ_SEARCH` | utilisateur, action, chemin | sans `CAP_AUDIT_CONTROL`, `auditctl -l` lui est refusé : le battement nomme les clés **prouvées par le journal** (chargement ou accès depuis le dernier démarrage d'`auditd`), et dit « couverture INCONNUE » (sévérité 1) quand ni `plume_data` ni `plume_creds` n'y est prouvée | `search source=dataaccess category=health \| table ts, message` ♥ |
-| `dataacl` | droits des chemins surveillés | root, capacités bornées à `CAP_DAC_READ_SEARCH` | propriétaire, mode, risque | les chemins par défaut visent un nœud k3s : ailleurs, poser `PLUME_ACL_PATHS`. Aucun chemin présent → aveu `unavailable` (une carte vide ne dit pas « droits sains ») ; chemin présent mais illisible ou non traversable → avoué, seule sa tête est cartographiée ; chemins absents à côté d’un présent → avoués si `PLUME_ACL_PATHS` est posée (un chemin sous `/home` ou `/root` paraît absent sous `ProtectHome`), tus pour la liste par défaut | `search source=dataacl \| stats count` · `search source=dataacl category=config \| table ts, message` |
-| `cloudflare` · `cloudflare-http` | API GraphQL de Cloudflare · `curl`, `jq` | root, lit `/etc/plume/cloudflare.conf` | événements WAF, requêtes 4xx/5xx vues au bord | jeton en lecture seule sur la zone | `search source=cloudflare-http \| stats count` |
-| `prom-scrape` | vos cibles `/metrics` | root, lit `/etc/plume/prom.conf` | séries → `metric` | une cible authentifiée par paramètre d'URL expose ce paramètre ; refuse le clair distant vers le central (§5) | `metric <une de vos séries> \| timechart avg(value)` |
-| `custom` | votre `CMD`, en root | root | une ligne de sortie = un événement | `/etc/plume/inputs.d` **doit** être `0700 root` : y écrire, c'est exécuter en root | `search source=<SOURCE> \| stats count` |
-| `respond`, `engagement-adapter`, `backup` | *(pas des capteurs : ils agissent ou sauvegardent)* | `respond` du central (`plume-daemon respond`) : root, capacités bornées à `CAP_NET_ADMIN CAP_KILL` ; `respond` d'agent (`respond.sh`) et `engagement-adapter` : root ; `backup` : `soc` | résultats d'actions | le responder d'agent agit en root sans borne : dry-run par défaut ; `respond.sh` et `engagement-adapter` refusent le clair distant vers le central (§5) | — |
-| `windows/` | journaux Windows, pare-feu, Defender | tâche planifiée | §2.5, et [`../collectors/windows/README.md`](../collectors/windows/README.md) | refuse le clair distant vers le central (code 2, rien lu ni expédié) sauf `PLUME_SHIP_ALLOW_PLAINTEXT=1`, qui laisse le jeton lisible sur le réseau (§5) ; n'écrit, jugé en CI, que des commandes, paramètres, types et méthodes d'une liste fermée, qui n'envoie que par `Invoke-RestMethod`, et aucun chemin UNC littéral (un nom ou un chemin fabriqué à l'exécution échappe à ce contrôle) ; source en UTF-8 avec BOM, sans quoi Windows PowerShell 5.1 le lirait en page de code ANSI ; compatibilité Windows PowerShell 5.1 jugée par analyse statique, non exécutée | `search source=windows-security \| stats count` |
+| `resources` (metrics) | `/proc`, `/sys`, `df` | root, **no** capability | CPU, memory, disk, temperature, network → `metric` table | no secret | `metric cpu_pct \| timechart avg(value)` |
+| `integrity` | sensitive files, systemd units, persistence | root, capabilities bounded to `CAP_DAC_READ_SEARCH` | paths, SHA-256 digests, nature of the change | the paths say what the machine carries | `search source=integrity \| stats count` ♥ |
+| `ship` | the spool | root, reads `/etc/plume/plume.conf` | *(emits nothing: it ships)* | refuses remote plaintext (§5) | `journalctl -u plume-ship` |
+| `journal` (`sshd`, `sudo`, `su`) | journald | root, **no** capability | authentication lines, **full `sudo` command line** in `message` | any secret typed into a `sudo` command enters the SIEM: never pass a secret as an argument | `search source=journal category=health \| table ts, host, message` ♥ |
+| `auditd` | `/var/log/audit/audit.log` · `auditd` + loaded rules (§6.4) | root | executions (`exe`, `comm`, `auid` — not the arguments), accounts, authentication failures, accesses to the `plume_*` keys | volume; ceiling `PLUME_AUDIT_MAX` (§6.3) | `search source=auditd category=health \| table ts, host, message` ♥ |
+| `audit` | `ausearch` | root, capabilities bounded to `CAP_AUDIT_READ CAP_DAC_READ_SEARCH` | *(replaced by `auditd`; `bootstrap.sh` disables it)* | do not enable together with `auditd` | — |
+| `controls` | `systemctl`, `sysctl`, catalogues `/etc/plume/controls.d` | root, capabilities bounded to `CAP_NET_ADMIN CAP_NET_RAW` | a **snapshot**: are the expected defences running | no secret | snapshot, shown by the overview: `search` does not see it |
+| `firewall` | `nft` / `iptables` ruleset | root, capabilities bounded to `CAP_NET_ADMIN CAP_NET_RAW` | a **snapshot**: digest of the ruleset | — | snapshot, shown by the overview: `search` does not see it |
+| `nft` | counters of the `nft` sets · `nft`, `jq` | root | counters → `metric` | — | `metric nft_blocked_total \| timechart avg(value)` |
+| `ufw` | `ufw` | root | blocks seen, allowed rules | — | `search source=ufw category=health \| table ts, message` ♥ |
+| `conntrack` | `ss` | root | inbound and outbound flows: addresses, ports, processes | map of the host's traffic | `search source=conntrack \| stats count by dir` |
+| `origin-drop` | `journalctl -k`, prefix `ORIGIN-DROP:` that you set | root | packets dropped at the origin | — | `search source=origin-drop category=health \| table ts, message` ♥ |
+| `portscan` · `portprobe` | `nft` table `plume-portscan` · `nft`, `jq` | root | sweeping addresses, ports | — | `search source=portscan category=health \| table ts, message` ♥ |
+| `bans` (`fail2ban`) | `cscli`, `fail2ban-client` (or in a pod) | root; **kubeconfig** if the engines are in the cluster | active bans, `category=ban` | `kubectl exec` in the engine's pod (§6.1) | `search source=fail2ban category=health \| table ts, message` ♥ |
+| `crowdsec` | `cscli` (or in the LAPI pod) · `jq` | root; **kubeconfig** in k3s | alerts, and a heartbeat that says what the engine **reads** | behind a proxy, the whitelist of private addresses blinds the engine; the cause follows the breakdown per whitelist, the refusal waits for `PLUME_CROWDSEC_SANS_SCENARIO_MAX_HEURES` (24); a refused mTLS handshake is not seen (§6.5) | `search source=crowdsec category=health \| table ts, acq_verdict, message` ♥ |
+| `falco` | Falco's JSON output | root, capabilities bounded to `CAP_DAC_READ_SEARCH` | eBPF detections | — | `search source=falco \| stats count` |
+| `suricata` | `eve.json` | root | IDS alerts | — | `search source=suricata \| stats count` |
+| `clamav` | `clamscan` / `clamdscan` on new files | root | file, signature | file names escaped | `search source=clamav \| stats count` |
+| `yara` | `yara` + your rules in `/etc/plume/yara.d`; scans `/home /tmp /var/tmp /dev/shm` by default | root, `/home` read-only, **host `/tmp` visible** (`PrivateTmp=false`, its temporary files go under `/var/lib/plume/state`) | file, rule, SHA-256 | without `yara` or without a rule, scans nothing and says so (`unavailable`) | `search source=yara \| stats count` |
+| `vuln` | `trivy`, `crictl` | root | CVEs of the deployed images (`category=vuln`) | — | `search source=vuln \| stats count by severity` |
+| `imgdrift` (`update`) | `skopeo`, `crictl` | root | new digest on the same tag | — | `search source=update \| stats count` |
+| `containerd` | `crictl`, `jq` | root | images pulled, containers started | — | `search source=containerd \| stats count` |
+| `kube-state` (`k8s`) | `kubectl` | root; the unit sets `KUBECONFIG` to k3s's **administration** file | cluster state → `metric` + events | cluster admin permissions (§6.1) | `metric kube_pods_running \| timechart avg(value)` |
+| `kube-audit` | API audit file | root | verb, resource, user, decision | — | `search source=kube-audit \| stats count by verb` |
+| `kube-rbac` | `kubectl` | root; **kubeconfig** | who can do what (bindings, roles) | — | `search source=kube-rbac \| stats count` |
+| `pod-logs` (`k8s-log`) | `/var/log/pods` | root, capabilities bounded to `CAP_DAC_READ_SEARCH` | pod log lines **filtered** (threshold `PLUME_POD_LOG_MIN_SEV`, default 3) | an application log line can carry personal data or a secret; exclusions through a local drop-in (§6.6) | `search source=k8s-log category=health \| table ts, message` ♥ |
+| `web` | Traefik access log (`kubectl logs` or file) | root; **kubeconfig** in k3s mode | requests: method, path as Traefik writes it, status, address | a token passed as a URL parameter enters with the path; read bound `PLUME_WEB_MAX` (§6.2) | `search source=web category=health \| table ts, message` ♥ |
+| `mail` | mail server log (file, Docker container or pod; source detected in the order k3s, Docker, file when `PLUME_MAIL_SRC` is not set, a set value taking precedence) | root; **kubeconfig** if the server is in the cluster | connections, DKIM/DMARC/SPF verdicts, outbound, queue, ClamAV | **local parts masked** everywhere (`*@domaine`), except the sender of a sending **originating** from this server (mass-sending rule); the **local** recipient of a virus or a banned attachment stays masked unless `PLUME_MAIL_DEMASQUER_DESTINATAIRE_LOCAL=1` with `PLUME_MAIL_DOMAINES_LOCAUX` (risk and setting: `deploy/CONFIDENTIALITE.md`) | `search source=mail \| stats count by category` |
+| `collector-mail` | the host's maildir | root, reads `/etc/plume/mail.conf` | account, folder, sender's domain, pattern found; URL **cut** at the path (query, fragment, credentials removed); **subject not emitted** unless `PLUME_MAIL_EMIT_SUBJECT=1`; a mailbox named in `PLUME_MAIL_EXCLURE_COMPTES` is **never opened** (exact comparison, count of excluded mailboxes in the heartbeat, `deploy/MAIL.md`) | a URL path can carry a token (`/reset/<jeton>`): it goes out bounded, not removed | `search source=mail \| stats count` |
+| `collector-syslog` | UDP/TCP 514 | **user `soc`**, sole capability `CAP_NET_BIND_SERVICE` | syslog lines from devices (FortiGate, generic) | syslog is authenticated by **nothing** (§5) | `search source=fortigate \| stats count` |
+| `minio-audit-relay.py` (`minio-audit`) | MinIO audit webhook | **user `soc`** | bucket, object, operation, access key, address | refuses to start without a token (§5) | `search source=minio-audit \| stats count` |
+| `minio` | `mc` | root; **kubeconfig** | policies, public buckets, users | — | `search source=minio \| stats count by kind` |
+| `dataaccess` | access audit rules | root, capabilities bounded to `CAP_AUDIT_READ CAP_DAC_READ_SEARCH` | user, action, path | without `CAP_AUDIT_CONTROL`, `auditctl -l` is refused to it: the heartbeat names the keys **proven by the log** (loading or access since the last start of `auditd`), and says "couverture INCONNUE" (severity 1) when neither `plume_data` nor `plume_creds` is proven there | `search source=dataaccess category=health \| table ts, message` ♥ |
+| `dataacl` | permissions of the watched paths | root, capabilities bounded to `CAP_DAC_READ_SEARCH` | owner, mode, risk | the default paths target a k3s node: elsewhere, set `PLUME_ACL_PATHS`. No path present → admission `unavailable` (an empty map does not say "healthy permissions"); path present but unreadable or not traversable → admitted, only its head is mapped; absent paths next to a present one → admitted if `PLUME_ACL_PATHS` is set (a path under `/home` or `/root` looks absent under `ProtectHome`), kept silent for the default list | `search source=dataacl \| stats count` · `search source=dataacl category=config \| table ts, message` |
+| `cloudflare` · `cloudflare-http` | Cloudflare's GraphQL API · `curl`, `jq` | root, reads `/etc/plume/cloudflare.conf` | WAF events, 4xx/5xx requests seen at the edge | read-only token on the zone | `search source=cloudflare-http \| stats count` |
+| `prom-scrape` | your `/metrics` targets | root, reads `/etc/plume/prom.conf` | series → `metric` | a target authenticated by URL parameter exposes that parameter; refuses remote plaintext towards the central (§5) | `metric <une de vos séries> \| timechart avg(value)` |
+| `custom` | your `CMD`, as root | root | one output line = one event | `/etc/plume/inputs.d` **must** be `0700 root`: writing there means executing as root | `search source=<SOURCE> \| stats count` |
+| `respond`, `engagement-adapter`, `backup` | *(not sensors: they act or back up)* | central `respond` (`plume-daemon respond`): root, capabilities bounded to `CAP_NET_ADMIN CAP_KILL`; agent `respond` (`respond.sh`) and `engagement-adapter`: root; `backup`: `soc` | action results | the agent responder acts as root with no bound: dry-run by default; `respond.sh` and `engagement-adapter` refuse remote plaintext towards the central (§5) | — |
+| `windows/` | Windows logs, firewall, Defender | scheduled task | §2.5, and [`../collectors/windows/README.md`](../collectors/windows/README.md) | refuses remote plaintext towards the central (code 2, nothing read or shipped) unless `PLUME_SHIP_ALLOW_PLAINTEXT=1`, which leaves the token readable on the network (§5); writes, as judged in CI, only commands, parameters, types and methods from a closed list, sends only through `Invoke-RestMethod`, and no literal UNC path (a name or path built at run time escapes this check); source in UTF-8 with BOM, without which Windows PowerShell 5.1 would read it in the ANSI code page; Windows PowerShell 5.1 compatibility judged by static analysis, not executed | `search source=windows-security \| stats count` |
 
-**Un capteur qui ne peut pas collecter le dit**, au lieu de se taire : un événement `category=config`,
-`collect_status=unavailable` et une `reason` (`missing-dependency`, `missing-source`, `missing-config`,
-`subsystem-absent`, `unreachable`). Une collecte coupée par une borne le dit aussi
-(`reason=collection-capped`). Les deux requêtes :
+**A sensor that cannot collect says so**, instead of staying silent: a `category=config` event,
+`collect_status=unavailable` and a `reason` (`missing-dependency`, `missing-source`, `missing-config`,
+`subsystem-absent`, `unreachable`). A collection cut off by a bound says so too
+(`reason=collection-capped`). The two queries:
 
 ```
 search category=config collect_status=unavailable | table ts, host, source, reason, detail
 search category=config reason=collection-capped | table ts, host, source, detail
 ```
 
-> ⚠️ **L'alerte sur ces aveux n'est pas active par défaut.** La règle
-> `config.d/rules/catalog/de-collector-unavailable.json` est livrée `enabled: false`, comme la quasi-totalité du
-> catalogue. Activez-la dans la console (rôle admin) : l'activation est enregistrée à part et **survit**
-> au redémarrage, que le fichier réimpose sinon. Tant qu'elle est éteinte, un capteur aveugle ne lève
-> rien. Autre limite, ouverte sous `P10.32-s` : un aveu d'indisponibilité tient fraîche la sonde de
-> flux de sa source, qui paraît donc vivante.
+> ⚠️ **The alert on these admissions is not active by default.** The rule
+> `config.d/rules/catalog/de-collector-unavailable.json` ships `enabled: false`, like almost all of the
+> catalogue. Enable it in the console (admin role): the activation is recorded separately and **survives**
+> a restart, which the file would otherwise reimpose. As long as it is off, a blind sensor raises
+> nothing. Another limit, open under `P10.32-s`: an unavailability admission keeps its source's flow
+> probe fresh, so the source looks alive.
 
 ---
 
-## 5. Le transport
+## 5. Transport
 
-- **Les scripts qui parlent au central refusent le clair vers un hôte distant** : `ship.sh`,
-  `respond.sh`, `prom-scrape.sh`, `engagement-adapter.sh` et le collecteur Windows. `PLUME_CENTRAL` en `http://` (ou sans
-  schéma) vers autre chose que la boucle locale (`127.0.0.0/8`, `::1`, `localhost`) est **refusé**,
-  code 2, avant tout appel au central : `ship.sh` n'expédie ni n'évince rien (le spool reste),
-  `respond.sh` ne récupère ni n'exécute aucune action, `prom-scrape.sh` ne scrape aucune cible,
-  `engagement-adapter.sh` révoque ses exemptions de ban pour ce cycle (son mode `revert-expired`
-  n'appelle pas le central et n'est pas concerné). `PLUME_SHIP_ALLOW_PLAINTEXT=1` l'accepte, avec un
-  avertissement à chaque passage — **le jeton passe alors lisible sur le réseau**, quiconque l'écoute
-  peut le rejouer, et un intermédiaire peut répondre à la place du central (des actions exécutées en
-  root par `respond.sh`, des exemptions posées par `engagement-adapter.sh`). Ne le posez que sur un lien
-  déjà chiffré (tunnel) ou un réseau dont vous répondez, et **dans le fichier d'environnement de chaque
-  unité** : chacune lit le sien (`plume.conf` pour `ship`, `responder.conf`, `prom.conf`,
-  `engagement-adapter.conf`). Le collecteur Windows (`plume-collector.ps1`) applique la même porte,
-  code 2 avant toute lecture de journal, et refuse en plus toute adresse qui ne commence pas par
-  `schéma://`, boucle locale comprise (`Invoke-RestMethod` la lirait autrement) ; son opt-in se pose
-  dans son environnement ou dans `C:\ProgramData\plume\plume.conf`.
-- **TLS côté agent** : `PLUME_TLS_CACERT` pour un central à autorité privée ; `PLUME_TLS_CERT` et
-  `PLUME_TLS_KEY` pour un certificat client, si le mandataire du central l'exige. Le démon, lui, ne
-  vérifie aucun certificat client : un mTLS obligatoire se pose sur le mandataire. Même nom de variable,
-  rôle opposé côté démon ([`AGENTS-PROTOCOLE.md` §7](AGENTS-PROTOCOLE.md#7-tls-et-mtls)).
-- **Relais MinIO** : il **refuse de démarrer** sans jeton (fichier `PLUME_MINIO_AUDIT_TOKEN_FILE` absent,
-  vide ou illisible : code 2), répond `401` à une requête sans le bon jeton (comparaison à temps
-  constant) et `503` si le jeton devient illisible en marche. Son écoute par défaut est l'adresse du pont
-  des pods (`PLUME_MINIO_AUDIT_BIND`), pas toutes les interfaces.
-- **Syslog** : la configuration posée par `bootstrap-agent.sh` écoute **`127.0.0.1:514`**. Une écoute
-  hors boucle locale **sans** `PLUME_SYSLOG_ALLOW` fait **refuser le démarrage** (code 2) ; une écoute
-  posée **vide** coupe son transport ; une écoute **absente** vaut `0.0.0.0:514` — et tombe alors sous
-  le même refus sans liste. Pour l'ouvrir à vos équipements : la liste, puis un pare-feu en refus par
-  défaut, puis seulement l'écoute. En conteneur, la boucle locale est celle du conteneur : la marche à
-  suivre est dans [`../deploy/SYSLOG.md`](../deploy/SYSLOG.md#conteneur-docker-et-le-receiver-du-deploiement-b--limage-demarre-refusee).
+- **The scripts that talk to the central refuse plaintext towards a remote host**: `ship.sh`,
+  `respond.sh`, `prom-scrape.sh`, `engagement-adapter.sh` and the Windows collector. `PLUME_CENTRAL` over `http://` (or without
+  a scheme) towards anything other than the loopback (`127.0.0.0/8`, `::1`, `localhost`) is **refused**,
+  code 2, before any call to the central: `ship.sh` neither ships nor evicts anything (the spool stays),
+  `respond.sh` neither fetches nor executes any action, `prom-scrape.sh` scrapes no target,
+  `engagement-adapter.sh` revokes its ban exemptions for this cycle (its `revert-expired` mode
+  does not call the central and is not affected). `PLUME_SHIP_ALLOW_PLAINTEXT=1` accepts it, with a
+  warning at every run — **the token then travels readable on the network**, whoever listens to it
+  can replay it, and an intermediary can answer in place of the central (actions executed as
+  root by `respond.sh`, exemptions set by `engagement-adapter.sh`). Only set it on an already
+  encrypted link (tunnel) or a network you answer for, and **in each unit's environment
+  file**: each one reads its own (`plume.conf` for `ship`, `responder.conf`, `prom.conf`,
+  `engagement-adapter.conf`). The Windows collector (`plume-collector.ps1`) applies the same gate,
+  code 2 before any log read, and additionally refuses any address that does not start with
+  `schéma://`, loopback included (`Invoke-RestMethod` would read it otherwise); its opt-in is set
+  in its environment or in `C:\ProgramData\plume\plume.conf`.
+- **Agent-side TLS**: `PLUME_TLS_CACERT` for a central with a private authority; `PLUME_TLS_CERT` and
+  `PLUME_TLS_KEY` for a client certificate, if the central's proxy requires it. The daemon, for its part,
+  verifies no client certificate: mandatory mTLS is set up on the proxy. Same variable name,
+  opposite role on the daemon side ([`AGENTS-PROTOCOLE.md` §7](AGENTS-PROTOCOLE.md#7-tls-and-mtls)).
+- **MinIO relay**: it **refuses to start** without a token (file `PLUME_MINIO_AUDIT_TOKEN_FILE` absent,
+  empty or unreadable: code 2), answers `401` to a request without the right token (constant-time
+  comparison) and `503` if the token becomes unreadable while running. Its default listener is the address of the
+  pod bridge (`PLUME_MINIO_AUDIT_BIND`), not all interfaces.
+- **Syslog**: the configuration installed by `bootstrap-agent.sh` listens on **`127.0.0.1:514`**. A listener
+  outside the loopback **without** `PLUME_SYSLOG_ALLOW` makes the **start refuse** (code 2); a listener
+  set **empty** cuts off its transport; an **absent** listener means `0.0.0.0:514` — and then falls under
+  the same refusal without a list. To open it to your devices: the list, then a default-deny
+  firewall, then only the listener. In a container, the loopback is the container's: the procedure
+  to follow is in [`../deploy/SYSLOG.md`](../deploy/SYSLOG.md#container-docker-and-the-receiver-of-deployment-b--the-image-starts-refused).
 
 ---
 
-## 6. Les risques que le produit assume, et comment les réduire
+## 6. The risks the product accepts, and how to reduce them
 
-### 6.1 Des capteurs root, et le fichier d'administration du cluster
+### 6.1 Root sensors, and the cluster administration file
 
-Les capteurs Kubernetes (`kube-state`, `kube-rbac`, `web` en mode k3s, `mail`, `bans`, `crowdsec`,
-`minio`, et le responder d'agent) appellent `kubectl` ou `k3s kubectl` **en root** sur le nœud. L'unité de `kube-state` pose
-`KUBECONFIG` sur le fichier d'administration de k3s ; les autres prennent ce que `kubectl` résout, et
-`k3s kubectl` lancé en root emploie ce même fichier. **Une faille d'un de ces scripts vaut donc les
-droits d'administration du cluster.** Pour réduire :
+The Kubernetes sensors (`kube-state`, `kube-rbac`, `web` in k3s mode, `mail`, `bans`, `crowdsec`,
+`minio`, and the agent responder) call `kubectl` or `k3s kubectl` **as root** on the node. The `kube-state` unit sets
+`KUBECONFIG` to k3s's administration file; the others take whatever `kubectl` resolves, and
+`k3s kubectl` run as root uses that same file. **A flaw in one of these scripts is therefore worth the
+cluster's administration permissions.** To reduce this:
 
-- donnez à chaque unité un kubeconfig dédié, par un drop-in **local**
-  (`sudo systemctl edit plume-kube-state.service`, puis `[Service]` et
-  `Environment=KUBECONFIG=/etc/plume/kube-lecture.yaml`, fichier `0600`) ;
-- liez ce kubeconfig à un compte de service aux **seuls verbes utiles** : lecture (`get`, `list`) pour
-  `kube-state` et `kube-rbac` ; `pods/log` sur le namespace de Traefik pour `web` ; `pods/exec` — lire
-  un journal ou lancer `mc`/`cscli` **dans** le pod — sur le seul namespace visé pour `mail`, `minio`,
-  `bans`, `crowdsec` et le responder. `pods/exec` revient à exécuter du code dans ce pod : ne l'accordez
-  nulle part ailleurs ;
-- n'activez que les capteurs dont vous lisez la sortie. *Ce découpage n'a pas été joué ici : vérifiez
-  chaque capteur par sa requête de preuve après le changement.*
+- give each unit a dedicated kubeconfig, through a **local** drop-in
+  (`sudo systemctl edit plume-kube-state.service`, then `[Service]` and
+  `Environment=KUBECONFIG=/etc/plume/kube-lecture.yaml`, file `0600`);
+- bind that kubeconfig to a service account with **only the useful verbs**: read (`get`, `list`) for
+  `kube-state` and `kube-rbac`; `pods/log` on Traefik's namespace for `web`; `pods/exec` — reading
+  a log or running `mc`/`cscli` **inside** the pod — on the targeted namespace only for `mail`, `minio`,
+  `bans`, `crowdsec` and the responder. `pods/exec` amounts to executing code in that pod: grant it
+  nowhere else;
+- only enable the sensors whose output you read. *This split has not been tested here: check
+  each sensor with its proof query after the change.*
 
-Le pod du **démon**, lui, n'a ni client Kubernetes ni jeton de compte de service monté.
+The **daemon**'s pod, for its part, has neither a Kubernetes client nor a mounted service account token.
 
-### 6.2 L'`Ingress` k3s, et ce qui se voit derrière un mandataire
+### 6.2 The k3s `Ingress`, and what can be seen behind a proxy
 
-L'`Ingress` livré est restreint à l'entrée `websecure` ; un autre contrôleur ignore ces annotations et
-peut servir aussi l'entrée en clair (§2.4). Derrière tout mandataire, trois faits :
+The shipped `Ingress` is restricted to the `websecure` entrypoint; another controller ignores these annotations and
+may also serve the plaintext entrypoint (§2.4). Behind any proxy, three facts:
 
-- **le ban natif** lit l'adresse réelle du client dans les en-têtes, **mais seulement** d'un pair de
-  confiance : par défaut tout pair privé ou de boucle locale ; avec `PLUME_TRUSTED_PROXIES`, les seules
-  adresses listées. Un pod du réseau privé qui joint le démon en direct peut donc, par défaut, se
-  réécrire une adresse : posez `PLUME_TRUSTED_PROXIES`, et scellez les en-têtes par `PLUME_EDGE_SECRET` ;
-- **la limitation de débit et le verrouillage anti-force-brute** comptent par **pair TCP**, donc par
-  l'adresse du mandataire : tous les clients partagent le même seau. Des échecs répétés contre le compte
-  admin depuis l'extérieur verrouillent ce compte **pour tout le monde** derrière ce mandataire, le temps
-  du *backoff* ;
-- **le cookie de session et HSTS** : le démon pose l'attribut `Secure` sur ses cookies et l'en-tête HSTS
-  sur ses réponses avec le **TLS natif**, ou quand `PLUME_TLS_TERMINATED_UPSTREAM=1` lui dit qu'un
-  mandataire sert le HTTPS devant lui (« 1 » seul l'active ; vide par défaut). Il croit ce réglage sur
-  parole. À défaut de ce réglage, il lit `X-Forwarded-Proto` d'un pair listé dans
-  `PLUME_TRUSTED_PROXIES` (liste explicite, jamais le défaut « pairs privés ») : `https` sur chaque
-  valeur pose aussi `Secure` et HSTS. Une liste posée pour l'adresse réelle du client active donc HSTS
-  si ce mandataire annonce `https`. `deploy/k3s.yaml` pose `PLUME_TLS_TERMINATED_UPSTREAM` à `1`, son `Ingress` ne
-  servant que `websecure` ; en hôte natif, il se pose dans `/etc/plume/soc.conf` ; en Docker, dans `.env`
-  (le service le transmet). Posé, un accès **direct** en HTTP au démon (tunnel, `port-forward`) perd son
-  cookie de session, et le démon le rappelle dans son journal au démarrage. Sans ce réglage ni
-  mandataire listé qui annonce `https`, le cookie part sans `Secure` et sans HSTS : ne servez pas alors le
-  même nom en clair.
+- **the native ban** reads the client's real address from the headers, **but only** from a trusted
+  peer: by default any private or loopback peer; with `PLUME_TRUSTED_PROXIES`, only the
+  listed addresses. A pod on the private network that reaches the daemon directly can therefore, by default,
+  rewrite its own address: set `PLUME_TRUSTED_PROXIES`, and seal the headers with `PLUME_EDGE_SECRET`;
+- **rate limiting and anti-brute-force lockout** count per **TCP peer**, hence by
+  the proxy's address: all clients share the same bucket. Repeated failures against the admin
+  account from outside lock that account **for everyone** behind that proxy, for the duration
+  of the *backoff*;
+- **the session cookie and HSTS**: the daemon sets the `Secure` attribute on its cookies and the HSTS header
+  on its responses with **native TLS**, or when `PLUME_TLS_TERMINATED_UPSTREAM=1` tells it that a
+  proxy serves HTTPS in front of it ("1" alone enables it; empty by default). It takes this setting at its
+  word. Failing this setting, it reads `X-Forwarded-Proto` from a peer listed in
+  `PLUME_TRUSTED_PROXIES` (explicit list, never the "private peers" default): `https` on every
+  value also sets `Secure` and HSTS. A list set for the client's real address therefore enables HSTS
+  if that proxy announces `https`. `deploy/k3s.yaml` sets `PLUME_TLS_TERMINATED_UPSTREAM` to `1`, its `Ingress`
+  serving only `websecure`; on a native host, it is set in `/etc/plume/soc.conf`; in Docker, in `.env`
+  (the service passes it on). Once set, a **direct** HTTP access to the daemon (tunnel, `port-forward`) loses its
+  session cookie, and the daemon mentions it again in its log at startup. Without this setting or a
+  listed proxy announcing `https`, the cookie goes out without `Secure` and without HSTS: do not then serve the
+  same name in plaintext.
 
-`PLUME_WEB_MAX` (défaut 10000) borne les lignes que le capteur `web` lit par passage. Ce qu'un flot plus
-long fait au-delà dépend de la source :
+`PLUME_WEB_MAX` (default 10000) bounds the lines the `web` sensor reads per run. What a longer
+stream does beyond that depends on the source:
 
-- **`PLUME_WEB_SRC=file`** : le journal se lit par offset d'octets. Au-delà de la borne, le reste est lu
-  aux passages suivants : rien n'est sauté. Seul le premier passage (aucun état de lecture) lit les
-  `PLUME_WEB_MAX` dernières lignes, et le battement dit combien d'octets antérieurs il n'a pas lus. Après
-  une rotation, la fin du journal précédent est reprise dans `<journal>.1` ; après deux rotations entre
-  deux passages, dans `<journal>.2` (ou `<journal>.2.gz` si `gzip` est installé), puis `.1`, puis le
-  journal courant, chaque ligne une fois. Un journal vide n'a pas d'identité : quand le journal courant
-  est vide après une rotation, l'état pointe la fin du journal tourné, et ce journal vide, rempli puis
-  tourné à son tour, est lu dans `.1`. Journal précédent introuvable (rotation compressée sans
-  `delaycompress`, ou trois rotations) : les journaux tournés modifiés depuis le passage précédent
-  (repère daté `web.lecture` de l'état, comparé par `find -newer`) sont lus ; la perte est avouée
-  (`missing-source`, nombre inconnu, « peut-être nul » pour le seul reste du journal précédent), y
-  compris quand rien n'en avait encore été lu, avec le nom des journaux modifiés qui ne se lisent pas.
-  Un `.1` absent ou illisible entre `.2` et le journal courant est avoué perdu, que `.2` soit fini au
-  début d'un passage ou à sa fin. Limite : un journal écrit puis tourné dans la même seconde que le
-  repère n'est pas reconnu postérieur là où `find` ne compare qu'à la seconde ;
-- **`PLUME_WEB_SRC=k3s`** (le défaut) : `kubectl logs --tail` ne rend que les dernières lignes de la
-  fenêtre. Les plus anciennes ne sont pas lues, mais un second `kubectl logs` les **compte**, et le
-  nombre est avoué dans le battement et par un `collection-capped`, total et **par pod nommé** : exact
-  pour un pod dont le comptage (10 × `PLUME_WEB_MAX` lignes par pod) remonte avant la fenêtre, « au
-  moins N » sinon, ou « nombre inconnu » quand le comptage échoue, voit moins de requêtes que la
-  lecture, ou ne rend plus un pod lu. Il faut un `kubectl` 1.17 ou plus
-  récent (`--prefix`).
+- **`PLUME_WEB_SRC=file`**: the log is read by byte offset. Beyond the bound, the rest is read
+  on the following runs: nothing is skipped. Only the first run (no read state) reads the last
+  `PLUME_WEB_MAX` lines, and the heartbeat says how many earlier bytes it has not read. After
+  a rotation, the end of the previous log is resumed from `<journal>.1`; after two rotations between
+  two runs, from `<journal>.2` (or `<journal>.2.gz` if `gzip` is installed), then `.1`, then the
+  current log, each line once. An empty log has no identity: when the current log
+  is empty after a rotation, the state points to the end of the rotated log, and that empty log, filled then
+  rotated in turn, is read from `.1`. Previous log not found (compressed rotation without
+  `delaycompress`, or three rotations): the rotated logs modified since the previous run
+  (dated marker `web.lecture` in the state, compared by `find -newer`) are read; the loss is admitted
+  (`missing-source`, "nombre inconnu", "peut-être nul" for the remainder of the previous log only),
+  including when nothing had been read from it yet, with the names of the modified logs that cannot be read.
+  A `.1` absent or unreadable between `.2` and the current log is admitted as lost, whether `.2` was complete at the
+  start of a run or at its end. Limit: a log written then rotated within the same second as the
+  marker is not recognized as later where `find` only compares to the second;
+- **`PLUME_WEB_SRC=k3s`** (the default): `kubectl logs --tail` only returns the last lines of the
+  window. The oldest ones are not read, but a second `kubectl logs` **counts** them, and the
+  number is admitted in the heartbeat and by a `collection-capped`, in total and **per named pod**: exact
+  for a pod whose count (10 × `PLUME_WEB_MAX` lines per pod) goes back before the window, "au
+  moins N" otherwise, or "nombre inconnu" when the count fails, sees fewer requests than the
+  read, or no longer returns a pod that was read. It requires a `kubectl` 1.17 or more
+  recent (`--prefix`).
 
-Le battement porte la valeur en vigueur (« borne de lecture PLUME_WEB_MAX=10000 atteinte » au défaut) :
-cherchez `PLUME_WEB_MAX=`. En k3s, montez-la si ce message revient.
+The heartbeat carries the value in force ("borne de lecture PLUME_WEB_MAX=10000 atteinte" at the default):
+search for `PLUME_WEB_MAX=`. In k3s, raise it if this message comes back.
 
-### 6.3 Le plafond d'`auditd`
+### 6.3 The `auditd` ceiling
 
-`PLUME_AUDIT_MAX` (défaut 4000) borne les événements émis par passage. Au-delà, les événements des clés
-de **sabotage** (TAMPER) sont gardés d'abord, puis les autres par gravité décroissante ; ce qui reste est
-**compté** et avoué dans le battement (`… au-delà du plafond PLUME_AUDIT_MAX`) et par un
-`collection-capped`. Relevez la borne si l'aveu se répète.
+`PLUME_AUDIT_MAX` (default 4000) bounds the events emitted per run. Beyond it, the events of the
+**tampering** keys (TAMPER) are kept first, then the others by decreasing severity; what remains is
+**counted** and admitted in the heartbeat (`… au-delà du plafond PLUME_AUDIT_MAX`) and by a
+`collection-capped`. Raise the bound if the admission repeats.
 
-### 6.4 Des règles d'audit qui doublonnent celles de plume
+### 6.4 Audit rules that duplicate plume's
 
-`augenrules --load` concatène les fichiers de `/etc/audit/rules.d/` et **s'arrête à la première règle
-en échec** sans revenir en arrière. Une règle d'un **autre** fichier identique à une règle de
-`plume.rules` fait échouer ce doublon (« Rule exists »), et tout ce qui suit n'est pas chargé — au
-chargement comme au démarrage d'`auditd`, qui rejoue le même assemblage.
+`augenrules --load` concatenates the files of `/etc/audit/rules.d/` and **stops at the first failing
+rule** without rolling back. A rule from **another** file identical to a rule in
+`plume.rules` makes that duplicate fail ("Rule exists"), and everything after it is not loaded — at
+loading as well as at the start of `auditd`, which replays the same assembly.
 
-Les deux installateurs passent par **un seul chargeur**, `plume-audit-rules-load.sh` : `bootstrap.sh`
-l'appelle quand `auditd` est installé, `bootstrap-agent.sh` le pose sans le lancer et affiche le geste.
-Il commente dans la copie posée chaque ligne du gabarit déjà déclarée **à l'identique** par un autre fichier
-(`## plume-doublon : déjà déclarée par <fichier> …`), lance `augenrules --load`, compte par clé ce que
-`auditctl -l` rapporte, rattrape règle par règle ce qui manque, et rend :
+Both installers go through **a single loader**, `plume-audit-rules-load.sh`: `bootstrap.sh`
+calls it when `auditd` is installed, `bootstrap-agent.sh` installs it without running it and displays the operation.
+It comments out, in the installed copy, each line of the template already declared **identically** by another file
+(`## plume-doublon : déjà déclarée par <fichier> …`), runs `augenrules --load`, counts per key what
+`auditctl -l` reports, catches up rule by rule on what is missing, and returns:
 
-| Code | Ce que le noyau tient | Message |
+| Code | What the kernel holds | Message |
 |---|---|---|
-| `0` | tout, par l'assemblage lui-même | `>> OK — toutes les règles déclarées sont chargées.` |
-| `1` | **pas tout** : chaque clé manquante est nommée, et la ligne refusée avec le message d'`auditctl` s'il y en a une — ou le chargeur n'a pas pu travailler (gabarit introuvable, `auditd` absent, pas root), message en `!!` | `!! CHARGEMENT PARTIEL — REFUSÉ` ; s'il a rattrapé des règles, il dit combien seront perdues au prochain démarrage |
-| `2` | tout **maintenant**, mais par le seul rattrapage : le prochain démarrage d'`auditd` s'arrêtera au même endroit | `!! RÈGLES PLUME COMPLÈTES MAINTENANT, MAIS PAR LE SEUL RATTRAPAGE` |
+| `0` | everything, through the assembly itself | `>> OK — toutes les règles déclarées sont chargées.` |
+| `1` | **not everything**: each missing key is named, and the refused line with `auditctl`'s message if there is one — or the loader could not work (template not found, `auditd` absent, not root), message in `!!` | `!! CHARGEMENT PARTIEL — REFUSÉ`; if it has caught up rules, it says how many will be lost at the next start |
+| `2` | everything **now**, but through the catch-up alone: the next start of `auditd` will stop at the same place | `!! RÈGLES PLUME COMPLÈTES MAINTENANT, MAIS PAR LE SEUL RATTRAPAGE` |
 
-`bootstrap.sh` pose tout le reste puis finit en code `3` si le chargeur n'a pas rendu `0`, avec un message
-propre à chaque cas (« RÈGLES D'AUDIT INCOMPLÈTES MAINTENANT » pour `1`, « RÈGLES D'AUDIT COMPLÈTES
-MAINTENANT, MAIS PAS AU PROCHAIN DÉMARRAGE » pour `2`). Un doublon écrit autrement (ordre des champs)
-n'est pas reconnu à l'identique : il finit en code `2`. Le détail est dans
-[`ENDPOINT-SECURITY.md` §4ter](ENDPOINT-SECURITY.md#4ter-charger-les-règles-et-vérifier-ce-qui-tourne).
+`bootstrap.sh` installs everything else then ends with code `3` if the loader did not return `0`, with a message
+specific to each case ("RÈGLES D'AUDIT INCOMPLÈTES MAINTENANT" for `1`, "RÈGLES D'AUDIT COMPLÈTES
+MAINTENANT, MAIS PAS AU PROCHAIN DÉMARRAGE" for `2`). A duplicate written differently (order of the fields)
+is not recognized as identical: it ends with code `2`. The details are in
+[`ENDPOINT-SECURITY.md` §4ter](ENDPOINT-SECURITY.md#4ter-loading-the-rules-and-checking-what-is-running).
 
-**Vérifier, en lecture seule** — ne modifie rien :
+**Check, read-only** — modifies nothing:
 
 ```sh
-sudo auditctl -l | grep -oE '(-k |key=)[a-z_]+' | sort | uniq -c  # compte par clé : `-k` pour les watches, `key=` pour les appels système
-sudo grep -E '^[[:space:]]*-' /etc/audit/rules.d/plume.rules | grep -oE -- '-k [a-z_]+' | sort | uniq -c  # ce que le fichier déclare
+sudo auditctl -l | grep -oE '(-k |key=)[a-z_]+' | sort | uniq -c  # count per key: `-k` for watches, `key=` for system calls
+sudo grep -E '^[[:space:]]*-' /etc/audit/rules.d/plume.rules | grep -oE -- '-k [a-z_]+' | sort | uniq -c  # what the file declares
 ```
 
-Chaque clé du second compte doit avoir au moins autant de règles dans le premier — une ligne commentée
-`## plume-doublon` ne compte pas dans le second, la règle étant tenue par l'autre fichier. La liste doit
-porter
-`exec_tracking` (deux règles `execve`, 64 et 32 bits) : sans elle, `category=exec` reste vide.
-`svc_exec` n'y figure que si vous avez décommenté ses règles dans le gabarit.
+Each key of the second count must have at least as many rules in the first — a line commented out
+`## plume-doublon` does not count in the second, the rule being held by the other file. The list must
+carry
+`exec_tracking` (two `execve` rules, 64 and 32 bits): without it, `category=exec` stays empty.
+`svc_exec` only appears if you have uncommented its rules in the template.
 
-**Recharger** — ce n'est pas une vérification : `plume-audit-rules-load.sh` **réinstalle** le gabarit,
-dédoublonné, par-dessus `/etc/audit/rules.d/plume.rules`, puis charge et compte comme ci-dessus.
-**Une copie locale modifiée de `plume.rules` est écrasée** : reportez vos changements dans le gabarit
-que vous lui passez, ou sauvegardez le fichier avant. Relancez-le aussi après tout changement d'un autre
-fichier de `/etc/audit/rules.d` : une règle commentée chez plume parce qu'un autre fichier la portait
-disparaît avec ce fichier.
+**Reload** — this is not a check: `plume-audit-rules-load.sh` **reinstalls** the template,
+deduplicated, over `/etc/audit/rules.d/plume.rules`, then loads and counts as above.
+**A locally modified copy of `plume.rules` is overwritten**: carry your changes over into the template
+you pass to it, or back up the file beforehand. Also rerun it after any change to another
+file of `/etc/audit/rules.d`: a rule commented out in plume's file because another file carried it
+disappears along with that file.
 
 ```sh
-sudo sh systemd/plume-audit-rules-load.sh                        # central, depuis le dépôt : gabarit systemd/plume-audit.rules
+sudo sh systemd/plume-audit-rules-load.sh                        # central, from the repository: template systemd/plume-audit.rules
 sudo sh /usr/local/lib/plume/plume-audit-rules-load.sh /usr/local/share/plume/plume-audit.rules   # agent
 ```
 
-Sans argument, le chargeur prend `plume-audit.rules` à côté de lui (le dépôt), sinon
-`../../share/plume/plume-audit.rules` depuis son répertoire : installé, `/usr/local/share/plume/`, où les
-deux installateurs posent le gabarit. Le passer en argument, comme ci-dessus, ne laisse aucun doute.
+Without an argument, the loader takes `plume-audit.rules` next to itself (the repository), otherwise
+`../../share/plume/plume-audit.rules` from its directory: once installed, `/usr/local/share/plume/`, where
+both installers put the template. Passing it as an argument, as above, leaves no doubt.
 
-### 6.5 CrowdSec derrière un mandataire
+### 6.5 CrowdSec behind a proxy
 
-Derrière un mandataire ou un tunnel, l'adresse que CrowdSec lit dans le journal est celle du **relais**,
-une adresse privée, et la liste blanche des adresses privées l'écarte avant les scénarios : le moteur lit
-et ne peut rien détecter. Le battement le dit (`acq_verdict` à `tout_en_liste_blanche` ou
-`surtout_liste_blanche`, seuil `PLUME_CROWDSEC_WHITELIST_SHARE_MAX`, défaut 90). Le remède est de faire
-écrire au journal **la vraie adresse cliente** (en-tête d'adresse réelle du mandataire, journal d'accès
-qui la porte), pas de retirer la liste blanche.
+Behind a proxy or a tunnel, the address CrowdSec reads in the log is that of the **relay**,
+a private address, and the whitelist of private addresses discards it before the scenarios: the engine reads
+and cannot detect anything. The heartbeat says so (`acq_verdict` at `tout_en_liste_blanche` or
+`surtout_liste_blanche`, threshold `PLUME_CROWDSEC_WHITELIST_SHARE_MAX`, default 90). The remedy is to make
+the log record **the real client address** (the proxy's real-address header, an access log
+that carries it), not to remove the whitelist.
 
-**Quelle liste blanche écarte.** Le capteur lit `cscli metrics show whitelists -o json` (repli : la section
-`whitelists` de `cscli metrics -o json` ; absente avant les versions 1.6.x qui la portent) et nomme, dans le
-battement et dans l'aveu, les lignes écartées par chaque liste sur la fenêtre (au premier passage, ou sans état
-lisible : depuis le démarrage de l'agent, et il le dit). La cause « adresse privée d'un mandataire » n'est dite
-que si **toutes** sont parties dans `crowdsecurity/whitelists`. Si une autre liste en a écarté (par exemple une
-liste des réponses servies à une session SSO), le moteur lit les vraies adresses ; et, quand **aucune** ligne n'a
-atteint les scénarios (`tout_en_liste_blanche` ou `en_liste_blanche_sous_le_seuil`), rien d'anonyme n'a atteint
-l'origine sur la fenêtre (filtré en amont, ou site injoignable) — sur `surtout_liste_blanche`, des lignes y sont
-parvenues et cette phrase n'est pas dite. Répartition illisible : « répartition inconnue », et aucune cause n'est affirmée.
+**Which whitelist discards.** The sensor reads `cscli metrics show whitelists -o json` (fallback: the
+`whitelists` section of `cscli metrics -o json`; absent before the 1.6.x versions that carry it) and names, in the
+heartbeat and in the admission, the lines discarded by each list over the window (on the first run, or without a readable
+state: since the agent's start, and it says so). The cause "private address of a proxy" is only stated
+if **all** of them went to `crowdsecurity/whitelists`. If another list has discarded some (for example a
+list of the responses served to an SSO session), the engine reads the real addresses; and, when **no** line has
+reached the scenarios (`tout_en_liste_blanche` or `en_liste_blanche_sous_le_seuil`), nothing anonymous has reached
+the origin over the window (filtered upstream, or site unreachable) — on `surtout_liste_blanche`, lines did get
+through and this sentence is not said. Unreadable breakdown: "répartition inconnue", and no cause is asserted.
 
-**Une durée, pas un cri par passage.** Tant qu'aucune ligne n'atteint les scénarios depuis moins de
-`PLUME_CROWDSEC_SANS_SCENARIO_MAX_HEURES` heures (défaut 24 ; `0` = refus immédiat, l'ancien comportement ;
-illisible = repli sur 24, dit), le verdict est `en_liste_blanche_sous_le_seuil` : sévérité 1, durée et seuil dans
-le message, aucun aveu. Au seuil, `tout_en_liste_blanche` refuse de conclure (sévérité 3, aveu), durée dite. La
-durée court depuis le dernier passage où des lignes ont atteint les scénarios (`crowdsec-scenarios-atteints.ts`
-dans l'état du capteur) ; après une mise à niveau, elle part du premier passage qui constate l'absence de cet
-horodatage, et le dit. Prix : pendant ce délai, un moteur vraiment aveuglé par un mandataire ne refuse pas — il
-le dit en sévérité 1, avec la répartition qui nomme la liste privée. Si cet horodatage est absent ou illisible
-et ne peut pas s'écrire (état du capteur non inscriptible), la durée ne peut pas courir : le capteur refuse sans
-attendre le seuil, le dit dans le message, et avoue l'échec d'écriture (`etat/horodatage`). Un horodatage valide
-déjà posé continue de compter la durée, même si l'état est devenu non inscriptible.
+**A duration, not a cry per run.** As long as no line has reached the scenarios for less than
+`PLUME_CROWDSEC_SANS_SCENARIO_MAX_HEURES` hours (default 24; `0` = immediate refusal, the old behaviour;
+unreadable = fallback to 24, stated), the verdict is `en_liste_blanche_sous_le_seuil`: severity 1, duration and threshold in
+the message, no admission. At the threshold, `tout_en_liste_blanche` refuses to conclude (severity 3, admission), duration stated. The
+duration runs from the last run in which lines reached the scenarios (`crowdsec-scenarios-atteints.ts`
+in the sensor's state); after an upgrade, it starts from the first run that notices the absence of this
+timestamp, and says so. Price: during this delay, an engine truly blinded by a proxy does not refuse — it
+says so at severity 1, with the breakdown that names the private list. If this timestamp is absent or unreadable
+and cannot be written (sensor state not writable), the duration cannot run: the sensor refuses without
+waiting for the threshold, says so in the message, and admits the write failure (`etat/horodatage`). A valid timestamp
+already set keeps counting the duration, even if the state has become not writable.
 
-**Limite : une route servie par un relais sans en-tête d'adresse, ou protégée par mTLS.** Dans un déploiement où
-un relais ou un tunnel n'ajoute aucun en-tête d'adresse réelle, les lignes de cette route portent l'adresse du
-relais, et la liste des adresses privées les écarte à bon droit. Une poignée mTLS refusée ne produit **aucune**
-ligne d'accès : CrowdSec ne voit donc pas ces tentatives. C'est le mTLS qui les refuse, pas CrowdSec qui les voit.
+**Limit: a route served by a relay without an address header, or protected by mTLS.** In a deployment where
+a relay or a tunnel adds no real-address header, the lines of that route carry the address of the
+relay, and the list of private addresses rightly discards them. A refused mTLS handshake produces **no**
+access line: CrowdSec therefore does not see these attempts. It is mTLS that refuses them, not CrowdSec that sees them.
 
-### 6.6 `pod-logs` : ses exclusions se posent dans un drop-in LOCAL
+### 6.6 `pod-logs`: its exclusions go in a LOCAL drop-in
 
-L'unité ne lit aucun fichier de configuration. `PLUME_POD_LOG_SKIP` (pods déjà couverts par un capteur
-dédié) et `PLUME_POD_LOG_MIN_SEV` se posent par `sudo systemctl edit plume-pod-logs.service` — jamais
-dans le fichier livré, qu'une mise à jour écrase.
+The unit reads no configuration file. `PLUME_POD_LOG_SKIP` (pods already covered by a dedicated
+sensor) and `PLUME_POD_LOG_MIN_SEV` are set through `sudo systemctl edit plume-pod-logs.service` — never
+in the shipped file, which an update overwrites.
 
-### 6.7 Ce qui ne se voit pas d'un coup d'œil
+### 6.7 What cannot be seen at a glance
 
-- Un réglage de `.env` que le bloc `environment:` du service n'énumère pas n'atteint pas le conteneur.
-- `PLUME_QUERY_MAX` est lu dans l'**environnement seul** : sur un hôte, l'écrire dans
-  `/etc/plume/soc.conf` est sans effet — posez-le par un drop-in de `plume-daemon.service`.
-- Le mode SETUP reste ouvert tant qu'aucun admin n'existe.
+- A `.env` setting that the service's `environment:` block does not list does not reach the container.
+- `PLUME_QUERY_MAX` is read from the **environment only**: on a host, writing it in
+  `/etc/plume/soc.conf` has no effect — set it through a drop-in of `plume-daemon.service`.
+- SETUP mode stays open as long as no admin exists.
 
 ---
 
-## 7. Les tableaux de bord, et le capteur qui les nourrit
+## 7. The dashboards, and the sensor that feeds them
 
-Un tableau semé vide n'est pas un tableau cassé : c'est souvent un producteur absent. Relevé dans
-`daemon/src/seeds.rs` :
+A dashboard seeded empty is not a broken dashboard: it is often an absent producer. Taken from
+`daemon/src/seeds.rs`:
 
-| Tableau semé | Producteur livré | À savoir |
+| Seeded dashboard | Shipped producer | Good to know |
 |---|---|---|
-| SOC — Vue d'ensemble | tous ; `resources` pour les courbes | — |
-| Sécurité & détection | `vuln`, `clamav`, `conntrack`, `auditd`, `suricata`, `mail` | un panneau par capteur : vide si le capteur n'est pas activé |
+| SOC — Vue d'ensemble | all; `resources` for the curves | — |
+| Sécurité & détection | `vuln`, `clamav`, `conntrack`, `auditd`, `suricata`, `mail` | one panel per sensor: empty if the sensor is not enabled |
 | Réseau sortant (egress) | `conntrack`, `resources` (`net_tx_bps`) | — |
 | Trafic web | `web`, `cloudflare` | — |
-| Mail — flux & verdicts | `mail` | expéditeurs et destinataires y apparaissent masqués (`*@domaine`), hors expéditeur d'un envoi originaire du serveur |
+| Mail — flux & verdicts | `mail` | senders and recipients appear masked there (`*@domaine`), except the sender of a sending originating from the server |
 | Accès données (Varonis) | `dataaccess` | — |
 | Carte d'accès (Varonis) | `dataacl` | — |
 | RBAC k8s (Varonis) | `kube-rbac` | — |
 | MinIO / S3 (Varonis) | `minio` | — |
-| Vault — accès secrets (Varonis) | `custom`, avec la déclaration d'exemple [`../deploy/vault-audit.input.example`](../deploy/vault-audit.input.example) | rien sans cette déclaration |
+| Vault — accès secrets (Varonis) | `custom`, with the example declaration [`../deploy/vault-audit.input.example`](../deploy/vault-audit.input.example) | nothing without this declaration |
 | Infra & logs (OBS) | `resources`, `kube-state` | — |
-| Posture de configuration (SCA/CIS) | **aucun** | nourri par un agent tiers (Wazuh, source `wazuh`) normalisé à l'ingestion |
-| Vulnérabilités (CVE endpoint) | `vuln` (images scannées par trivy) | aussi nourri par un agent tiers (Wazuh, source `wazuh`) normalisé à l'ingestion ; `vuln` pose dans `fields` les mêmes noms que le normaliseur Wazuh — `cve`, `vuln_package`, `vuln_package_version` (version installée), `vuln_severity` (minuscules), `vuln_cvss` (score v3 `nvd` quand trivy l'a), `agent_name` (l'hôte qui scanne) — plus `vuln_fixed` (version corrigée) et `image`, qui lui sont propres ; `vuln_title` et `vuln_status` ne viennent que de Wazuh |
-| Conformité — `<cadre>` | **aucun** | même source que la posture |
+| Posture de configuration (SCA/CIS) | **none** | fed by a third-party agent (Wazuh, source `wazuh`) normalized at ingestion |
+| Vulnérabilités (CVE endpoint) | `vuln` (images scanned by trivy) | also fed by a third-party agent (Wazuh, source `wazuh`) normalized at ingestion; `vuln` puts in `fields` the same names as the Wazuh normalizer — `cve`, `vuln_package`, `vuln_package_version` (installed version), `vuln_severity` (lowercase), `vuln_cvss` (v3 `nvd` score when trivy has it), `agent_name` (the scanning host) — plus `vuln_fixed` (fixed version) and `image`, which are its own; `vuln_title` and `vuln_status` only come from Wazuh |
+| Conformité — `<cadre>` | **none** | same source as the posture |
 
-Que les deux tableaux sans producteur livré (posture, conformité) disent eux-mêmes qu'ils n'ont pas de source est porté par `P10.32-p`.
+That the two dashboards without a shipped producer (posture, compliance) should themselves say they have no source is carried by `P10.32-p`.
 
 ---
 
-## 8. La recherche : ce qui est plafonné, et comment tout lire
+## 8. Search: what is capped, and how to read everything
 
-En bref, détaillé dans [`GXQL.md` §6.4](GXQL.md#64-ce-que-le-plafond-coupe-et-comment-tout-lire) :
-`PLUME_QUERY_MAX` (défaut 5000) **n'est pas une limite de ce que plume interroge ni de ce qu'il compte** :
-c'est le nombre de **lignes rendues** dans un tableau. Sans tier froid, un `stats` est calculé sur tous
-les événements de la fenêtre, et un `stats … by` qui produit plus de groupes que le plafond rend les
-premiers groupes et le dit. **Avec le tier froid actif** (binaire construit avec `cold_tier`, `PLUME_COLD_TIER=1`) et une fenêtre qui atteint
-le froid, 5000 est aussi le nombre de lignes froides qu'un des chemins de lecture recopie avant de
-calculer : quand cette recopie a atteint le plafond, une requête qui calcule une valeur sur l'ensemble
-est **refusée** (`422`, `"reason": "cold_truncated_aggregate"`) plutôt que de rendre un nombre faux. On
-s'en sort en resserrant la fenêtre, ou en relevant `PLUME_QUERY_MAX` jusqu'à `100000` au prix de la
-mémoire. Une expression régulière ne peut pas contenir d'alternance
-aujourd'hui ([`GXQL.md` §2.4](GXQL.md#24-limite-connue--une-barre-verticale-dans-une-expression-régulière)).
-Son motif est borné, au chaud comme au froid et à l'import Sigma : 512 octets (refus `400`,
-« motif regex trop long (max 512) »), 1 Mio de programme compilé (refus `400`, message du moteur),
-1 Mio de cache du DFA paresseux (dépassé, la recherche ralentit sans refus). Ce qui reste ouvert : les
-requêtes interactives se partagent un sémaphore (`PLUME_QUERY_CONCURRENCY`, défaut 3), et quelques
-requêtes lourdes lancées ensemble font attendre toutes les autres.
+In short, detailed in [`GXQL.md` §6.4](GXQL.md#64-what-the-ceiling-cuts-and-how-to-read-everything):
+`PLUME_QUERY_MAX` (default 5000) **is not a limit on what plume queries nor on what it counts**:
+it is the number of **rows returned** in a table. Without the cold tier, a `stats` is computed over all
+the events of the window, and a `stats … by` that produces more groups than the ceiling returns the
+first groups and says so. **With the cold tier active** (binary built with `cold_tier`, `PLUME_COLD_TIER=1`) and a window that reaches
+the cold data, 5000 is also the number of cold rows that one of the read paths copies before
+computing: when that copy has reached the ceiling, a query that computes a value over the whole set
+is **refused** (`422`, `"reason": "cold_truncated_aggregate"`) rather than returning a wrong number. The way
+out is to narrow the window, or to raise `PLUME_QUERY_MAX` up to `100000` at the cost of
+memory. A regular expression cannot contain an alternation
+today ([`GXQL.md` §2.4](GXQL.md#24-known-limitation-a-vertical-bar-inside-a-regular-expression)).
+Its pattern is bounded, hot as well as cold and at Sigma import: 512 bytes (refusal `400`,
+"motif regex trop long (max 512)"), 1 MiB of compiled program (refusal `400`, the engine's message),
+1 MiB of lazy DFA cache (once exceeded, the search slows down without refusal). What remains open: the
+interactive queries share a semaphore (`PLUME_QUERY_CONCURRENCY`, default 3), and a few
+heavy queries launched together make all the others wait.

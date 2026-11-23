@@ -1009,33 +1009,42 @@ def scenario_central(commun, env_files):
             bac.nettoyer()
 
 
-# `P10.32-j` (i), suite — la table des secrets du guide d'installation nomme ce que l'installeur pose.
-GUIDE_INSTALLATION = "docs/INSTALLER-SANS-OUVRIR-DE-BRECHE.md"
-TABLE_DES_SECRETS = ("## 3. Où vivent les secrets", "\n## 4. ")
+# `P10.32-j` (i), suite — la table des secrets du guide d'installation nomme ce que l'installeur pose. Le guide
+# existe en deux langues ; chacune porte la table, chemins et droits écrits à l'identique, et chacune est jugée.
+GUIDES_INSTALLATION = (
+    ("docs/INSTALLER-SANS-OUVRIR-DE-BRECHE.fr.md", ("## 3. Où vivent les secrets", "\n## 4. ")),
+    ("docs/INSTALLER-SANS-OUVRIR-DE-BRECHE.md", ("## 3. Where the secrets live", "\n## 4. ")),
+)
 
 
 def juger_table_des_secrets(nom, chemins):
-    """Chaque conf de `chemins` (lue par root seul, posée par l'installeur dans le bac) a sa ligne dans la table §3,
-    chemin écrit entre accents graves dans la colonne « Où » et `0600 root:root` dans la colonne « Droits »."""
-    brut = lire(os.path.join(RACINE_DEPOT, GUIDE_INSTALLATION))
-    a = brut.find(TABLE_DES_SECRETS[0])
-    b = brut.find(TABLE_DES_SECRETS[1], a + 1)
+    """Chaque conf de `chemins` (lue par root seul, posée par l'installeur dans le bac) a sa ligne dans la table §3
+    de chaque langue du guide, chemin écrit entre accents graves dans la colonne « Où » (« Where ») et
+    `0600 root:root` dans la colonne « Droits » (« Permissions »)."""
+    for guide, tranche in GUIDES_INSTALLATION:
+        juger_une_table_des_secrets(nom, chemins, guide, tranche)
+
+
+def juger_une_table_des_secrets(nom, chemins, guide, tranche):
+    brut = lire(os.path.join(RACINE_DEPOT, guide))
+    a = brut.find(tranche[0])
+    b = brut.find(tranche[1], a + 1)
     if a < 0 or b < 0:
-        refuser(f"{GUIDE_INSTALLATION} : tranche {TABLE_DES_SECRETS!r} introuvable — la table des secrets n'est pas jugée")
+        refuser(f"{guide} : tranche {tranche!r} introuvable — la table des secrets n'est pas jugée")
         return
     lignes = [[c.strip() for c in ln.strip().strip("|").split("|")]
               for ln in brut[a:b].splitlines() if ln.lstrip().startswith("|")]
     lignes = [c for c in lignes if len(c) >= 4 and not set(c[0]) <= set("-: ")]
     if len(lignes) < 2:
-        refuser(f"{GUIDE_INSTALLATION} : table des secrets illisible ({len(lignes)} ligne(s)) — rien n'est jugé")
+        refuser(f"{guide} : table des secrets illisible ({len(lignes)} ligne(s)) — rien n'est jugé")
         return
     for chemin in chemins:
         ou = [c for c in lignes if f"`{chemin}`" in c[1]]
         if not ou:
-            faute(f"{nom} : {chemin} est posé par l'installeur, lu par root seul, et absent de la table « Où vivent "
-                  f"les secrets » de {GUIDE_INSTALLATION}")
+            faute(f"{nom} : {chemin} est posé par l'installeur, lu par root seul, et absent de la table des "
+                  f"secrets (§3) de {guide}")
         elif not any("0600 root:root" in c[2] for c in ou):
-            faute(f"{nom} : {GUIDE_INSTALLATION}, table des secrets : {chemin} n'y est pas dit `0600 root:root` "
+            faute(f"{nom} : {guide}, table des secrets : {chemin} n'y est pas dit `0600 root:root` "
                   f"(vu : {[c[2] for c in ou]})")
 
 
@@ -1502,7 +1511,10 @@ ABSENTE_UDP, ABSENTE_TCP = "PLUME_SYSLOG_UDP(absente=0.0.0.0:514)", "PLUME_SYSLO
 # = toute source acceptée. Interdite dans la sortie de l'installeur ET dans les textes qui la décrivent.
 ANCIENNE_SEMANTIQUE = re.compile(
     r"(absente?|non\s+pos[ée]e)\s+ou\s+vide|vider?\s+ne\s+d[ée]sactive\s+pas|ne\s+d[ée]sactive\s+pas\s+un\s+transport"
-    r"|toute\s+source\s+(est\s+)?accept[ée]e|SYSLOG OUVERT SANS LISTE", re.I)
+    r"|toute\s+source\s+(est\s+)?accept[ée]e|SYSLOG OUVERT SANS LISTE"
+    # La même sémantique, écrite dans l'original anglais de la doc.
+    r"|(absent|not\s+set)\s+or\s+empty|emptying\s+(it\s+)?does\s+not\s+disable|does\s+not\s+disable\s+a\s+transport"
+    r"|any\s+source\s+(is\s+)?accepted", re.I)
 NOMMEE = re.compile(r"COMMENTAIRE DANS UNE VALEUR : (\S+) : (\S+)")
 
 
@@ -1786,26 +1798,40 @@ def juger_compose(yaml):
             faute(f"docker-compose.yml : {cle} n'est pas relayé depuis `.env`, vide par défaut ({env.get(cle)!r})")
 
 
+# `P10.33-c` — ce que chaque langue de la doc d'audit doit dire, dans SA langue. La commande de vérification,
+# le répertoire et le message d'`auditctl` sont communs ; le reste est la phrase de la langue.
+DOCS_AUDIT = (
+    {"doc": "docs/ENDPOINT-SECURITY.fr.md", "doublon": r"doublon",
+     "code": "`bootstrap.sh` finit alors en code `{code}`", "vraie": r"^- \*\*vraie erreur\*\*",
+     "perdues": "PERDUES au prochain démarrage"},
+    {"doc": "docs/ENDPOINT-SECURITY.md", "doublon": r"duplicate",
+     "code": "`bootstrap.sh` then ends with code `{code}`", "vraie": r"^- \*\*real error\*\*",
+     "perdues": "LOST at the next boot"},
+)
+
+
 def juger_docs_audit():
     """`P10.33-c` — la doc dit comment VÉRIFIER (watches comprises : `-k`, pas seulement `key=`) et quoi
     faire d'un doublon d'un autre fichier ; aucune doc ni installeur ne fait compter `key=plume_` seul."""
-    doc = lire(os.path.join(RACINE_DEPOT, "docs/ENDPOINT-SECURITY.md"))
-    if "auditctl -l | grep -cE -- '(-k |key=)plume_'" not in doc:
-        faute("docs/ENDPOINT-SECURITY.md : le geste de vérification `sudo auditctl -l | grep -cE -- '(-k |key=)plume_'` manque")
-    if not re.search(r"doublon", doc) or "/etc/audit/rules.d" not in doc or "Rule exists" not in doc:
-        faute("docs/ENDPOINT-SECURITY.md : rien ne dit quoi faire d'une règle plume déjà déclarée par un autre fichier de /etc/audit/rules.d")
     # Le code que la doc annonce pour bootstrap.sh est celui du bloc AUDIT_RC de bootstrap.sh, lu ici.
     bloc = re.search(r'if \[ "\$\{AUDIT_RC:-0\}" -ne 0 \]; then\n(.*?)\nfi\n', lire(os.path.join(RACINE_DEPOT, "bootstrap.sh")), re.S)
     codes = re.findall(r"^\s*exit (\d+)\s*$", bloc.group(1), re.M) if bloc else []
     if len(codes) != 1:
         refuser(f"bootstrap.sh : bloc AUDIT_RC méconnaissable ({len(codes)} `exit` lus) — le code annoncé par la doc n'est pas jugeable")
-    elif f"`bootstrap.sh` finit alors en code `{codes[0]}`" not in doc:
-        faute(f"docs/ENDPOINT-SECURITY.md : n'annonce pas le code `{codes[0]}` que bootstrap.sh rend sur un chargement d'audit refusé")
-    vraie = re.search(r"^- \*\*vraie erreur\*\*.*?(?=^\S|^- |\Z)", doc, re.S | re.M)
-    if not vraie or "PERDUES au prochain démarrage" not in " ".join(vraie.group(0).split()):
-        faute("docs/ENDPOINT-SECURITY.md : le cas « vraie erreur » (code 1) ne dit pas que les règles rattrapées seront PERDUES au prochain démarrage")
+    for langue in DOCS_AUDIT:
+        nom = langue["doc"]
+        doc = lire(os.path.join(RACINE_DEPOT, nom))
+        if "auditctl -l | grep -cE -- '(-k |key=)plume_'" not in doc:
+            faute(f"{nom} : le geste de vérification `sudo auditctl -l | grep -cE -- '(-k |key=)plume_'` manque")
+        if not re.search(langue["doublon"], doc) or "/etc/audit/rules.d" not in doc or "Rule exists" not in doc:
+            faute(f"{nom} : rien ne dit quoi faire d'une règle plume déjà déclarée par un autre fichier de /etc/audit/rules.d")
+        if len(codes) == 1 and langue["code"].format(code=codes[0]) not in doc:
+            faute(f"{nom} : n'annonce pas le code `{codes[0]}` que bootstrap.sh rend sur un chargement d'audit refusé")
+        vraie = re.search(langue["vraie"] + r".*?(?=^\S|^- |\Z)", doc, re.S | re.M)
+        if not vraie or langue["perdues"] not in " ".join(vraie.group(0).split()):
+            faute(f"{nom} : le cas « vraie erreur » (code 1) ne dit pas que les règles rattrapées seront PERDUES au prochain démarrage")
     seul = re.compile(r"grep\s+-c\s+['\"]?key=plume_")
-    fichiers = ["README.md", "bootstrap.sh", "bootstrap-agent.sh", CHARGEUR, GABARIT]
+    fichiers = ["README.md", "README.fr.md", "bootstrap.sh", "bootstrap-agent.sh", CHARGEUR, GABARIT]
     for rep in ("deploy", "docs"):
         fichiers += [os.path.relpath(os.path.join(r, f), RACINE_DEPOT) for r, _, fs in os.walk(os.path.join(RACINE_DEPOT, rep))
                      for f in fs if f.endswith(".md") and f != "ROADMAP.md"]
@@ -1815,9 +1841,27 @@ def juger_docs_audit():
                 faute(f"{rel}:{i} fait compter `key=plume_` seul — `auditctl -l` rend les watches en `-k`, qui y échappent")
 
 
+def juger_conf_syslog_documentee(syslog):
+    """La conf syslog documentée (bloc commun aux deux langues), lue selon systemd, est celle de l'installeur."""
+    texte = lire(os.path.join(RACINE_DEPOT, syslog))
+    m = re.search(r"^### 2\. Config `/etc/plume/syslog\.conf`\n.*?^```sh\n(.*?)^```", texte, re.M | re.S)
+    if not m:
+        refuser(f"{syslog} : bloc de conf de la section « 2. Config /etc/plume/syslog.conf » introuvable")
+        return
+    v = lire_env_systemd(m.group(1))
+    for cle, val in v.items():
+        if re.search(r"(^|\s)#", val):
+            faute(f"{syslog} : la conf documentée fait lire à systemd {cle}={val!r} — commentaire DANS la valeur")
+    for cle in ("PLUME_SYSLOG_UDP", "PLUME_SYSLOG_TCP"):
+        if v.get(cle) != "127.0.0.1:514":
+            faute(f"{syslog} : la conf documentée écoute {cle}={v.get(cle)!r} — l'installeur pose 127.0.0.1:514")
+    if v.get("PLUME_SYSLOG_ALLOW") != "":
+        faute(f"{syslog} : PLUME_SYSLOG_ALLOW={v.get('PLUME_SYSLOG_ALLOW')!r} dans la conf documentée")
+
+
 def juger_docs():
     prescrit = re.compile(r"chgrp\s+soc\s+/etc/plume/(plume|responder)\.conf|chmod\s+0?640\s+/etc/plume/(plume|responder)\.conf")
-    docs = [os.path.join(RACINE_DEPOT, "README.md")]
+    docs = [os.path.join(RACINE_DEPOT, "README.md"), os.path.join(RACINE_DEPOT, "README.fr.md")]
     for rep in ("deploy", "docs"):
         for rac, _, fs in os.walk(os.path.join(RACINE_DEPOT, rep)):
             docs += [os.path.join(rac, f) for f in fs if f.endswith(".md") and f != "ROADMAP.md"]
@@ -1834,23 +1878,12 @@ def juger_docs():
     if not any(re.match(r"\s*echo .*" + consigne, l) for l in agent):
         faute("bootstrap-agent.sh : la consigne affichée au 1er passage sans secret ne prescrit plus "
               "`sudo chmod 0600 /etc/plume/plume.conf`")
-    texte = lire(os.path.join(RACINE_DEPOT, "deploy/SYSLOG.md"))
-    m = re.search(r"^### 2\. Config `/etc/plume/syslog\.conf`\n.*?^```sh\n(.*?)^```", texte, re.M | re.S)
-    if not m:
-        refuser("deploy/SYSLOG.md : bloc de conf de la section « 2. Config /etc/plume/syslog.conf » introuvable")
-        return
-    v = lire_env_systemd(m.group(1))
-    for cle, val in v.items():
-        if re.search(r"(^|\s)#", val):
-            faute(f"deploy/SYSLOG.md : la conf documentée fait lire à systemd {cle}={val!r} — commentaire DANS la valeur")
-    for cle in ("PLUME_SYSLOG_UDP", "PLUME_SYSLOG_TCP"):
-        if v.get(cle) != "127.0.0.1:514":
-            faute(f"deploy/SYSLOG.md : la conf documentée écoute {cle}={v.get(cle)!r} — l'installeur pose 127.0.0.1:514")
-    if v.get("PLUME_SYSLOG_ALLOW") != "":
-        faute(f"deploy/SYSLOG.md : PLUME_SYSLOG_ALLOW={v.get('PLUME_SYSLOG_ALLOW')!r} dans la conf documentée")
+    for syslog in ("deploy/SYSLOG.md", "deploy/SYSLOG.fr.md"):
+        juger_conf_syslog_documentee(syslog)
     # P10.32-l — l'ancienne sémantique (vide = 0.0.0.0:514, « toute source acceptée ») est fausse : ni la
     # doc, ni l'unité, ni l'installeur (commentaires, conf engendrée, messages) ne la redisent.
-    for rel in ("deploy/SYSLOG.md", "systemd/plume-collector-syslog.service", "bootstrap-agent.sh"):
+    for rel in ("deploy/SYSLOG.md", "deploy/SYSLOG.fr.md", "systemd/plume-collector-syslog.service",
+                "bootstrap-agent.sh"):
         for i, ligne in enumerate(lire(os.path.join(RACINE_DEPOT, rel)).splitlines(), 1):
             m = ANCIENNE_SEMANTIQUE.search(ligne)
             if m:

@@ -15,6 +15,11 @@ page — dérivé de ses titres, jamais recopié. Plafond ZÉRO.
 
 Sortie 0 = chaque invocation renvoie ; 1 = une invocation orpheline ou un renvoi vers une section absente ;
 2 = refus de conclure (corpus illisible, aucune invocation, page sans sections).
+
+LES DEUX LANGUES SONT JUGÉES. Le README existe en anglais (`README.md`) et en français (`README.fr.md`), la
+page aussi (`docs/TROIS-MODES.md`, `docs/TROIS-MODES.fr.md`). Les invocations sont des commandes, les mêmes
+dans les deux langues, et chaque README est jugé contre la page de sa langue : un renvoi perdu dans une seule
+traduction rougit.
 """
 import os
 import re
@@ -22,14 +27,15 @@ import sys
 
 ICI = os.path.dirname(os.path.abspath(__file__))
 RACINE = os.path.realpath(os.path.join(ICI, os.pardir, os.pardir))
-README = "README.md"
+# (README, page des trois modes) de chaque langue.
+CORPUS = (("README.md", "docs/TROIS-MODES.md"), ("README.fr.md", "docs/TROIS-MODES.fr.md"))
 PAGE = "docs/TROIS-MODES.md"
 FENETRE = 12
 MIN_INVOCATIONS = 3
 MIN_SECTIONS = 5
 
 INVOCATION = re.compile(r"\bbash bootstrap(?:-agent)?\.sh\b")
-RENVOI = re.compile(r"docs/TROIS-MODES\.md(?:#[^)\s]*)?\)?[^\n]*?§\s*([0-9]+(?:\.[0-9]+)?)|§\s*([0-9]+(?:\.[0-9]+)?)[^\n]*?docs/TROIS-MODES\.md")
+RENVOI = re.compile(r"docs/TROIS-MODES(?:\.fr)?\.md(?:#[^)\s]*)?\)?[^\n]*?§\s*([0-9]+(?:\.[0-9]+)?)|§\s*([0-9]+(?:\.[0-9]+)?)[^\n]*?docs/TROIS-MODES(?:\.fr)?\.md")
 SECTION = re.compile(r"^#{2,3}\s+([0-9]+(?:\.[0-9]+)?)\b")
 
 
@@ -73,7 +79,32 @@ def valider_instrument():
     cas("renvoi trop loin", ["> voir [docs/TROIS-MODES.md §3.3](docs/TROIS-MODES.md)"] + [""] * 13 + ["sudo bash bootstrap.sh"], [15])
     cas("section absente", ["sudo bash bootstrap.sh", "> voir [docs/TROIS-MODES.md §9.9](docs/TROIS-MODES.md)"], [1])
     cas("pas une invocation", ["`bootstrap-agent.sh` n'installe que trois collecteurs", "bootstrap.sh refuse de continuer"], [])
+    cas("renvoi vers la page française", ["sudo bash bootstrap.sh", "> voir [docs/TROIS-MODES.md §3.3](docs/TROIS-MODES.fr.md)"], [])
+    cas("page française seule, section absente", ["sudo bash bootstrap.sh", "> voir [§9.9](docs/TROIS-MODES.fr.md)"], [1])
     return ecarts
+
+
+def juger(readme_nom, page_nom):
+    """(code, lignes à imprimer) pour un README jugé contre la page de sa langue."""
+    try:
+        readme = open(os.path.join(RACINE, readme_nom), encoding="utf-8").read().split("\n")
+        page = open(os.path.join(RACINE, page_nom), encoding="utf-8").read()
+    except OSError as e:
+        return 2, [f"::error::corpus illisible ({e}) : aucun verdict."]
+    secs = sections(page)
+    invocations = sum(1 for l in readme if INVOCATION.search(l))
+    if invocations < MIN_INVOCATIONS or len(secs) < MIN_SECTIONS:
+        return 2, [f"::error::{invocations} invocation(s) dans {readme_nom} (plancher {MIN_INVOCATIONS}), {len(secs)} "
+                   f"section(s) dans {page_nom} (plancher {MIN_SECTIONS}) : le corpus n'est plus reconnu, aucun verdict."]
+    f = fautes(readme, secs)
+    if f:
+        return 1, [f"::error file={readme_nom},line={n}::{motif}" for n, motif in f] + [
+            f"\n{len(f)} invocation(s) d'installateur sur {invocations} dans {readme_nom} ne renvoient pas à leur forme "
+            f"dans les trois modes ({page_nom}). Ajoutez à côté : « En conteneur ou en cluster, ce geste n'a pas cette "
+            f"forme : voir [docs/TROIS-MODES.md §3.x]({page_nom}) », avec le numéro de la section qui le porte."]
+    return 0, [f"check_every_host_only_gesture_points_to_its_three_mode_form : {invocations} invocation(s) d'installateur "
+               f"dans {readme_nom}, chacune renvoie à une section existante de {page_nom} ({len(secs)} sections "
+               f"dérivées) à moins de {FENETRE} lignes."]
 
 
 def main():
@@ -83,29 +114,14 @@ def main():
         for e in ecarts:
             print("  " + e, file=sys.stderr)
         return 2
-    try:
-        readme = open(os.path.join(RACINE, README), encoding="utf-8").read().split("\n")
-        page = open(os.path.join(RACINE, PAGE), encoding="utf-8").read()
-    except OSError as e:
-        print(f"::error::corpus illisible ({e}) : aucun verdict.")
-        return 2
-    secs = sections(page)
-    invocations = sum(1 for l in readme if INVOCATION.search(l))
-    if invocations < MIN_INVOCATIONS or len(secs) < MIN_SECTIONS:
-        print(f"::error::{invocations} invocation(s) dans {README} (plancher {MIN_INVOCATIONS}), {len(secs)} section(s) dans {PAGE} "
-              f"(plancher {MIN_SECTIONS}) : le corpus n'est plus reconnu, aucun verdict.")
-        return 2
-    f = fautes(readme, secs)
-    if f:
-        for n, motif in f:
-            print(f"::error file={README},line={n}::{motif}")
-        print(f"\n{len(f)} invocation(s) d'installateur sur {invocations} ne renvoient pas à leur forme dans les trois modes "
-              f"({PAGE}). Ajoutez à côté : « En conteneur ou en cluster, ce geste n'a pas cette forme : voir "
-              f"[docs/TROIS-MODES.md §3.x](docs/TROIS-MODES.md) », avec le numéro de la section qui le porte.")
-        return 1
-    print(f"check_every_host_only_gesture_points_to_its_three_mode_form : {invocations} invocation(s) d'installateur dans "
-          f"{README}, chacune renvoie à une section existante de {PAGE} ({len(secs)} sections dérivées) à moins de {FENETRE} lignes.")
-    return 0
+    codes = []
+    for readme_nom, page_nom in CORPUS:
+        code, lignes = juger(readme_nom, page_nom)
+        codes.append(code)
+        for ligne in lignes:
+            print(ligne)
+    # Une invocation orpheline dans une langue rend 1 même si l'autre n'a rien pu mesurer.
+    return 1 if 1 in codes else max(codes)
 
 
 if __name__ == "__main__":

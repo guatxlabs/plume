@@ -7,7 +7,9 @@ sélection du magasin à l'exécution est conçue mais pas câblée, et le démo
 phrase avait été recopiée d'une page de conception. Un exploitant qui la suivait posait une variable sans
 effet et croyait servir un autre magasin.
 
-LA GARDE. Dans `ADVANCED_MODULES.md` :
+LA GARDE. Dans `ADVANCED_MODULES.fr.md` (français) ET dans `ADVANCED_MODULES.md` (anglais), chacun
+dans sa langue — « fonctionnalité `x` » / « `x` feature », « compilé par défaut » / « compiled by
+default » :
   - chaque `PLUME_…` entre accents graves (forme `PLUME_X`, `PLUME_X=valeur` ou préfixe `PLUME_X_*`) doit
     être lu par le code de production du démon : le littéral `"PLUME_X"` (ou `"PLUME_X_` pour un préfixe)
     dans `daemon/src`, hors fichiers de test ;
@@ -38,23 +40,37 @@ from __future__ import annotations
 import os
 import re
 import sys
+from dataclasses import dataclass
 
 ICI = os.path.dirname(os.path.abspath(__file__))
 RACINE = os.path.realpath(os.path.join(ICI, "..", ".."))
-PAGE = "ADVANCED_MODULES.md"
 CONTRIBUTING = "CONTRIBUTING.md"
-COMPILE_PAR_DEFAUT = "compilé par défaut"
 CARGO = "daemon/Cargo.toml"
 SOURCES = "daemon/src"
 
 LEVIER = re.compile(r"`(PLUME_[A-Z0-9_]*[A-Z0-9])(_\*)?(?:=[^`]*)?`")
-FONCTIONNALITE = re.compile(r"fonctionnalités? `([a-z0-9_-]+)`")
 
 
-def cites(page: str) -> tuple[set[tuple[str, bool]], set[str]]:
+@dataclass(frozen=True)
+class Langue:
+    """Comment une version de la page nomme une fonctionnalité et un module compilé par défaut."""
+    page: str
+    fonctionnalite: re.Pattern
+    compile_par_defaut: str
+    forme: str  # la forme attendue, pour les messages
+
+
+FRANCAIS = Langue("ADVANCED_MODULES.fr.md", re.compile(r"fonctionnalités? `([a-z0-9_-]+)`"),
+                  "compilé par défaut", "fonctionnalité `x`")
+ANGLAIS = Langue("ADVANCED_MODULES.md", re.compile(r"`([a-z0-9_-]+)` features?\b"),
+                 "compiled by default", "`x` feature")
+LANGUES = (FRANCAIS, ANGLAIS)
+
+
+def cites(page: str, langue: Langue = FRANCAIS) -> tuple[set[tuple[str, bool]], set[str]]:
     """(leviers cités avec « est un préfixe », fonctionnalités citées)."""
     leviers = {(m.group(1), m.group(2) is not None) for m in LEVIER.finditer(page)}
-    return leviers, set(FONCTIONNALITE.findall(page))
+    return leviers, set(langue.fonctionnalite.findall(page))
 
 
 def fonctionnalites_declarees(cargo: str) -> set[str]:
@@ -80,14 +96,14 @@ def lignes_du_tableau_des_modules(page: str) -> list[tuple[str, str]]:
     return lignes
 
 
-def fautes_du_tableau(page: str) -> list[str]:
+def fautes_du_tableau(page: str, langue: Langue = FRANCAIS) -> list[str]:
     fautes = []
     for module, engager in lignes_du_tableau_des_modules(page):
-        a_une_fonctionnalite = bool(FONCTIONNALITE.search(engager))
-        dit_compile = COMPILE_PAR_DEFAUT in engager
+        a_une_fonctionnalite = bool(langue.fonctionnalite.search(engager))
+        dit_compile = langue.compile_par_defaut in engager
         if a_une_fonctionnalite == dit_compile:
-            fautes.append(f"la ligne « {module[:60]} » de {PAGE} doit citer SOIT une « fonctionnalité `x` », SOIT "
-                          f"« {COMPILE_PAR_DEFAUT} » (elle cite : fonctionnalité={a_une_fonctionnalite}, "
+            fautes.append(f"la ligne « {module[:60]} » de {langue.page} doit citer SOIT une « {langue.forme} », "
+                          f"SOIT « {langue.compile_par_defaut} » (elle cite : fonctionnalité={a_une_fonctionnalite}, "
                           f"compilé par défaut={dit_compile})")
     return fautes
 
@@ -114,12 +130,13 @@ def est_un_fichier_de_test(chemin: str) -> bool:
     return "tests" in parties or parties[-1] in ("tests.rs", "test.rs") or parties[-1].endswith("_tests.rs")
 
 
-def trancher(page: str, cargo: str, sources: dict[str, str], contributing: str | None = None) -> tuple[int, list[str]]:
+def trancher(page: str, cargo: str, sources: dict[str, str], contributing: str | None = None,
+             langue: Langue = FRANCAIS) -> tuple[int, list[str]]:
     """Le code de sortie et les lignes à imprimer. Pur : rien n'est lu du disque ici."""
-    leviers, fonctionnalites = cites(page)
+    leviers, fonctionnalites = cites(page, langue)
     if not leviers or not fonctionnalites:
-        return 2, [f"[modules-avances] REFUSE DE CONCLURE — {PAGE} ne cite plus de levier `PLUME_…` "
-                   f"({len(leviers)}) ou de « fonctionnalité `x` » ({len(fonctionnalites)}) : relire ce que "
+        return 2, [f"[modules-avances] REFUSE DE CONCLURE — {langue.page} ne cite plus de levier `PLUME_…` "
+                   f"({len(leviers)}) ou de « {langue.forme} » ({len(fonctionnalites)}) : relire ce que "
                    "la page engage et mettre cette garde à jour."]
     declarees = fonctionnalites_declarees(cargo)
     if not declarees:
@@ -131,10 +148,10 @@ def trancher(page: str, cargo: str, sources: dict[str, str], contributing: str |
         # `"PLUME_STORE_DUCKDB_EXPERIMENTAL"`, réellement lu, et le laisserait passer pour lu.
         if (f'"{nom}_' if prefixe else f'"{nom}"') not in production:
             forme = f"{nom}_*" if prefixe else nom
-            fautes.append(f"`{forme}` est cité par {PAGE} mais aucun code de production de {SOURCES} ne le lit")
+            fautes.append(f"`{forme}` est cité par {langue.page} mais aucun code de production de {SOURCES} ne le lit")
     for f in sorted(fonctionnalites - declarees):
-        fautes.append(f"la fonctionnalité `{f}` est citée par {PAGE} mais n'est pas déclarée dans {CARGO}")
-    fautes += fautes_du_tableau(page)
+        fautes.append(f"la fonctionnalité `{f}` est citée par {langue.page} mais n'est pas déclarée dans {CARGO}")
+    fautes += fautes_du_tableau(page, langue)
     if contributing is not None:
         liste, tableau = couverture_contributing(contributing)
         if liste is None or tableau is None:
@@ -150,7 +167,7 @@ def trancher(page: str, cargo: str, sources: dict[str, str], contributing: str |
         return 1, ["[modules-avances] ÉCHEC — la page dit d'engager un module par un geste que l'arbre ne lit pas :"] \
             + [f"    - {f}" for f in fautes]
     return 0, [f"[modules-avances] OK — {len(leviers)} levier(s) et {len(fonctionnalites)} fonctionnalité(s) "
-               f"cités par {PAGE}, tous lus par l'arbre ; {len(lignes_du_tableau_des_modules(page))} ligne(s) du tableau "
+               f"cités par {langue.page}, tous lus par l'arbre ; {len(lignes_du_tableau_des_modules(page))} ligne(s) du tableau "
                f"disent comment leur module est compilé"
                + ("" if contributing is None else f" ; {CONTRIBUTING} couvre les {len(declarees - {'default'})} "
                   "fonctionnalités déclarées")]
@@ -204,6 +221,27 @@ def epreuves() -> list[str]:
     code, _ = trancher("fonctionnalité `cold_tier` + `PLUME_COLD_TIER=1`", '[package]\nname = "x"\n', sources)
     if code != 2:
         echecs.append(f"épreuve « Cargo.toml sans [features] » : code {code}, attendu 2")
+    # La version anglaise, lue dans SA langue : la forme française n'y vaut rien, et inversement.
+    tableau_en = ("| Module | How to engage it | Documentation |\n|---|---|---|\n"
+                  "| **Cold** | `cold_tier` feature + `PLUME_COLD_TIER=1` | x |\n"
+                  "| **MT** | {mt} | x |\n")
+    cas_anglais = [
+        ("anglais : tout est lu", "`cold_tier` feature + `PLUME_COLD_TIER=1`", 0),
+        ("anglais : levier lu nulle part", "`cold_tier` feature + `PLUME_JAMAIS=1`", 1),
+        ("anglais : fonctionnalité non déclarée", "`duckdb` feature + `PLUME_COLD_TIER=1`", 1),
+        ("anglais : forme française seulement", "fonctionnalité `cold_tier` + `PLUME_COLD_TIER=1`", 2),
+        ("anglais : module dit compilé", tableau_en.format(mt="compiled by default; `PLUME_COLD_TIER=1`"), 0),
+        ("anglais : module muet", tableau_en.format(mt="`PLUME_COLD_TIER=1`"), 1),
+        ("anglais : module dit compilé en français", tableau_en.format(mt="compilé par défaut ; `PLUME_COLD_TIER=1`"), 1),
+    ]
+    for nom, page, attendu in cas_anglais:
+        code, _ = trancher(page, cargo, sources, langue=ANGLAIS)
+        if code != attendu:
+            echecs.append(f"épreuve « {nom} » : code {code}, attendu {attendu}")
+    for page in ("`cold_tier` feature + `PLUME_COLD_TIER=1`",):
+        code, _ = trancher(page, cargo, sources)
+        if code != 2:
+            echecs.append(f"épreuve « français : forme anglaise seulement » : code {code}, attendu 2")
     return echecs
 
 
@@ -215,8 +253,10 @@ def main() -> int:
             print(f"    - {e}")
         return 2
     try:
-        with open(os.path.join(RACINE, PAGE), encoding="utf-8") as fh:
-            page = fh.read()
+        pages = {}
+        for langue in LANGUES:
+            with open(os.path.join(RACINE, langue.page), encoding="utf-8") as fh:
+                pages[langue] = fh.read()
         with open(os.path.join(RACINE, CARGO), encoding="utf-8") as fh:
             cargo = fh.read()
         with open(os.path.join(RACINE, CONTRIBUTING), encoding="utf-8") as fh:
@@ -234,10 +274,16 @@ def main() -> int:
     if not sources:
         print(f"[modules-avances] REFUSE DE CONCLURE — aucun fichier Rust lu sous {SOURCES}.")
         return 2
-    code, lignes = trancher(page, cargo, sources, contributing)
-    for ligne in lignes:
-        print(ligne)
-    return code
+    # Le renvoi vers `CONTRIBUTING.md` est jugé une fois, avec la première langue. Un écart trouvé dans une
+    # langue rend 1 même si l'autre n'a rien pu mesurer : une violation ne se lit pas comme « rien mesuré ».
+    codes = []
+    for langue in LANGUES:
+        code, lignes = trancher(pages[langue], cargo, sources, contributing if langue is LANGUES[0] else None,
+                                langue)
+        codes.append(code)
+        for ligne in lignes:
+            print(ligne)
+    return 1 if 1 in codes else max(codes)
 
 
 if __name__ == "__main__":

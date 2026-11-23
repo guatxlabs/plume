@@ -1,114 +1,114 @@
-# Documentation Plume — index
+# Plume documentation — index
 
-[Français](README.md) | [English](README.en.md)
+[English](README.md) | [Français](README.fr.md)
 
-Point d'entrée de `docs/`. Le *quoi* et le *pourquoi* de l'architecture sont dans
-[`../ARCHITECTURE.md`](../ARCHITECTURE.md) ; l'installation et les trois modes de déploiement dans
-[`../README.md`](../README.md) ; les règles de contribution dans [`../CONTRIBUTING.md`](../CONTRIBUTING.md).
+Entry point of `docs/`. The *what* and *why* of the architecture are in
+[`../ARCHITECTURE.md`](../ARCHITECTURE.md); installation and the three deployment modes in
+[`../README.md`](../README.md); the contribution rules in [`../CONTRIBUTING.md`](../CONTRIBUTING.md).
 
-**Statut** — chaque document porte l'un de ces états. Lisez-le avant de suivre une procédure : plusieurs
-documents décrivent une **conception** dont le câblage runtime n'existe pas encore, et c'est dit
-explicitement plutôt que laissé à la surprise de l'opérateur.
+**Status** — every document carries one of these states. Read it before following a procedure: several
+documents describe a **design** whose runtime wiring does not exist yet, and this is said
+explicitly rather than left for the operator to discover.
 
-| État | Signification |
+| State | Meaning |
 |---|---|
-| ✅ **Livré** | implémenté dans le binaire livré, utilisable tel quel |
-| 🧪 **Opt-in / expérimental** | implémenté derrière une feature de compilation ou un drapeau, non activé par défaut |
-| 📐 **Conception** | design de référence ; **pas** (ou pas entièrement) câblé au runtime |
+| ✅ **Shipped** | implemented in the shipped binary, usable as is |
+| 🧪 **Opt-in / experimental** | implemented behind a compile-time feature or a flag, not enabled by default |
+| 📐 **Design** | reference design; **not** (or not fully) wired at runtime |
 
-## S'en servir (le cycle de vie, pour l'exploitant)
+## Using it (the lifecycle, for the operator)
 
-Ces six pages décrivent le produit **tel qu'il est**, pour quelqu'un qui l'exploite : installer,
-configurer, s'en servir, désinstaller — dans les **trois** modes de déploiement. Chaque affirmation y
-porte la commande qui la redonne, et ce qui n'a pas été exécuté y est dit à côté de l'exemple.
-La garde [`check_operator_surface_is_documented.py`](../.github/scripts/check_operator_surface_is_documented.py)
-dérive des sources ce qu'un exploitant doit pouvoir trouver — onglets, capteurs, modes, leviers — et
-refuse qu'un ajout passe sans être écrit (`P9.7-b`).
+These six pages describe the product **as it is**, for someone who operates it: install,
+configure, use, uninstall — in all **three** deployment modes. Every claim there
+carries the command that reproduces it, and what has not been executed is said next to the example.
+The guard [`check_operator_surface_is_documented.py`](../.github/scripts/check_operator_surface_is_documented.py)
+derives from the sources what an operator must be able to find — tabs, sensors, modes, levers — and
+refuses an addition that goes in without being written down (`P9.7-b`).
 
-| Document | État | Pour quoi |
+| Document | State | What for |
 |---|---|---|
-| [INSTALLER-SANS-OUVRIR-DE-BRECHE.md](INSTALLER-SANS-OUVRIR-DE-BRECHE.md) | ✅ | **Installer chez soi sans ouvrir de brèche, pas à pas** — ce qui est ouvert par défaut dans chaque mode, TLS et authentification, où vit chaque jeton et ce qu'il permet, **un tableau capteur par capteur** (ce qu'il lit, ses privilèges, ce qu'il fait entrer dans le SIEM, son risque, la requête qui prouve qu'il remonte), le transport, les risques assumés, et le capteur qui nourrit chaque tableau de bord semé. |
-| [TROIS-MODES.md](TROIS-MODES.md) | ✅ | **Le même geste dans les trois modes** — hôte natif, Docker, k3s. Où vivent les choses, comment on change un réglage, on ajoute une source, on crée un jeton, on sauvegarde, on met à jour — et **les gestes qui n'existent PAS** dans un mode, nommés au lieu d'être lissés. |
-| [CONSOLE.md](CONSOLE.md) | ✅ | **La console, espace par espace et onglet par onglet** — ce que chacun fait, quel rôle le voit, ce qu'il ne fait pas. Dérivé de la structure de navigation, pas recopié. |
-| [GXQL.md](GXQL.md) | ✅ | **Le langage de recherche** — les vingt commandes, les fonctions, les bornes, les couches de lecture seule, et surtout **ce que la grammaire n'accepte pas** (ni `OR`, ni groupement, ni tri multi-champs). |
-| [AGENTS-PROTOCOLE.md](AGENTS-PROTOCOLE.md) | ✅ | **Les agents et leur protocole** — le contrat de fil, les jetons et ce que « lié à l'hôte » veut vraiment dire, le tampon disque et **son absence de borne côté shell**, les filigranes, le canal retour, TLS. |
-| [CHIFFREMENT-COMPRESSION.md](CHIFFREMENT-COMPRESSION.md) | ✅ | **Chiffrement et compression, tels qu'ils sont** — ce qui est chiffré, ce qui ne l'est pas, l'ordre `age(zstd(…))`, et le défaut mesuré : **sans clé de base, le planificateur de sauvegarde ne produit rien**. |
+| [INSTALLER-SANS-OUVRIR-DE-BRECHE.md](INSTALLER-SANS-OUVRIR-DE-BRECHE.md) | ✅ | **Installing it yourself without opening a breach, step by step** — what is open by default in each mode, TLS and authentication, where each token lives and what it allows, **a sensor-by-sensor table** (what it reads, its privileges, what it brings into the SIEM, its risk, the query that proves it reports), the transport, the accepted risks, and the sensor that feeds each seeded dashboard. |
+| [TROIS-MODES.md](TROIS-MODES.md) | ✅ | **The same operation in all three modes** — native host, Docker, k3s. Where things live, how to change a setting, add a source, create a token, back up, update — and **the operations that do NOT exist** in a mode, named instead of smoothed over. |
+| [CONSOLE.md](CONSOLE.md) | ✅ | **The console, space by space and tab by tab** — what each one does, which role sees it, what it does not do. Derived from the navigation structure, not copied. |
+| [GXQL.md](GXQL.md) | ✅ | **The search language** — the twenty commands, the functions, the bounds, the read-only layers, and above all **what the grammar does not accept** (no `OR`, no grouping, no multi-field sort). |
+| [AGENTS-PROTOCOLE.md](AGENTS-PROTOCOLE.md) | ✅ | **The agents and their protocol** — the wire contract, the tokens and what "bound to the host" really means, the disk buffer and **its lack of a bound on the shell side**, the watermarks, the return channel, TLS. |
+| [CHIFFREMENT-COMPRESSION.md](CHIFFREMENT-COMPRESSION.md) | ✅ | **Encryption and compression, as they are** — what is encrypted, what is not, the `age(zstd(…))` order, and the measured defect: **without a database key, the backup scheduler produces nothing**. |
 
-## Exploiter (opérateur)
+## Operating (operator)
 
-| Document | État | Pour quoi |
+| Document | State | What for |
 |---|---|---|
-| [DR-plume-restore.md](DR-plume-restore.md) | ✅ | **Reprise après sinistre** — les deux formats de backup produits par le produit, et comment restaurer chacun. À lire *avant* d'en avoir besoin. |
-| [COMPLIANCE.md](COMPLIANCE.md) | ✅ | Posture et couverture de conformité (≠ certification). |
-| [PURGE.md](PURGE.md) | ✅ CLI · 🧪 HTTP | **Purger des événements nommés** (au-delà de la rétention temporelle) : deux temps avec jeton, refus motivés (rétention légale, tier froid, chaîne de preuve), inscription au registre — et la liste explicite de ce qui **n'est pas** couvert, à commencer par les sauvegardes. |
-| [DETECTION-CATALOG.md](DETECTION-CATALOG.md) | ✅ | Catalogue de détection curé livré comme point de départ. |
-| [../deploy/CONFIDENTIALITE.md](../deploy/CONFIDENTIALITE.md) | ✅ | TLS, portée réelle des tokens d'agent, chiffrement at-rest, réserve sur l'export en clair du backup. |
-| [../deploy/PROFILE.md](../deploy/PROFILE.md) | ✅ | Déployer sur n'importe quelle infra (variables `PLUME_*`, scripted inputs). |
-| [../deploy/K8S.md](../deploy/K8S.md) | ✅ | Déploiement Kubernetes détaillé. |
+| [DR-plume-restore.md](DR-plume-restore.md) | ✅ | **Disaster recovery** — the two backup formats the product produces, and how to restore each. Read it *before* you need it. |
+| [COMPLIANCE.md](COMPLIANCE.md) | ✅ | Compliance posture and coverage (≠ certification). |
+| [PURGE.md](PURGE.md) | ✅ CLI · 🧪 HTTP | **Purging named events** (beyond time-based retention): two phases with a token, reasoned refusals (legal hold, cold tier, chain of evidence), inscription in the ledger — and the explicit list of what is **not** covered, starting with backups. |
+| [DETECTION-CATALOG.md](DETECTION-CATALOG.md) | ✅ | Curated detection catalogue shipped as a starting point. |
+| [../deploy/CONFIDENTIALITE.md](../deploy/CONFIDENTIALITE.md) | ✅ | TLS, real scope of agent tokens, at-rest encryption, caveat on the plaintext export of the backup. |
+| [../deploy/PROFILE.md](../deploy/PROFILE.md) | ✅ | Deploying on any infrastructure (`PLUME_*` variables, scripted inputs). |
+| [../deploy/K8S.md](../deploy/K8S.md) | ✅ | Detailed Kubernetes deployment. |
 
-## Ingérer et normaliser
+## Ingesting and normalising
 
-| Document | État | Pour quoi |
+| Document | State | What for |
 |---|---|---|
-| [SDK.md](SDK.md) | ✅ | Le modèle **bring-your-own-vendor** : par où brancher une source. |
-| [CIM.md](CIM.md) | ✅ | Le modèle d'information commun — la taxonomie d'événements sur laquelle les règles se composent. |
-| [VALEURS-DES-CAPTEURS.md](VALEURS-DES-CAPTEURS.md) | 📐 | **Ce qu'un capteur émet, et ce que ses valeurs veulent dire.** Le modèle commun ci-dessus déclare **un** vocabulaire par champ ; un capteur, lui, n'écrit qu'un sous-ensemble, et deux capteurs écrivent le même nom de champ avec des sens sans rapport — la clé est donc le couple **(source, champ)**. Dit ce que les producteurs livrés déclarent déjà, ce qui n'atteint ni le fil ni l'écran, et pourquoi l'écart ne se comble pas par une table écrite à la main (`P11.19-a`). |
-| [PARSER-DSL.md](PARSER-DSL.md) | ✅ | Parseur déclaratif (DSL CIM) : ajouter un format de log **sans rebuild**. |
-| [CONNECTOR-PRESETS.md](CONNECTOR-PRESETS.md) | ✅ | Presets `http_pull` prêts à l'emploi (AWS, M365/Entra, Okta, CrowdStrike, SentinelOne, GCP, Cloudflare, Google Workspace). Fichiers dans [`connector-presets/`](connector-presets/). |
-| [SIGMA-IMPORTER.md](SIGMA-IMPORTER.md) | ✅ | Import de règles Sigma (unitaire et en masse) + delta de couverture ATT&CK. |
-| [ENDPOINT-SECURITY.md](ENDPOINT-SECURITY.md) | ✅ | Sécurité endpoint en BYO-agent. |
-| [OTLP-TRACES.md](OTLP-TRACES.md) | ✅ | Récepteur OpenTelemetry (traces). |
+| [SDK.md](SDK.md) | ✅ | The **bring-your-own-vendor** model: where to plug in a source. |
+| [CIM.md](CIM.md) | ✅ | The common information model — the event taxonomy rules are composed on. |
+| [VALEURS-DES-CAPTEURS.md](VALEURS-DES-CAPTEURS.md) | 📐 | **What a sensor emits, and what its values mean.** The common model above declares **one** vocabulary per field; a sensor, however, writes only a subset, and two sensors write the same field name with unrelated meanings — so the key is the pair **(source, field)**. Says what the shipped producers already declare, what reaches neither the wire nor the screen, and why the gap is not closed by a hand-written table (`P11.19-a`). |
+| [PARSER-DSL.md](PARSER-DSL.md) | ✅ | Declarative parser (CIM DSL): add a log format **without a rebuild**. |
+| [CONNECTOR-PRESETS.md](CONNECTOR-PRESETS.md) | ✅ | Ready-to-use `http_pull` presets (AWS, M365/Entra, Okta, CrowdStrike, SentinelOne, GCP, Cloudflare, Google Workspace). Files in [`connector-presets/`](connector-presets/). |
+| [SIGMA-IMPORTER.md](SIGMA-IMPORTER.md) | ✅ | Sigma rule import (single and bulk) + ATT&CK coverage delta. |
+| [ENDPOINT-SECURITY.md](ENDPOINT-SECURITY.md) | ✅ | Endpoint security with a BYO agent. |
+| [OTLP-TRACES.md](OTLP-TRACES.md) | ✅ | OpenTelemetry receiver (traces). |
 
-## Collecter aux extrémités (postes, équipements, boîtes aux lettres)
+## Collecting at the edges (workstations, devices, mailboxes)
 
-Là où les événements NAISSENT. Chacun de ces chemins finit sur le même contrat de fil que l'ingest —
-c'est ce qui permet d'en ajouter un sans toucher au central.
+Where events are BORN. Each of these paths ends on the same wire contract as the ingest —
+which is what makes it possible to add one without touching the central server.
 
-| Document | État | Pour quoi |
+| Document | State | What for |
 |---|---|---|
-| [../agent/README.md](../agent/README.md) | ✅ | **Agent d'endpoint cross-OS** : lit les sources natives de l'OS, tamponne sur disque (spool borné, *au moins une fois*), POST vers l'ingest. |
-| [../agent/CI.md](../agent/CI.md) | ✅ | Comment cet agent est **validé** : ce que la CI exécute réellement par plateforme, et ce qu'elle ne fait que compiler. |
-| [../collectors/windows/README.md](../collectors/windows/README.md) | ✅ | **Collecteur Windows** PowerShell, un seul fichier, sans agent ni spool : POST direct sur `/api/ingest`. |
-| [../deploy/SYSLOG.md](../deploy/SYSLOG.md) | ✅ | **Récepteur syslog** (RFC 5424 + RFC 3164, UDP et TCP) et parseurs vendeur enfichables : un équipement réseau devient un collecteur de plus. |
-| [../deploy/MAIL.md](../deploy/MAIL.md) | ✅ | **Détection mail** lue sur le maildir de l'hôte : motifs curés (IOC, hameçonnage, URL), événements minimaux. |
-| [../deploy/EBPF-SIGMA.md](../deploy/EBPF-SIGMA.md) | ✅ | Brancher la détection runtime **eBPF** (sortie JSON Falco) et des règles **Sigma** sur l'ingest. |
+| [../agent/README.md](../agent/README.md) | ✅ | **Cross-OS endpoint agent**: reads the OS's native sources, buffers on disk (bounded spool, *at least once*), POSTs to the ingest. |
+| [../agent/CI.md](../agent/CI.md) | ✅ | How this agent is **validated**: what CI actually executes per platform, and what it only compiles. |
+| [../collectors/windows/README.md](../collectors/windows/README.md) | ✅ | **Windows collector** in PowerShell, a single file, with no agent and no spool: direct POST to `/api/ingest`. |
+| [../deploy/SYSLOG.md](../deploy/SYSLOG.md) | ✅ | **Syslog receiver** (RFC 5424 + RFC 3164, UDP and TCP) and pluggable vendor parsers: a network device becomes one more collector. |
+| [../deploy/MAIL.md](../deploy/MAIL.md) | ✅ | **Mail detection** read from the host's maildir: curated patterns (IOC, phishing, URL), minimal events. |
+| [../deploy/EBPF-SIGMA.md](../deploy/EBPF-SIGMA.md) | ✅ | Plugging **eBPF** runtime detection (Falco JSON output) and **Sigma** rules into the ingest. |
 
-## Interopérer
+## Interoperating
 
-| Document | État | Pour quoi |
+| Document | State | What for |
 |---|---|---|
-| [DATASOURCE.md](DATASOURCE.md) | ✅ | Servir les requêtes **vers** Grafana/Prometheus (Plume comme source de données). |
-| [OBSERVABILITY-AS-CODE.md](OBSERVABILITY-AS-CODE.md) | ✅ | Tableaux de bord et règles versionnés. |
-| [NATIVE-IDP.md](NATIVE-IDP.md) | ✅ OIDC/LDAP/MFA · 🧪 SAML | IdP natif. **SAML exige `--features saml`** — absent de l'image livrée (→ 501). |
+| [DATASOURCE.md](DATASOURCE.md) | ✅ | Serving queries **to** Grafana/Prometheus (Plume as a data source). |
+| [OBSERVABILITY-AS-CODE.md](OBSERVABILITY-AS-CODE.md) | ✅ | Versioned dashboards and rules. |
+| [NATIVE-IDP.md](NATIVE-IDP.md) | ✅ OIDC/LDAP/MFA · 🧪 SAML | Native IdP. **SAML requires `--features saml`** — absent from the shipped image (→ 501). |
 
-## Stockage — tiers analytiques
+## Storage — analytical tiers
 
-| Document | État | Pour quoi |
+| Document | State | What for |
 |---|---|---|
-| [DUCKDB-STORE.md](DUCKDB-STORE.md) | 🧪 | Tier analytique WARM. Le sélecteur `PLUME_STORE` documenté est **une conception non câblée** — seul `PLUME_STORE_DUCKDB_EXPERIMENTAL` est lu. |
-| [CLICKHOUSE-STORE.md](CLICKHOUSE-STORE.md) | 📐 | Adaptateur mono-nœud. `PLUME_STORE=clickhouse` **n'a aucun effet** aujourd'hui. |
-| [CLICKHOUSE-HA.md](CLICKHOUSE-HA.md) | 📐 | Scaffold distribué multi-nœuds — inerte, non câblé (et le masquage n'est pas encore porté sur le SPI neutre : à lire avant d'y toucher). |
+| [DUCKDB-STORE.md](DUCKDB-STORE.md) | 🧪 | WARM analytical tier. The documented `PLUME_STORE` selector is **an unwired design** — only `PLUME_STORE_DUCKDB_EXPERIMENTAL` is read. |
+| [CLICKHOUSE-STORE.md](CLICKHOUSE-STORE.md) | 📐 | Single-node adapter. `PLUME_STORE=clickhouse` **has no effect** today. |
+| [CLICKHOUSE-HA.md](CLICKHOUSE-HA.md) | 📐 | Distributed multi-node scaffold — inert, not wired (and masking is not yet ported to the neutral SPI: read this before touching it). |
 
-## Mesurer les performances
+## Measuring performance
 
-| Document | État | Pour quoi |
+| Document | State | What for |
 |---|---|---|
-| [BENCHMARK.md](BENCHMARK.md) | ✅ | **La référence chiffrée, et l'instrument pour la contredire.** La matrice (classes de requêtes × fenêtres × masquage × FTS × tier froid × taille de flotte) sur une base synthétique au profil de production, daemon sous cgroup `MemoryMax=2G` **appliqué** — pas observé. Dit ce qui est **lent** avec la même franchise que ce qui est rapide, publie les leviers restants par gain mesuré, et NOMME les cellules qu'il n'a pas mesurées. Le harnais (`../bench/`) rejoue la matrice par une commande unique et publie ses données brutes, pour qu'un tiers puisse refaire — ou contredire — la mesure. **Lisez ses qualificatifs avant d'en citer un chiffre** : aucun compte n'est recopié ici (il pourrirait), le volume de référence n'est pas 10 M — le débit d'ingest réel et la CAUSE MESURÉE de sa dégradation sont publiés à la place — et la base tenait dans le cache de pages, donc les latences sont un **meilleur cas** borné par le CPU. |
-| [../bench/README.md](../bench/README.md) | ✅ | **L'INSTRUMENT** qui produit le document ci-dessus : ce que chaque passe mesure, ce que chaque fichier de résultats contient, et les pièges de lecture nommés un par un. À lire avant de contredire un chiffre — ou d'en citer un. |
+| [BENCHMARK.md](BENCHMARK.md) | ✅ | **The figures of reference, and the instrument to contradict them.** The matrix (query classes × windows × masking × FTS × cold tier × fleet size) on a synthetic database with a production profile, daemon under a cgroup `MemoryMax=2G` that is **enforced** — not observed. States what is **slow** as frankly as what is fast, publishes the remaining levers by measured gain, and NAMES the cells it has not measured. The harness (`../bench/`) re-runs the matrix with a single command and publishes its raw data, so that a third party can redo — or contradict — the measurement. **Read its qualifiers before quoting one of its figures**: no count is copied here (it would rot), the reference volume is not 10 M — the real ingest throughput and the MEASURED CAUSE of its degradation are published instead — and the database fit in the page cache, so the latencies are a CPU-bound **best case**. |
+| [../bench/README.md](../bench/README.md) | ✅ | **THE INSTRUMENT** that produces the document above: what each pass measures, what each results file contains, and the reading traps named one by one. Read it before contradicting a figure — or quoting one. |
 
-## Direction et internes
+## Direction and internals
 
-| Document | État | Pour quoi |
+| Document | State | What for |
 |---|---|---|
-| [MODULE-MAP.md](MODULE-MAP.md) | ✅ | **Carte des sous-systèmes + invariants de sécurité.** Le document à lire avant une première contribution. |
-| [AI-ML-DIRECTION.md](AI-ML-DIRECTION.md) | 📐 | Direction IA/ML : optionnelle, neutre vis-à-vis du fournisseur, neutre en RAM, OFF par défaut. |
-| [DESIGN-P10-echelle-2go.md](DESIGN-P10-echelle-2go.md) | 📐 | **Tenir sous 2 Gio à l'échelle** — la carte du terrain MESURÉ (où partent les octets, où part la RAM de tri) et l'ordre des leviers qui en découle : chaud/froid, colonnaire, bloom, compression. C'est le document qui porte l'état le plus frais de ces travaux ; les clés `P10.*` de [ROADMAP.md](ROADMAP.md) y renvoient. Brainstorm ancré sur mesure, **pas** une décision figée. |
+| [MODULE-MAP.md](MODULE-MAP.md) | ✅ | **Map of the subsystems + security invariants.** The document to read before a first contribution. |
+| [AI-ML-DIRECTION.md](AI-ML-DIRECTION.md) | 📐 | AI/ML direction: optional, vendor-neutral, RAM-neutral, OFF by default. |
+| [DESIGN-P10-echelle-2go.md](DESIGN-P10-echelle-2go.md) | 📐 | **Staying under 2 GiB at scale** — the map of the MEASURED ground (where the bytes go, where the sort RAM goes) and the order of levers that follows from it: hot/cold, columnar, bloom, compression. This is the document that carries the freshest state of this work; the `P10.*` keys of [ROADMAP.md](ROADMAP.md) point to it. A brainstorm anchored in measurement, **not** a frozen decision. |
 
-## Ressources non narratives
+## Non-narrative resources
 
-- [`img/`](img/) — captures d'écran et démo animée utilisées par le README.
-- [`connector-presets/`](connector-presets/) · [`ai-presets/`](ai-presets/) — presets JSON livrés.
-- [`soql-templates/`](soql-templates/) — bibliothèque de requêtes GXQL. **Nom de dossier historique
-  conservé volontairement** : le fichier est embarqué par `include_str!` depuis le daemon et copié par le
-  `Dockerfile` ; c'est un identifiant de build, pas un libellé utilisateur (cf. la frontière de nommage
-  GXQL/`soql` décrite dans [`../README.md`](../README.md)).
+- [`img/`](img/) — screenshots and animated demo used by the README.
+- [`connector-presets/`](connector-presets/) · [`ai-presets/`](ai-presets/) — shipped JSON presets.
+- [`soql-templates/`](soql-templates/) — GXQL query library. **Historical directory name
+  kept on purpose**: the file is embedded by `include_str!` from the daemon and copied by the
+  `Dockerfile`; it is a build identifier, not a user-facing label (see the GXQL/`soql` naming
+  boundary described in [`../README.md`](../README.md)).

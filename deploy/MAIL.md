@@ -1,158 +1,159 @@
-# collector-mail — detection mail host-native
+# collector-mail — host-native mail detection
 
-[Français](MAIL.md) | [English](MAIL.en.md)
+[English](MAIL.md) | [Français](MAIL.fr.md)
 
-Le SOC traite le mail comme **un collecteur de plus** (agent collecte -> SOC ingere), au lieu d'un
-service a part. `collector-mail` lit le **maildir sur le FS de l'hote**, applique des **patterns
-curates** (IOC / phishing / URL), et emet des **events MINIMAUX** (compte, dossier, domaine de
-l'expediteur, message-id, sample IOC/URL) -> spool -> `ship.sh` -> SOC central (`source=mail` + FTS).
-Le sample d'une URL n'en garde que schema, hote, port et chemin (requete, fragment et identifiants
-coupes, et la coupure est dite) ; un parametre decode sort par son NOM ; une partie locale d'adresse
-sort `*@domaine`. L'objet ne sort que sur `PLUME_MAIL_EMIT_SUBJECT=1`, borne a 80 caracteres.
+The SOC treats mail as **one more collector** (agent collects -> SOC ingests), instead of a
+separate service. `collector-mail` reads the **maildir on the host FS**, applies **curated
+patterns** (IOC / phishing / URL), and emits **MINIMAL events** (account, folder, sender
+domain, message-id, IOC/URL sample) -> spool -> `ship.sh` -> central SOC (`source=mail` + FTS).
+The sample of a URL keeps only its scheme, host, port and path (query, fragment and credentials
+cut, and the cut is stated); a decoded parameter comes out by its NAME; the local part of an address
+comes out as `*@domaine`. The subject only comes out with `PLUME_MAIL_EMIT_SUBJECT=1`, capped at 80 characters.
 
-**JAMAIS de body en clair** dans le spool / la DB SOC (minimisation = "securite >= existant").
-Le **body complet** reste un **pull gate `role=admin` + audite**, capacite agent-side **distincte**
-— PAS dans ce binaire (cf. la sous-commande `body` plus bas).
+**NEVER a plaintext body** in the spool / the SOC DB (minimization = "security >= existing").
+The **full body** remains a **pull gated by `role=admin` + audited**, a **distinct** agent-side capability
+— NOT in this binary (see the `body` subcommand below).
 
-## Ou tourne-t-il
-Host-natif (pas in-cluster) : le maildir est sur le **FS du node** (PVC local-path), donc lisible
-directement. Meme modele que `audit.sh` / `falco.sh` / `pod-logs.sh`.
+## Where does it run
+Host-native (not in-cluster): the maildir is on the **node FS** (local-path PVC), hence readable
+directly. Same model as `audit.sh` / `falco.sh` / `pod-logs.sh`.
 
 ## Config `/etc/plume/mail.conf`
 ```sh
-PLUME_MAIL_ROOT=/var/lib/<provisioner>/<pvc>_<ns>_<claim>-0   # chemin du volume = /var/mail dans le pod
-PLUME_MAIL_DOMAIN=example.tld          # pour le layout PLAT (mono-domaine) -> construit user@domaine
-PLUME_MAIL_FOLDER=*                  # tous les dossiers (defaut)
-PLUME_MAIL_LIMIT=2000               # plafond messages/compte au 1er passage (incremental ensuite)
-PLUME_MAIL_MAX_EVENTS=1000          # cap d'alertes par run (anti-flood)
-# PLUME_MAIL_PATTERNS=/etc/plume/mail-patterns.json   # surcharge du jeu par defaut (optionnel)
-# PLUME_MAIL_EMIT_SUBJECT=0          # 1 = emet l'objet (80 caracteres) ; 0 ou rien = non ; autre = refus
-# PLUME_MAIL_STATE=/var/lib/plume/spool/.mail-seen    # etat incremental (defaut)
-# PLUME_MAIL_EXCLURE_COMPTES=          # comptes JAMAIS ouverts (vide = tous lus) ; cf. ci-dessous
+PLUME_MAIL_ROOT=/var/lib/<provisioner>/<pvc>_<ns>_<claim>-0   # volume path = /var/mail in the pod
+PLUME_MAIL_DOMAIN=example.tld          # for the FLAT (single-domain) layout -> builds user@domain
+PLUME_MAIL_FOLDER=*                  # all folders (default)
+PLUME_MAIL_LIMIT=2000               # message cap per account on the 1st pass (incremental afterwards)
+PLUME_MAIL_MAX_EVENTS=1000          # alert cap per run (anti-flood)
+# PLUME_MAIL_PATTERNS=/etc/plume/mail-patterns.json   # overrides the default set (optional)
+# PLUME_MAIL_EMIT_SUBJECT=0          # 1 = emits the subject (80 characters); 0 or nothing = no; anything else = refusal
+# PLUME_MAIL_STATE=/var/lib/plume/spool/.mail-seen    # incremental state (default)
+# PLUME_MAIL_EXCLURE_COMPTES=          # accounts NEVER opened (empty = all read); see below
 ```
-> Le defaut du provisioner local-path de k3s est `/var/lib/rancher/k3s/storage` ; si ton cluster le
-> monte ailleurs, mets le VRAI chemin ici **et** regle `PLUME_K3S_STORAGE` (collector kube-state) sur
-> le meme chemin, sinon la metrique storage% est muette.
+> The default of the k3s local-path provisioner is `/var/lib/rancher/k3s/storage`; if your cluster
+> mounts it elsewhere, put the REAL path here **and** set `PLUME_K3S_STORAGE` (kube-state collector) to
+> the same path, otherwise the storage% metric is mute.
 
-## Retirer une boite du balayage — `PLUME_MAIL_EXCLURE_COMPTES`
-Une boite hebergee qui ne doit pas etre analysee se nomme ici ; le collecteur ne l'ouvre JAMAIS : ni
-`stat` dans son repertoire, ni `read_dir`, ni lecture de message, ni ligne dans l'etat incremental, et
-la sous-commande `body` refuse de la lire (voir plus bas ce qu'elle lit pour le savoir). Le « ni
-`stat` » tient a l'ordre du code (la decision sur le nom precede toute sonde) ; les temoins
-(`collector-mail/tests/compte_exclu_jamais_ouvert.rs`, boites en droits 000) voient un `read_dir` ou
-une lecture, pas un `stat` isole.
-- **Forme** : entrees separees par des virgules et/ou des blancs. Avec un `@` (`alice@example.test`) :
-  l'adresse complete, ce compte-la seulement. Sans `@` (`alice`) : la partie locale, dans **chaque**
-  domaine du maildir (layout plat : le domaine est `PLUME_MAIL_DOMAIN` ; imbrique : celui du repertoire).
-- **Comparaison EXACTE** du nom tel que le layout le donne, apres passage en minuscules ASCII des deux
-  cotes : `alice` n'exclut ni `alic` ni `alicex`. Un nom de compte non ASCII n'egale aucune entree.
-- **Refus** : une entree vide (`a,,b`, virgule finale), un motif (`*?[]{}`), un caractere hors classe
-  (partie locale `a-z 0-9 . _ + -`, domaine `a-z 0-9 . -`) ou une adresse mal formee ARRETE le
-  passage avant toute lecture ; l'aveu (sortie d'erreur + `collect_status=unavailable` dans le spool)
-  nomme le RANG de l'entree et la cause, jamais sa valeur.
-- **Ce que le passage en dit** : le battement (`journalctl -u plume-collector-mail`) porte
-  `N compte(s) dont M ouvert(s), K exclu(s) par PLUME_MAIL_EXCLURE_COMPTES` — un COMPTE, jamais un nom.
-  `0 exclu(s)` alors qu'une liste est posee : l'entree ne vise aucun compte (faute de frappe ?).
-- **Layout imbrique** : un repertoire de premier niveau dont le nom egale une entree (partie locale, ou
-  `<nom>@PLUME_MAIL_DOMAIN`) est retire entier, sans etre sonde pour savoir s'il est un compte ou un
-  domaine.
-- **Trois modes** : le collecteur tourne sur l'HOTE dans les trois (le maildir est sur son disque) ; le
-  reglage se pose dans `/etc/plume/mail.conf` (lu par `plume-collector-mail.service`), que le serveur
-  mail soit natif, en conteneur Docker ou dans k3s. Lance a la main, la variable de l'environnement
-  s'ajoute a la liste du fichier (elle ne la remplace pas).
-- **Le balayage et `body` relisent `mail.conf` eux-memes, avec UNE seule regle** : `body`, lance par le
-  demon (`PLUME_MAIL_BODY_CMD`), herite de l'environnement du DEMON, qui ne charge pas ce fichier. Les
-  deux chemins lisent donc `/etc/plume/mail.conf` (autre chemin : `PLUME_MAIL_CONF`) par la meme
-  fonction :
-  - la liste du fichier est JOINTE a celle de l'environnement (une entree de l'un OU de l'autre exclut) ;
-  - le domaine du layout plat suit la precedence du service (`EnvironmentFile=` l'emporte) : le fichier
-    qui PORTE `PLUME_MAIL_DOMAIN` decide, meme d'une valeur vide (qui vaut alors `localhost`, comme pour
-    le service) ; sinon l'environnement ; sinon `localhost` ;
-  - fichier ABSENT : l'environnement seul ;
-  - fichier present mais ILLISIBLE pour l'utilisateur qui lance la commande : REFUS, au balayage (aveu
-    `collect_status=unavailable`) comme a `body`, que l'environnement porte une liste ou non, et meme si
-    aucune liste n'est posee — la liste du fichier n'est pas jugeable. **Consequence a connaitre** :
-    `body` lance sous un utilisateur qui ne lit pas `mail.conf` (`root:soc 0640` par
-    `bootstrap-agent.sh`) ne rend plus rien ; le lancer sous l'utilisateur du balayage (root), qui lit
-    deja le maildir et ce fichier.
-- **Un dossier ne sort pas du compte** : le `folder` de `body` (et `PLUME_MAIL_FOLDER`) est refuse s'il
-  est vide, porte `/`, `\`, `..` ou un caractere de controle ; un dossier ou un `cur/`/`new/` en lien qui
-  resout hors du compte est refuse sans y entrer. Avant, `Sent/../../bob` lisait la boite `bob`.
-- **`body` juge la boite, pas l'adresse ecrite** : le chemin que l'adresse resout (liens et `.`
-  suivis) decide. En layout plat, `alice@autre.test` ou `alice@example.test.` ouvrent la meme boite
-  `alice` : elles sont refusees comme `alice@example.test`. Un dossier d'un compte retire
-  (`.Sent@alice`) l'est aussi ; un chemin qui sort de la racine, ou qui ne designe aucun compte que
-  le balayage nomme, est refuse des qu'une liste est posee.
-- **Ce qui n'est pas efface** : les lignes de l'etat incremental ecrites AVANT l'exclusion restent dans
-  `.mail-seen` (identifiants de fichiers, aucun contenu).
+## Removing a mailbox from the scan — `PLUME_MAIL_EXCLURE_COMPTES`
+A hosted mailbox that must not be analyzed is named here; the collector NEVER opens it: no
+`stat` in its directory, no `read_dir`, no message read, no line in the incremental state, and
+the `body` subcommand refuses to read it (see further down what it reads to know this). The "no
+`stat`" rests on the order of the code (the decision on the name comes before any probe); the witnesses
+(`collector-mail/tests/compte_exclu_jamais_ouvert.rs`, mailboxes with permissions 000) see a `read_dir` or
+a read, not an isolated `stat`.
+- **Form**: entries separated by commas and/or whitespace. With an `@` (`alice@example.test`):
+  the full address, that account only. Without `@` (`alice`): the local part, in **every**
+  domain of the maildir (flat layout: the domain is `PLUME_MAIL_DOMAIN`; nested: that of the directory).
+- **EXACT comparison** of the name as the layout gives it, after ASCII lowercasing on both
+  sides: `alice` excludes neither `alic` nor `alicex`. A non-ASCII account name matches no entry.
+- **Refusal**: an empty entry (`a,,b`, trailing comma), a pattern (`*?[]{}`), a character outside the class
+  (local part `a-z 0-9 . _ + -`, domain `a-z 0-9 . -`) or a malformed address STOPS the
+  pass before any read; the admission (error output + `collect_status=unavailable` in the spool)
+  names the RANK of the entry and the cause, never its value.
+- **What the pass says about it**: the heartbeat (`journalctl -u plume-collector-mail`) carries
+  `N compte(s) dont M ouvert(s), K exclu(s) par PLUME_MAIL_EXCLURE_COMPTES` — a COUNT, never a name.
+  `0 exclu(s)` while a list is set: the entry targets no account (typo?).
+- **Nested layout**: a top-level directory whose name equals an entry (local part, or
+  `<nom>@PLUME_MAIL_DOMAIN`) is removed whole, without being probed to find out whether it is an account or a
+  domain.
+- **Three modes**: the collector runs on the HOST in all three (the maildir is on its disk); the
+  setting goes in `/etc/plume/mail.conf` (read by `plume-collector-mail.service`), whether the mail
+  server is native, in a Docker container or in k3s. Run by hand, the environment variable
+  is added to the file's list (it does not replace it).
+- **The scan and `body` reread `mail.conf` themselves, with ONE single rule**: `body`, launched by the
+  daemon (`PLUME_MAIL_BODY_CMD`), inherits the DAEMON's environment, which does not load this file. Both
+  paths therefore read `/etc/plume/mail.conf` (other path: `PLUME_MAIL_CONF`) through the same
+  function:
+  - the file's list is JOINED with the environment's (an entry from one OR the other excludes);
+  - the flat-layout domain follows the service's precedence (`EnvironmentFile=` wins): the file
+    that CARRIES `PLUME_MAIL_DOMAIN` decides, even with an empty value (which then means `localhost`, as for
+    the service); otherwise the environment; otherwise `localhost`;
+  - file ABSENT: the environment alone;
+  - file present but UNREADABLE for the user running the command: REFUSAL, at the scan (admission
+    `collect_status=unavailable`) as at `body`, whether or not the environment carries a list, and even if
+    no list is set — the file's list cannot be judged. **Practical consequence**:
+    `body` run as a user who cannot read `mail.conf` (`root:soc 0640` from
+    `bootstrap-agent.sh`) no longer returns anything; run it as the scan's user (root), which already reads
+    the maildir and this file.
+- **A folder does not leave the account**: the `folder` of `body` (and `PLUME_MAIL_FOLDER`) is refused if it
+  is empty, carries `/`, `\`, `..` or a control character; a folder or a linked `cur/`/`new/` that
+  resolves outside the account is refused without entering it. Before, `Sent/../../bob` read the `bob`
+  mailbox.
+- **`body` judges the mailbox, not the written address**: the path the address resolves to (links and `.`
+  followed) decides. In flat layout, `alice@autre.test` or `alice@example.test.` open the same mailbox
+  `alice`: they are refused like `alice@example.test`. A folder of a removed account
+  (`.Sent@alice`) is too; a path that leaves the root, or that designates no account the
+  scan names, is refused as soon as a list is set.
+- **What is not erased**: the incremental-state lines written BEFORE the exclusion remain in
+  `.mail-seen` (file identifiers, no content).
 
-## Activation (OPT-IN, regle d'or)
-Installe mais **non active** par defaut. Quand tu le veux :
+## Activation (OPT-IN, golden rule)
+Installed but **not enabled** by default. When you want it:
 ```sh
 sudo systemctl enable --now plume-collector-mail.timer
 ```
-Etat incremental : chaque message n'est scanne qu'une fois (`.mail-seen`) ; le `dedup` cote SOC
-(`mail:<compte>:<dossier>:<fileid>`) garantit l'idempotence meme si l'enveloppe est re-shippee.
+Incremental state: each message is scanned only once (`.mail-seen`); the SOC-side `dedup`
+(`mail:<compte>:<dossier>:<fileid>`) guarantees idempotence even if the envelope is re-shipped.
 
-## Patterns par defaut
-`phishing-account-action` (sujet), `phishing-urgent` (sujet), `raw-ip-url`, `punycode-url`,
-`credential-url`, `executable-link`, `decoded-credential` (params base64 decodes). Moteur `regex`
-(automate fini = temps lineaire, pas de ReDoS) + cap longueur/taille compilee. Surcharge possible
-via `PLUME_MAIL_PATTERNS` (JSON `[{id,category,severity,target,regex}]` ;
+## Default patterns
+`phishing-account-action` (subject), `phishing-urgent` (subject), `raw-ip-url`, `punycode-url`,
+`credential-url`, `executable-link`, `decoded-credential` (decoded base64 params). `regex` engine
+(finite automaton = linear time, no ReDoS) + cap on length/compiled size. Override possible
+via `PLUME_MAIL_PATTERNS` (JSON `[{id,category,severity,target,regex}]`;
 target = subject|from|text_body|html_body|url|decoded_url|headers).
 
-## Body-fetch complet (gate + audite) — sous-commande `body`
-Lecture du **mail complet** d'UN message, a la demande (forensic). C'est le SEUL chemin qui retourne
-le body ; il reste **gate + audite**, et vit agent-side (pas de body en clair shippe par le scan).
+## Full body fetch (gated + audited) — `body` subcommand
+Reads the **full mail** of ONE message, on demand (forensics). It is the ONLY path that returns
+the body; it remains **gated + audited**, and lives agent-side (no plaintext body shipped by the scan).
 ```sh
 PLUME_MAIL_ROOT=... PLUME_ACTOR=<qui> plume-collector-mail body <account> <id> [folder]
-# -> stdout : JSON {account,folder,subject,from,to,date,headers,text,html}
-# relit /etc/plume/mail.conf (ou PLUME_MAIL_CONF) comme le balayage (liste ET domaine, meme regle) :
-# un compte retire du balayage est refuse ici aussi, avant toute recherche du message
+# -> stdout: JSON {account,folder,subject,from,to,date,headers,text,html}
+# rereads /etc/plume/mail.conf (or PLUME_MAIL_CONF) like the scan (list AND domain, same rule):
+# an account removed from the scan is refused here too, before any search for the message
 ```
-- **Gate** : l'invocation est reservee au central (acces agent/SSH via le role agent) ; le central
-  verifie `role=admin` AVANT d'appeler, et passe `PLUME_ACTOR` (qui declenche).
-- **Audit** : chaque lecture ecrit un event `source=mail-audit` ("body read: acct/folder/id by actor")
-  dans le spool -> SOC (cherchable + chaine d'integrite cote central).
-- **Rendu** : le central affiche le `html` dans un `<iframe sandbox>` + CSP `default-src 'none'`
+- **Gate**: invocation is reserved for the central (agent/SSH access through the agent role); the central
+  checks `role=admin` BEFORE calling, and passes `PLUME_ACTOR` (who triggers it).
+- **Audit**: each read writes a `source=mail-audit` event ("body read: acct/folder/id by actor")
+  into the spool -> SOC (searchable + integrity chain on the central side).
+- **Rendering**: the central displays the `html` in an `<iframe sandbox>` + CSP `default-src 'none'`
   (anti-XSS + anti-tracking).
-- Le binaire NE sert PAS d'HTTP en continu (pas de surface permanente) : appel a la demande.
+- The binary does NOT serve HTTP continuously (no permanent surface): on-demand call.
 
-## Parite avant retrait (NON negociable)
-Si tu as deja un scanner mail (service dedie, onglet d'une console existante), **ne le retire pas**
-tant que la recherche mail du SOC n'a pas atteint la **parite** (cf. `deploy/K8S.md`, « Ordre de
-bascule »). Sequence : construire -> verifier parite -> puis retirer.
+## Parity before removal (NON negotiable)
+If you already have a mail scanner (dedicated service, tab of an existing console), **do not remove it**
+until the SOC's mail search has reached **parity** (see the switchover order in
+`deploy/K8S.md`). Sequence: build -> verify parity -> then remove.
 
-## Le capteur de journal `collectors/mail.sh` : d'ou il lit (`PLUME_MAIL_SRC`)
-A ne pas confondre avec `collector-mail` (le maildir, ci-dessus) : `mail.sh` lit le JOURNAL du serveur
-mail (`mail.log`, ClamAV). Il vaut dans les **trois modes** de deploiement, et sa source se regle ou se
-detecte :
-- **Posee** (`PLUME_MAIL_SRC=k3s|docker|file`) : prise telle quelle, **prioritaire**, jamais devinee et
-  sans aucune sonde. `k3s` lit par `kubectl exec` (ou `k3s kubectl`) dans le pod de `PLUME_MAIL_SELECTOR`
-  (defaut `app=mailserver`) du namespace `PLUME_MAIL_NS` (defaut `mail`) ; `docker` par `docker exec` dans
-  le conteneur `PLUME_MAIL_CONTAINER` (defaut `mailserver`) ; `file` lit `PLUME_MAIL_LOG` sur l'hote
-  (defaut `/var/log/mail/mail.log`, celui de docker-mailserver ; source posee `file`, aucun autre chemin n'est
-  essaye : un postfix natif Debian/Ubuntu ecrit `/var/log/mail.log`, a poser). Si l'outil manque, l'echec de
-  lecture est avoue, rien n'est tente a la place.
-- **Non posee** : detection, dans cet ordre, chaque sonde en lecture seule et bornee par `timeout`
-  (`PLUME_MAIL_DETECTION_DELAI`, 5 s par defaut ; un entier >= 1 sans zero en tete, `0`/`00` couperaient la
-  borne : pose et illisible, il est avoue `unreadable-config` et c'est 5 qui s'applique) : (a) `k3s` si `kubectl` ou `k3s` est present ET qu'un pod
-  du selecteur existe dans le namespace ; (b) `docker` si `docker` est present ET que le conteneur nomme
-  est en marche (`docker inspect`) ; (c) `file` si `PLUME_MAIL_LOG` est un fichier lisible, et, `PLUME_MAIL_LOG`
-  non posee, le premier fichier lisible de `/var/log/mail/mail.log` (docker-mailserver) puis `/var/log/mail.log`
-  (postfix natif Debian/Ubuntu), qui devient le journal lu. Hote natif (systemd, journal local) : (c) ;
-  serveur mail en conteneur Docker : (b) ; dans k3s : (a). Les chemins ClamAV par defaut suivent la source
-  RETENUE, posee ou detectee : `/var/log/clamav/` pour `file`, `/var/log/mail/` (dans le conteneur) sinon.
-- **Aucune** : aveu `collect_status=unavailable`, `reason=missing-source`, detail `aucune source de journal
-  mail detectee …`, qui dit ce qui a ete essaye et qu'il faut poser `PLUME_MAIL_SRC` ; le capteur sort.
-- **Retenue, lecture ratee** (posee ou detectee) : un AUTRE aveu, celui d'une lecture qui lache, sous la meme
-  raison `missing-source` mais au detail `LECTURE DE LA SOURCE IMPOSSIBLE (source_illisible) : …` qui nomme la
-  source et son origine ; aucun marqueur n'est acquitte, la tranche sera relue.
-- **Sous une unite contrainte** (`plume-mail.service` : `CPUQuota=25%`, `HOME=/tmp` en `PrivateTmp`, donc le
-  cache de decouverte de `k3s kubectl` repart a froid a chaque passage) : une sonde k3s qui depasse le delai
-  fait un passage aveugle (avoue `missing-source`, rien d'acquitte). **Poser** `PLUME_MAIL_SRC` dans
-  `/etc/plume/plume.conf` quand la source est connue ; la detection est le repli, pas le reglage d'exploitation.
+## The `collectors/mail.sh` log sensor: where it reads from (`PLUME_MAIL_SRC`)
+Not to be confused with `collector-mail` (the maildir, above): `mail.sh` reads the mail server's LOG
+(`mail.log`, ClamAV). It applies in all **three** deployment **modes**, and its source is set or
+detected:
+- **Set** (`PLUME_MAIL_SRC=k3s|docker|file`): taken as is, **takes priority**, never guessed and
+  without any probe. `k3s` reads through `kubectl exec` (or `k3s kubectl`) in the pod of `PLUME_MAIL_SELECTOR`
+  (default `app=mailserver`) in the namespace `PLUME_MAIL_NS` (default `mail`); `docker` through `docker exec` in
+  the container `PLUME_MAIL_CONTAINER` (default `mailserver`); `file` reads `PLUME_MAIL_LOG` on the host
+  (default `/var/log/mail/mail.log`, the docker-mailserver one; with source set to `file`, no other path is
+  tried: a native Debian/Ubuntu postfix writes `/var/log/mail.log`, to be set). If the tool is missing, the read
+  failure is admitted, nothing is attempted instead.
+- **Not set**: detection, in this order, each probe read-only and bounded by `timeout`
+  (`PLUME_MAIL_DETECTION_DELAI`, 5 s by default; an integer >= 1 without a leading zero, `0`/`00` would remove the
+  bound: set and unreadable, it is admitted as `unreadable-config` and 5 applies): (a) `k3s` if `kubectl` or `k3s` is present AND a pod
+  of the selector exists in the namespace; (b) `docker` if `docker` is present AND the named container
+  is running (`docker inspect`); (c) `file` if `PLUME_MAIL_LOG` is a readable file, and, with `PLUME_MAIL_LOG`
+  not set, the first readable file among `/var/log/mail/mail.log` (docker-mailserver) then `/var/log/mail.log`
+  (native Debian/Ubuntu postfix), which becomes the log that is read. Native host (systemd, local log): (c);
+  mail server in a Docker container: (b); in k3s: (a). The default ClamAV paths follow the
+  RETAINED source, set or detected: `/var/log/clamav/` for `file`, `/var/log/mail/` (in the container) otherwise.
+- **None**: admission `collect_status=unavailable`, `reason=missing-source`, detail `aucune source de journal
+  mail detectee …`, which says what was tried and that `PLUME_MAIL_SRC` must be set; the sensor exits.
+- **Retained, read failed** (set or detected): ANOTHER admission, that of a failed read, under the same
+  reason `missing-source` but with the detail `LECTURE DE LA SOURCE IMPOSSIBLE (source_illisible) : …` which names the
+  source and its origin; no marker is acknowledged, the slice will be reread.
+- **Under a constrained unit** (`plume-mail.service`: `CPUQuota=25%`, `HOME=/tmp` in `PrivateTmp`, so the
+  discovery cache of `k3s kubectl` starts cold on every pass): a k3s probe that exceeds the timeout
+  makes a blind pass (admitted as `missing-source`, nothing acknowledged). **Set** `PLUME_MAIL_SRC` in
+  `/etc/plume/plume.conf` when the source is known; detection is the fallback, not the operating setting.
 
-La source RETENUE et son origine sont dites dans l'enveloppe de config du capteur (evenement
-`source=mail category=config`, `type=collection-reducing`, sous `filters` : `source`, et `source_origine`
-qui vaut `posee` ou `detectee`). Temoin : `.github/scripts/check_mail_sensor_reads_sender_checks_outbound_queue_and_clamav.py`.
+The RETAINED source and its origin are stated in the sensor's config envelope (event
+`source=mail category=config`, `type=collection-reducing`, under `filters`: `source`, and `source_origine`
+which is `posee` or `detectee`). Witness: `.github/scripts/check_mail_sensor_reads_sender_checks_outbound_queue_and_clamav.py`.

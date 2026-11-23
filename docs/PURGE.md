@@ -1,186 +1,186 @@
-# Purger des événements — ce que la purge fait, et ce qu'elle refuse de faire
+# Purging events — what the purge does, and what it refuses to do
 
-[Français](PURGE.md) | [English](PURGE.en.md)
+[English](PURGE.md) | [Français](PURGE.fr.md)
 
-**État : ✅ livré (sous-commande) · 🧪 opt-in (surface HTTP, fermée par défaut)**
+**Status: ✅ shipped (subcommand) · 🧪 opt-in (HTTP surface, closed by default)**
 
-La rétention de Plume est *temporelle* : elle efface ce qui est vieux, rien d'autre. Il manquait un moyen
-d'effacer un ensemble d'événements **nommé** — des lignes de test après un onboarding, un flux mal branché,
-les traces d'un exercice pentest, une demande d'effacement. Sans cela, la seule issue était du SQL direct sur
-une base SQLCipher, depuis une image qui ne contient que le daemon.
+Plume's retention is *time-based*: it erases what is old, nothing else. What was missing was a way
+to erase a **named** set of events — test rows after an onboarding, a miswired feed,
+the traces of a pentest exercise, an erasure request. Without it, the only way out was direct SQL on
+a SQLCipher database, from an image that contains only the daemon.
 
-`plume-daemon purge` comble ce trou. C'est la fonction la plus destructrice du produit : **une purge est
-irréversible et détruit des preuves**. Ce document dit ce qu'elle garantit, et surtout ce qu'elle ne garantit
-pas.
+`plume-daemon purge` fills that gap. It is the most destructive function in the product: **a purge is
+irreversible and destroys evidence**. This document says what it guarantees, and above all what it does not
+guarantee.
 
 ---
 
-## En deux temps, toujours
+## In two steps, always
 
 ```
-# TEMPS 1 — SIMULE. N'écrit rien. Rend le compte exact, un échantillon, et un JETON.
+# STEP 1 — SIMULATE. Writes nothing. Returns the exact count, a sample, and a TOKEN.
 plume-daemon purge --source flux-de-test --since -2d --until -1h
 
-# TEMPS 2 — EXÉCUTE, si le jeton est encore l'empreinte du périmètre re-simulé.
+# STEP 2 — EXECUTE, if the token is still the fingerprint of the re-simulated scope.
 plume-daemon purge --source flux-de-test --since -2d --until -1h \
     --confirm <jeton> --reason "nettoyage des events de test d'onboarding"
 ```
 
-Les deux temps ouvrent la base pour y écrire au besoin, et la **créent** si elle manque : jamais avant le
-premier démarrage du démon ([`INSTALLER-SANS-OUVRIR-DE-BRECHE.md` §1.1](INSTALLER-SANS-OUVRIR-DE-BRECHE.md#11-démarrer-le-démon-une-fois-avant-toute-sous-commande-qui-écrit-dans-la-base)).
+Both steps open the database to write to it if needed, and **create** it if it is missing: never before the
+daemon's first start ([`INSTALLER-SANS-OUVRIR-DE-BRECHE.md` §1.1](INSTALLER-SANS-OUVRIR-DE-BRECHE.md#11-start-the-daemon-once-before-any-subcommand-that-writes-to-the-database)).
 
-Le jeton n'est pas un identifiant de session : c'est **l'empreinte du résultat de la simulation** (périmètre
-canonique, cardinalité, bornes d'`id` et de `ts`, ventilation par source). L'exécution **re-simule** et
-recalcule cette empreinte. Donc :
+The token is not a session identifier: it is **the fingerprint of the simulation's result** (canonical
+scope, cardinality, `id` and `ts` bounds, breakdown by source). Execution **re-simulates** and
+recomputes this fingerprint. Therefore:
 
-* confirmer sans avoir simulé est impossible (il n'y a pas de jeton à rendre) ;
-* rejouer une confirmation échoue (le contenu a changé — les lignes ne sont plus là) ;
-* si une ligne entre ou sort du périmètre entre les deux temps (ingest concurrent, relais en retard,
-  legal-hold posé), l'empreinte change et **la confirmation devient caduque**.
+* confirming without having simulated is impossible (there is no token to return);
+* replaying a confirmation fails (the content has changed — the rows are no longer there);
+* if a row enters or leaves the scope between the two steps (concurrent ingest, late relay,
+  legal-hold set), the fingerprint changes and **the confirmation becomes void**.
 
-Codes de sortie : `0` simulation rendue ou purge exécutée · `2` arguments invalides / base inouvrable ·
-`3` **refus motivé** (un refus a son propre code, pour qu'un runbook ne l'avale pas comme un succès).
+Exit codes: `0` simulation returned or purge executed · `2` invalid arguments / database cannot be opened ·
+`3` **reasoned refusal** (a refusal has its own code, so that a runbook does not swallow it as a success).
 
 ---
 
-## Le périmètre se **nomme**, et il est **borné**
+## The scope is **named**, and it is **bounded**
 
-| Argument | Colonne d'`event` |
+| Argument | `event` column |
 |---|---|
 | `--source <nom>` | `source` |
 | `--env <id>` | `env_id` |
 | `--origin <val>` | `origin` |
 | `--engagement <id>` | `engagement_id` |
 
-* **Au moins un identifiant est obligatoire.** « tout ce qui est dans cette fenêtre » n'est pas un périmètre
-  acceptable, et n'est pas non plus une valeur que le code sait représenter.
-* **Les deux bornes sont obligatoires** (`--since` / `--until`, epoch en secondes ou décalage `-7d` `-24h`
-  `-30m` `-3600s`). Il n'y a pas de fenêtre par défaut.
-* **Il n'existe aucun prédicat libre.** Ni SQL, ni GXQL, ni joker : ce sont les formes qui rendent une purge
-  accidentellement totale, et elles n'ont pas de place dans le type qui décrit un périmètre.
-* Les sélecteurs se **conjoignent** : en ajouter un ne peut que rétrécir le périmètre.
-* Les valeurs d'identifiant suivent le **charset d'identifiant** du produit (alphanumérique + `.` `_` `-`,
-  1 à 64 caractères) — le même que `env_id` / les noms d'index. **Limite connue** : une source dont le nom
-  sortirait de ce charset (par exemple injectée par un forwarder tiers avec un espace ou un `/`) n'est pas
-  purgeable par nom aujourd'hui ; utilisez `--env` ou `--engagement` pour la cerner.
-* La **piste d'audit est refusée comme périmètre** : `--source plume-config`,
-  `plume-operator-access`, `plume-tenant-admin`, `plume-engagement` et `--origin daemon` sont rejetés
-  explicitement. Une purge ne peut pas effacer la trace des changements de configuration ni des accès
-  opérateur — y compris **la trace d'une purge précédente**.
+* **At least one identifier is mandatory.** "everything in this window" is not an acceptable
+  scope, nor is it a value the code knows how to represent.
+* **Both bounds are mandatory** (`--since` / `--until`, epoch in seconds or offset `-7d` `-24h`
+  `-30m` `-3600s`). There is no default window.
+* **There is no free predicate.** No SQL, no GXQL, no wildcard: those are the forms that make a purge
+  accidentally total, and they have no place in the type that describes a scope.
+* Selectors **combine with AND**: adding one can only narrow the scope.
+* Identifier values follow the product's **identifier charset** (alphanumeric + `.` `_` `-`,
+  1 to 64 characters) — the same as `env_id` / index names. **Known limit**: a source whose name
+  falls outside this charset (for example injected by a third-party forwarder with a space or a `/`) cannot be
+  purged by name today; use `--env` or `--engagement` to pin it down.
+* The **audit trail is refused as a scope**: `--source plume-config`,
+  `plume-operator-access`, `plume-tenant-admin`, `plume-engagement` and `--origin daemon` are rejected
+  explicitly. A purge cannot erase the trace of configuration changes or of operator
+  access — including **the trace of a previous purge**.
 
 ---
 
-## Ce que la purge REFUSE de faire (et le dit)
+## What the purge REFUSES to do (and says so)
 
-| Refus | Pourquoi |
+| Refusal | Why |
 |---|---|
-| **Rétention légale** | ≥ 1 `legal_hold` actif recouvre le périmètre → refus **total**, en nommant les holds. Jamais de purge partielle « sauf les lignes tenues » : elle laisserait croire que tout est parti. Lever un hold reste un acte de gouvernance tracé (`/api/legal-holds/{id}/release`) ; la purge ne le contourne pas. |
-| **État des holds indéterminable** | Table `legal_hold` présente mais illisible → fail-closed. On ne supprime jamais une preuve dont on ne peut pas prouver qu'elle n'est pas retenue. |
-| **Tier froid** | Des fichiers Parquet scellés recouvrent la fenêtre → refus, en nommant le nombre de fichiers et de jours. Vider `event` laisserait ces copies columnarisées **interrogeables** : « purgé » serait faux. La purge ne sait pas réécrire un Parquet scellé, et elle ne prétend pas le contraire. Contournement : attendre l'expiration cold, ou restreindre la fenêtre aux jours encore chauds. Ce compte n'est **pas** borné par la rétention : un fichier d'un jour déjà expiré dont le retrait a été refusé reste sur le disque ; il est compté, et le refus tient tant qu'il n'est pas retiré. L'expiration froide retente ce retrait à chaque passe, et le journal du démon nomme le fichier en cause (ligne `[cold] expiration … fichier non retiré`) : c'est là que se lit ce qui bloque. |
-| **Chaîne de preuve** | Un event du périmètre est cité par la timeline d'un case/incident → refus, en nommant les identifiants. Détacher l'item d'abord. |
-| **Index plein-texte désynchronisé** | `event_fts` existe sans son trigger de suppression → un `DELETE` laisserait les postings et le message purgé resterait **cherchable**. Refus. |
+| **Legal hold** | ≥ 1 active `legal_hold` covers the scope → **total** refusal, naming the holds. Never a partial purge "except the held rows": it would suggest everything is gone. Lifting a hold remains a traced governance act (`/api/legal-holds/{id}/release`); the purge does not bypass it. |
+| **Hold state cannot be determined** | `legal_hold` table present but unreadable → fail-closed. Evidence is never deleted when it cannot be proven that it is not held. |
+| **Cold tier** | Sealed Parquet files cover the window → refusal, naming the number of files and days. Emptying `event` would leave these columnar copies **queryable**: "purged" would be false. The purge cannot rewrite a sealed Parquet, and it does not claim otherwise. Workaround: wait for cold expiry, or narrow the window to days that are still hot. This count is **not** bounded by retention: a file for an already expired day whose removal was refused stays on disk; it is counted, and the refusal holds until it is removed. Cold expiry retries that removal on every pass, and the daemon log names the file at fault (line `[cold] expiration … fichier non retiré`): that is where what blocks can be read. |
+| **Evidence chain** | An event in scope is cited by the timeline of a case/incident → refusal, naming the identifiers. Detach the item first. |
+| **Full-text index out of sync** | `event_fts` exists without its delete trigger → a `DELETE` would leave the postings and the purged message would remain **searchable**. Refusal. |
 
 ---
 
-## Ce que la purge couvre RÉELLEMENT
+## What the purge ACTUALLY covers
 
-Dans **une seule transaction**, après inscription au registre :
+In **a single transaction**, after being written to the ledger:
 
-* les lignes d'`event` du périmètre ;
-* **`event_fts`** — l'index plein-texte, via le trigger de suppression (dont l'absence est un refus en amont) ;
-* **`event_rollup`** et **`event_dim_rollup`** — les buckets horaires recouvrant la fenêtre sont supprimés puis
-  **re-agrégés depuis les lignes survivantes**, avec la même borne d'identifiant que la couverture publiée
-  (sans cette borne, les lignes récentes seraient comptées deux fois). Un agrégat qui continuerait de compter
-  les lignes détruites rendrait le contenu purgé encore visible sous forme de comptes ;
-* **`panel_cache`** — les payloads de panneaux mis en cache portent des résultats *rendus*, donc possiblement
-  du contenu purgé : ils sont vidés (ils se recalculent en fond).
-
----
-
-## Ce que la purge NE couvre PAS
-
-Chaque point ci-dessous est **compté et affiché** dans la sortie de la simulation. Ce n'est pas une note de
-bas de page : une purge qui laisserait croire qu'elle a tout effacé serait pire que pas de purge du tout.
-
-* **Les sauvegardes déjà prises.** Une purge n'en retire rien. **Une restauration réintroduirait les lignes
-  purgées.** Pour une demande d'effacement (type RGPD), traitez aussi les sauvegardes — rotation, expiration,
-  ou re-prise après purge. Le produit ne le fait pas pour vous.
-* **Les alertes** (`alert`). Une alerte n'est pas une ligne dérivée d'`event` : elle a sa propre rétention et
-  son propre cycle de vie. Mais son champ `detail` **peut citer le texte d'un event purgé**. La simulation
-  compte les alertes de la fenêtre ; à vous de décider.
-* **Les métriques et les captures d'état** (`metric`, `snapshot`). Ces tables n'ont ni `source` ni `origin` :
-  le périmètre ne s'y projette pas. Elles sont comptées, pas touchées.
-* **Les instantanés de dashboard partageables** (`dashboard_snapshot`). Ils portent des résultats rendus, donc
-  possiblement du contenu purgé. Les détruire détruirait du travail utilisateur : ils sont comptés, pas touchés.
-* **L'inventaire de flotte** (`host_rollup`). Ses compteurs par hôte restent gonflés des lignes purgées. C'est
-  un inventaire (noms d'hôtes, dernière activité), pas du contenu d'événement ; le remettre à zéro ferait
-  disparaître des hôtes de la vue flotte, ce qui serait un mensonge d'un autre genre.
-* **Les copies exportées du registre** (sinks WORM). C'est leur raison d'être : elles sont *append-only* et
-  vérifiables hors base. La purge y **ajoute** son entrée ; elle n'en retire rien.
-* **Un déni de service par purge répétée.** Un admin malveillant peut purger beaucoup, souvent. Chaque purge
-  est inscrite au registre chaîné et émet un événement SOC de sévérité 4, non purgeable et alertable — c'est
-  une **détection**, pas une prévention.
+* the `event` rows in scope;
+* **`event_fts`** — the full-text index, through the delete trigger (whose absence is an upstream refusal);
+* **`event_rollup`** and **`event_dim_rollup`** — the hourly buckets covering the window are deleted then
+  **re-aggregated from the surviving rows**, with the same identifier bound as the published coverage
+  (without this bound, recent rows would be counted twice). An aggregate that kept counting
+  the destroyed rows would make the purged content still visible in the form of counts;
+* **`panel_cache`** — cached panel payloads carry *rendered* results, hence possibly
+  purged content: they are emptied (they are recomputed in the background).
 
 ---
 
-## Intégrité : rien ne se supprime sans être inscrit
+## What the purge does NOT cover
 
-Chaque purge écrit, **dans la même transaction que la suppression** :
+Each point below is **counted and displayed** in the simulation's output. It is not a
+footnote: a purge that let you believe it had erased everything would be worse than no purge at all.
 
-1. une entrée au **registre append-only chaîné par hachage** (`kind = config.purge.events`) : qui, périmètre
-   résolu, combien de lignes, quand, l'empreinte confirmée, et la raison ;
-2. un **événement SOC** `source='plume-config'` `origin='daemon'` de sévérité 4 — donc non purgeable et
-   alertable, comme une baisse de rétention.
+* **Backups already taken.** A purge removes nothing from them. **A restore would reintroduce the purged
+  rows.** For an erasure request (GDPR-type), handle the backups too — rotation, expiry,
+  or a fresh backup after the purge. The product does not do it for you.
+* **Alerts** (`alert`). An alert is not a row derived from `event`: it has its own retention and
+  its own life cycle. But its `detail` field **may quote the text of a purged event**. The simulation
+  counts the alerts in the window; the decision is yours.
+* **Metrics and state captures** (`metric`, `snapshot`). These tables have neither `source` nor `origin`:
+  the scope does not project onto them. They are counted, not touched.
+* **Shareable dashboard snapshots** (`dashboard_snapshot`). They carry rendered results, hence
+  possibly purged content. Destroying them would destroy user work: they are counted, not touched.
+* **The fleet inventory** (`host_rollup`). Its per-host counters stay inflated by the purged rows. It is
+  an inventory (host names, last activity), not event content; resetting it would make
+  hosts disappear from the fleet view, which would be a lie of another kind.
+* **Exported copies of the ledger** (WORM sinks). That is their reason to exist: they are *append-only* and
+  verifiable outside the database. The purge **adds** its entry to them; it removes nothing.
+* **A denial of service through repeated purges.** A malicious admin can purge a lot, often. Each purge
+  is written to the chained ledger and emits a severity 4 SOC event, non-purgeable and alertable — it is
+  a **detection**, not a prevention.
 
-Si l'inscription échoue, **rien n'est supprimé**. Et si la base supprime un nombre de lignes différent de
-celui qui vient d'être inscrit, **tout est annulé** — l'entrée de registre comprise : le registre n'affirme
-jamais autre chose que ce que la base a fait.
+---
 
-L'inscription porte le périmètre et les compteurs — **jamais le contenu détruit**. Aucun message, aucune IP,
-aucun champ parsé n'y entre : la valeur passée à l'inscription ne les transporte pas.
+## Integrity: nothing is deleted without being recorded
 
-Vérifier après coup :
+Each purge writes, **in the same transaction as the deletion**:
+
+1. an entry in the **hash-chained append-only ledger** (`kind = config.purge.events`): who, resolved
+   scope, how many rows, when, the confirmed fingerprint, and the reason;
+2. a severity 4 **SOC event** `source='plume-config'` `origin='daemon'` — hence non-purgeable and
+   alertable, like a retention decrease.
+
+If recording fails, **nothing is deleted**. And if the database deletes a number of rows different from
+the one just recorded, **everything is rolled back** — ledger entry included: the ledger never asserts
+anything other than what the database did.
+
+The record carries the scope and the counters — **never the destroyed content**. No message, no IP,
+no parsed field goes into it: the value passed to the recording does not carry them.
+
+Checking afterwards:
 
 ```
-plume-daemon verify                      # recompute toute la chaîne + les signatures de checkpoint
+plume-daemon verify                      # recomputes the whole chain + the checkpoint signatures
 plume-daemon ledger-export --out purge.jsonl
 plume-daemon ledger-verify-export purge.jsonl
 ```
 
-`--out` ouvre le fichier **en ajout** : relancer l'export sur le même fichier y écrit la chaîne une seconde
-fois. Un puits d'export dont la base a refusé de valider le curseur produit la même forme — la tranche est
-réécrite en entier à l'envoi suivant, y compris après une écriture interrompue sur une fin de ligne.
-`ledger-verify-export` écarte toute ligne **identique octet pour octet** à une ligne déjà vérifiée, où qu'elle
-se trouve dans la copie, et la compte dans son verdict (sortie `0`) : ce ne sont ni des événements distincts,
-ni une altération. Une copie qui **se termine** au milieu d'une répétition est acceptée elle aussi, et le
-verdict le dit : rien de ce qui a été vérifié n'y manque. Toute autre ligne doit s'accrocher à la dernière
-ligne vérifiée : une ligne de même identifiant et de contenu **différent** — une fourche —, une ligne altérée,
-manquante ou déplacée restent une rupture (`EXPORT COMPROMIS`, sortie `1`), tout comme une ligne coupée en son
-milieu, qui n'est plus du JSON. Un fichier illisible n'est pas vérifié (sortie `2`).
+`--out` opens the file **in append mode**: running the export again on the same file writes the chain into it a second
+time. An export sink whose cursor the database refused to commit produces the same shape — the slice is
+rewritten in full on the next send, including after a write interrupted at a line ending.
+`ledger-verify-export` sets aside any line **byte-for-byte identical** to an already verified line, wherever it
+sits in the copy, and counts it in its verdict (exit `0`): these are neither distinct events,
+nor an alteration. A copy that **ends** in the middle of a repetition is accepted as well, and the
+verdict says so: nothing that was verified is missing from it. Every other line must chain onto the last
+verified line: a line with the same identifier and **different** content — a fork —, an altered,
+missing or moved line remain a break (`EXPORT COMPROMIS`, exit `1`), as does a line cut in its
+middle, which is no longer JSON. An unreadable file is not verified (exit `2`).
 
 ---
 
-## Qui a le droit
+## Who has the permission
 
-* La **sous-commande** exige la clé SQLCipher et l'accès à l'hôte — soit exactement le pouvoir qu'il faudrait
-  pour effacer la base à la main. Elle n'ajoute donc aucune capacité ; elle remplace un `DELETE` manuel non
-  tracé par un chemin borné, simulé, confirmé et inscrit. L'acteur inscrit au registre est le compte système
-  et le pid ; `PLUME_PURGE_ACTOR` **ajoute** le nom de l'humain responsable, sans remplacer ce qui a été mesuré.
-* La **surface HTTP** (`POST /api/purge/plan`, `POST /api/purge/apply`) est **admin-only** et **fermée par
-  défaut**. Elle ajoute, elle, une capacité de destruction de preuves *à distance* : il faut l'armer
-  explicitement au déploiement avec `PLUME_PURGE_API=1`. Cela sépare deux principals — celui qui détient le
-  mot de passe admin, et celui qui contrôle le déploiement.
-* **« Admin » n'est pas forcément le bon quantum d'autorité pour détruire des preuves.** La permission
-  soustractive `purge_events` permet de définir un rôle composable `base=admin` **sans** la purge, sans
-  toucher au code (`POST /api/roles`, `deny_perms: ["purge_events"]`).
-* En mode multi-tenant, une purge cross-tenant par un super-admin passe déjà par le **break-glass** habituel
-  (raison obligatoire, marqueur d'accès opérateur non désactivable dans la base du client).
+* The **subcommand** requires the SQLCipher key and access to the host — exactly the power that would be
+  needed to erase the database by hand. It therefore adds no capability; it replaces an untraced manual `DELETE`
+  with a bounded, simulated, confirmed and recorded path. The actor recorded in the ledger is the system account
+  and the pid; `PLUME_PURGE_ACTOR` **adds** the name of the responsible human, without replacing what was measured.
+* The **HTTP surface** (`POST /api/purge/plan`, `POST /api/purge/apply`) is **admin-only** and **closed by
+  default**. It, on the other hand, adds a capability to destroy evidence *remotely*: it has to be armed
+  explicitly at deployment with `PLUME_PURGE_API=1`. This separates two principals — the one who holds the
+  admin password, and the one who controls the deployment.
+* **"Admin" is not necessarily the right quantum of authority to destroy evidence.** The subtractive
+  permission `purge_events` makes it possible to define a composable role `base=admin` **without** purge, without
+  touching the code (`POST /api/roles`, `deny_perms: ["purge_events"]`).
+* In multi-tenant mode, a cross-tenant purge by a super-admin already goes through the usual **break-glass**
+  (mandatory reason, operator access marker that cannot be disabled in the customer's database).
 
 ---
 
 ## Variables
 
-| Variable | Défaut | Effet |
+| Variable | Default | Effect |
 |---|---|---|
-| `PLUME_PURGE_API` | *(absent)* | `1` arme les routes HTTP de purge (admin-only). Absent → elles refusent. |
-| `PLUME_PURGE_ACTOR` | *(absent)* | Nom de l'humain responsable, **ajouté** à l'acteur système inscrit au registre. |
+| `PLUME_PURGE_API` | *(absent)* | `1` arms the HTTP purge routes (admin-only). Absent → they refuse. |
+| `PLUME_PURGE_ACTOR` | *(absent)* | Name of the responsible human, **added** to the system actor recorded in the ledger. |

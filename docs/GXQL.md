@@ -1,548 +1,548 @@
-# GXQL — le langage de recherche
+# GXQL — the search language
 
-[Français](GXQL.md) | [English](GXQL.en.md)
+[English](GXQL.md) | [Français](GXQL.fr.md)
 
-GXQL (*GuatX Query Language*, **anciennement « SOQL »** : même langage, même syntaxe, seul le nom a
-changé) est un langage à tubes, d'inspiration SPL, **compilé en SQL de lecture seule**. On écrit un
-filtre, on enchaîne des étapes séparées par `|`, et chaque étape enveloppe la précédente dans une
-sous-requête.
+GXQL (*GuatX Query Language*, **formerly "SOQL"**: same language, same syntax, only the name
+changed) is a pipe-based language, inspired by SPL, **compiled into read-only SQL**. You write a
+filter, chain stages separated by `|`, and each stage wraps the previous one in a
+subquery.
 
 ```
 search source=sshd "Failed password" | stats count by src_ip | where count > 5 | sort -count
 ```
 
-Ce document décrit **la grammaire réellement acceptée**, ses bornes, et — ce qui compte autant —
-**ce qu'elle n'accepte pas**, parce que plusieurs constructions qu'un lecteur venu de SPL croit
-disponibles ne le sont pas.
+This document describes **the grammar actually accepted**, its bounds, and — just as important —
+**what it does not accept**, because several constructs that a reader coming from SPL believes are
+available are not.
 
 ---
 
-## 1. Où vit le compilateur, et comment redériver ce document
+## 1. Where the compiler lives, and how to re-derive this document
 
-**Le compilateur ne vit pas dans ce dépôt.** Il est dans la caisse partagée `guatx-core`, résolue
-par une étiquette git épinglée dans `daemon/Cargo.toml`, et c'est le **seul** chemin de compilation :
-il n'existe plus d'implémentation de repli ni de bascule.
+**The compiler does not live in this repository.** It is in the shared `guatx-core` crate, resolved
+through a git tag pinned in `daemon/Cargo.toml`, and it is the **only** compilation path:
+there is no longer any fallback implementation or toggle.
 
 ```sh
-grep -n 'guatx-core' daemon/Cargo.toml        # la source, et l'étiquette épinglée
+grep -n 'guatx-core' daemon/Cargo.toml        # the source, and the pinned tag
 ```
 
-Ce qui **est** dans ce dépôt, et qui rend le vocabulaire vérifiable sans cloner la caisse : les
-tables de description de `daemon/src/handlers/soql_meta.rs`, miroirs un-pour-un des listes du
-compilateur, qu'un test refuse de laisser incomplètes.
+What **is** in this repository, and makes the vocabulary verifiable without cloning the crate: the
+description tables in `daemon/src/handlers/soql_meta.rs`, one-to-one mirrors of the
+compiler's lists, which a test refuses to let become incomplete.
 
 ```sh
-# le vocabulaire, compté SUR L'ARBRE plutôt que recopié ici
+# the vocabulary, counted ON THE TREE rather than copied here
 for B in DOC_COMMANDS DOC_STATS_FUNCTIONS DOC_EVAL_FUNCTIONS DOC_OPERATORS DOC_FIELDS; do
   printf '%-22s ' "$B"
   sed -n "/const $B/,/^];/p" daemon/src/handlers/soql_meta.rs | grep -c '^    ("'
 done
 ```
 
-**Relevé sur l'arbre suivi le 2026-08-25** : 20 commandes de tube, 8 fonctions d'agrégation,
-15 fonctions d'`eval`, 8 opérateurs de filtre, 14 champs décrits.
+**Read from the tracked tree on 2026-08-25**: 20 pipe commands, 8 aggregation functions,
+15 `eval` functions, 8 filter operators, 14 described fields.
 
-Sur une instance qui tourne, `GET /api/soql/schema` rend **tout** le vocabulaire — commandes,
-fonctions, opérateurs, mots-clés, champs, valeurs d'énumération et descriptions — en un seul appel.
-C'est ce que la barre de recherche de la console utilise pour sa complétion ; c'est aussi la source
-à interroger plutôt que de croire une page.
+On a running instance, `GET /api/soql/schema` returns **the whole** vocabulary — commands,
+functions, operators, keywords, fields, enumeration values and descriptions — in a single call.
+It is what the console's search bar uses for its completion; it is also the source
+to query rather than trusting a page.
 
 ---
 
-## 2. Le filtre, avant le premier tube
+## 2. The filter, before the first pipe
 
-### 2.1 Ce qui s'écrit
+### 2.1 What can be written
 
-| Forme | Effet |
+| Form | Effect |
 |---|---|
-| `champ=valeur` | égalité ; `:` en est un alias exact |
-| `champ!=valeur` | différence |
-| `champ>valeur` `champ<valeur` `champ>=` `champ<=` | comparaisons ; **numériques** si la valeur est un nombre |
-| `champ=~motif` | expression régulière |
-| `champ=~motif` · `champ:~motif` | un `~` en **tête de valeur**, sur `=` ou `:`, bascule aussi en expression régulière |
-| `champ=val*` | joker : traduit en `LIKE`, `*` devenant `%` |
-| `champ!=val*` | joker nié |
-| `champ in (a, b, c)` · `champ not in (…)` | appartenance ; une liste **textuelle positive** compare sans tenir compte de la casse |
-| `*` seul | tout ; aucun filtre n'est émis |
-| un mot isolé | **recherche plein texte** dans `message` |
+| `champ=valeur` | equality; `:` is an exact alias of it |
+| `champ!=valeur` | inequality |
+| `champ>valeur` `champ<valeur` `champ>=` `champ<=` | comparisons; **numeric** if the value is a number |
+| `champ=~motif` | regular expression |
+| `champ=~motif` · `champ:~motif` | a `~` at the **start of the value**, on `=` or `:`, also switches to a regular expression |
+| `champ=val*` | wildcard: translated into `LIKE`, `*` becoming `%` |
+| `champ!=val*` | negated wildcard |
+| `champ in (a, b, c)` · `champ not in (…)` | membership; a **positive text** list compares case-insensitively |
+| `*` alone | everything; no filter is emitted |
+| a lone word | **full-text search** in `message` |
 
-### 2.2 Ce qui NE s'écrit pas — et c'est le piège principal
+### 2.2 What can NOT be written — and this is the main trap
 
-**Il n'y a que du ET, et il est implicite.** Toutes les conditions du filtre de base sont jointes par
-`AND`. Il n'existe :
+**There is only AND, and it is implicit.** All the conditions of the base filter are joined by
+`AND`. There is:
 
-- **aucun `OR`** — un `OR` tapé dans la barre devient un terme plein texte, c'est-à-dire une
-  recherche du mot « OR » dans les messages ;
-- **aucun `NOT` en préfixe** — la négation s'écrit `!=` ou `not in (…)` ;
-- **aucun groupement par parenthèses.** Les parenthèses ne groupent pas : elles repartent en **termes
-  plein texte**. Écrire `search (foo in (1,2))` produit la condition d'appartenance **plus** deux
-  recherches de texte, l'une pour `(` et l'autre pour `)`. Ce n'est pas une déduction : le
-  compilateur porte ce cas en commentaire, avec cet exemple précis, à l'endroit qui remet le
-  groupement de tête dans le texte résiduel.
+- **no `OR`** — an `OR` typed in the bar becomes a full-text term, that is, a
+  search for the word "OR" in the messages;
+- **no prefix `NOT`** — negation is written `!=` or `not in (…)`;
+- **no grouping with parentheses.** Parentheses do not group: they fall back into **full-text
+  terms**. Writing `search (foo in (1,2))` produces the membership condition **plus** two
+  text searches, one for `(` and the other for `)`. This is not an inference: the
+  compiler carries this case in a comment, with this exact example, at the place that puts the
+  leading grouping back into the residual text.
 
-**Le seul endroit du langage où `and`, `or`, `not` et de vraies parenthèses existent est une
-expression `eval`.** D'où le motif idiomatique pour exprimer une disjonction :
+**The only place in the language where `and`, `or`, `not` and real parentheses exist is an
+`eval` expression.** Hence the idiomatic pattern for expressing a disjunction:
 
 ```
 search category=auth | eval suspect = severity>=3 or src_ip="203.0.113.7" | where suspect = 1
 ```
 
-**`eval` n'accepte pas d'expression régulière** : le `~` y est refusé en le nommant
-(`eval : caractère non autorisé : '~'`). La ligne publiée ici jusqu'au 2026-08-26 en portait une —
-elle ne compilait pas. Mesuré, et corrigé, en compilant : voir §10.
+**`eval` does not accept a regular expression**: the `~` is refused there by name
+(`eval : caractère non autorisé : '~'`). The line published here until 2026-08-26 carried one —
+it did not compile. Measured, and corrected, by compiling: see §10.
 
-### 2.3 Un nom de champ mal écrit est REFUSÉ, pas ignoré
+### 2.3 A misspelt field name is REFUSED, not ignored
 
-Un identifiant qui sort de la forme attendue — `x-forwarded-for=…`, `http.status=…` — ne devient pas
-un filtre muet sur son dernier segment : la requête est **refusée**, le nom fautif est cité **en
-entier**, et le message suggère les guillemets. C'est un choix : un filtre qui porte sur autre chose
-que ce qu'on a écrit est pire qu'une erreur.
+An identifier that departs from the expected form — `x-forwarded-for=…`, `http.status=…` — does not become
+a silent filter on its last segment: the query is **refused**, the offending name is quoted **in
+full**, and the message suggests quotes. This is a choice: a filter that applies to something other
+than what was written is worse than an error.
 
-### 2.4 Limite connue : une barre verticale dans une expression régulière
+### 2.4 Known limitation: a vertical bar inside a regular expression
 
-**Il n'y a pas d'alternance possible dans une expression régulière aujourd'hui.** Le compilateur
-découpe la requête en étapes sur chaque `|` de premier niveau **avant** de lire les guillemets : il ne
-connaît que les crochets `[ … ]` comme groupement (`soql_split_pipes`, dans le cœur). Écrire
-`search message=~"(refused|denied)"` coupe donc la requête en deux étapes, et la seconde n'est pas une
-commande connue. Les guillemets ne protègent pas la barre.
+**No alternation is possible inside a regular expression today.** The compiler
+splits the query into stages on every top-level `|` **before** reading quotes: it
+only knows square brackets `[ … ]` as grouping (`soql_split_pipes`, in the core). Writing
+`search message=~"(refused|denied)"` therefore cuts the query into two stages, and the second is not a
+known command. Quotes do not protect the bar.
 
-Ce qui s'écrit à la place, et ce que chaque forme veut dire :
+What can be written instead, and what each form means:
 
-| Forme | Effet |
+| Form | Effect |
 |---|---|
-| `message=~"a\x7cb"` | la séquence `\x7c` est une barre verticale **littérale** pour le moteur d'expressions régulières : elle cherche le texte `a\|b`, ce n'est **pas** une alternance |
-| `message=~"a[\|]b"` | idem — une classe de caractères qui contient la barre ; le découpage ignore ce qui est entre crochets |
-| une alternance (`a` **ou** `b`) | **aucune forme** : une classe de caractères ne choisit qu'un caractère, jamais un mot. Écrivez deux recherches, ou une disjonction dans un `eval` (§2.2) sur des comparaisons sans expression régulière |
+| `message=~"a\x7cb"` | the sequence `\x7c` is a **literal** vertical bar for the regular expression engine: it searches for the text `a\|b`, it is **not** an alternation |
+| `message=~"a[\|]b"` | likewise — a character class that contains the bar; the splitting ignores what is between square brackets |
+| an alternation (`a` **or** `b`) | **no form**: a character class only chooses one character, never a word. Write two searches, or a disjunction in an `eval` (§2.2) over comparisons without a regular expression |
 
-Il n'existe pas non plus de fonction `match()` : la liste des fonctions d'`eval` (§4.2) est fermée, et
-`where` n'accepte qu'une comparaison (§3.1).
+There is no `match()` function either: the list of `eval` functions (§4.2) is closed, and
+`where` only accepts a comparison (§3.1).
 
-**Ce qu'un motif a le droit de coûter.** Un seul constructeur compile tous les motifs d'une requête
-(`champ=~motif`, `champ:~motif`, `| rex`) : celui du chemin chaud **et** celui du tier froid, et l'import
-Sigma (`|re`) valide ses motifs par le même. Il borne trois choses :
+**What a pattern is allowed to cost.** A single builder compiles all the patterns of a query
+(`champ=~motif`, `champ:~motif`, `| rex`): the one on the hot path **and** the one on the cold tier, and the Sigma
+import (`|re`) validates its patterns with the same one. It bounds three things:
 
-- **la longueur du motif : 512 octets** (des octets, pas des caractères : un `é` en compte deux). Au-delà,
-  la requête est refusée en `400`, et le champ `error` de la réponse porte le message
-  « motif regex trop long (max 512) » ;
-- **la taille du programme compilé : 1 Mio** par automate. Un motif court peut la dépasser — `\w` est
-  Unicode, `\w{100}` suffit. Refus en `400` aussi, avec le message du moteur :
-  `Compiled regex exceeds size limit of 1048576 bytes.` ;
-- **le cache du DFA paresseux : 1 Mio**. Le dépasser ne refuse rien : la recherche continue sur un moteur
-  plus lent, sans message.
+- **pattern length: 512 bytes** (bytes, not characters: an `é` counts as two). Beyond that,
+  the query is refused with `400`, and the `error` field of the response carries the message
+  "motif regex trop long (max 512)";
+- **size of the compiled program: 1 MiB** per automaton. A short pattern can exceed it — `\w` is
+  Unicode, `\w{100}` is enough. Also refused with `400`, with the engine's message:
+  `Compiled regex exceeds size limit of 1048576 bytes.`;
+- **the lazy DFA cache: 1 MiB**. Exceeding it refuses nothing: the search continues on a slower
+  engine, without a message.
 
-Chaque connexion de lecture garde quatre motifs compilés par fonction (`=~` d'un côté, `rex` de
-l'autre) : une requête qui en combine quelques-uns ne les recompile pas à chaque ligne. Au froid, un
-motif refusé n'est pas évalué : la requête retombe sur le chemin chaud, qui rend le même refus. À
-l'import Sigma, une règle dont le motif généré dépasse 512 octets, ou que le constructeur refuse, est
-signalée et **non importée**.
+Each read connection keeps four compiled patterns per function (`=~` on one side, `rex` on the
+other): a query that combines a few of them does not recompile them for every row. On the cold tier, a
+refused pattern is not evaluated: the query falls back to the hot path, which returns the same refusal. At
+Sigma import, a rule whose generated pattern exceeds 512 bytes, or that the builder refuses, is
+reported and **not imported**.
 
-**Le coût d'une expression régulière croît avec la fenêtre.** Elle est évaluée ligne par ligne par une
-fonction SQL (moteur `regex` de Rust, temps linéaire) et aucun index ne la sert : sur une grande
-fenêtre, elle lit toutes les lignes que le reste du filtre laisse passer. Resserrez la fenêtre, et
-filtrez d'abord sur une colonne réelle (`source`, `host`, `category`) ou un champ chaud (§5.2) :
-`search source=sshd category=auth message=~"Invalid user"` ne passe le motif que sur les lignes de
-cette source. **Ce que les bornes ne tiennent pas** : un motif admis reste cher sur une grande fenêtre,
-et les requêtes interactives se partagent un sémaphore (`PLUME_QUERY_CONCURRENCY`, défaut 3). Quelques
-requêtes lourdes lancées ensemble peuvent donc faire attendre toutes les autres recherches de la
-console, jusqu'à ce qu'elles finissent ou soient interrompues par leur budget de temps.
+**The cost of a regular expression grows with the window.** It is evaluated row by row by a
+SQL function (Rust's `regex` engine, linear time) and no index serves it: over a large
+window, it reads every row that the rest of the filter lets through. Narrow the window, and
+filter first on a real column (`source`, `host`, `category`) or a hot field (§5.2):
+`search source=sshd category=auth message=~"Invalid user"` only runs the pattern on the rows of
+that source. **What the bounds do not hold**: an accepted pattern remains expensive over a large window,
+and interactive queries share a semaphore (`PLUME_QUERY_CONCURRENCY`, default 3). A few
+heavy queries launched together can therefore make every other search in the
+console wait, until they finish or are interrupted by their time budget.
 
 ---
 
-## 3. Les vingt commandes de tube
+## 3. The twenty pipe commands
 
-| Commande | Ce qu'elle fait |
+| Command | What it does |
 |---|---|
-| `stats` | agrège : une ou plusieurs mesures, éventuellement groupées par `by` |
-| `timechart` | série temporelle : une mesure par intervalle (`span=`) |
-| `where` | filtre **après** un tube — voir la restriction ci-dessous |
-| `sort` | trie — voir la restriction ci-dessous |
-| `head` / `limit` | ne garde que les N premières lignes ; un N négatif est **refusé** (SQLite y verrait « illimité ») |
-| `rex` | extrait des champs d'un texte par une expression régulière à groupes nommés |
-| `fields` | restreint les colonnes rendues |
-| `table` | présente les colonnes listées |
-| `rename` | renomme un champ (`champ as alias`) |
-| `dedup` | garde le premier événement par champ |
-| `top` / `rare` | valeurs les plus / les moins fréquentes |
-| `eventstats` | comme `stats`, mais rattache l'agrégat à chaque ligne sans les réduire |
-| `rate` | taux par unité de temps |
-| `eval` | crée un champ à partir d'une expression |
-| `append` | ajoute les résultats d'une sous-recherche `[search …]` |
-| `join` | joint le flux à une sous-recherche sur un champ commun |
-| `mvexpand` | éclate un champ multivalué en une ligne par valeur |
-| `lookup` | enrichit via une table de correspondance (`… OUTPUT …`) |
+| `stats` | aggregates: one or more measures, optionally grouped with `by` |
+| `timechart` | time series: one measure per interval (`span=`) |
+| `where` | filters **after** a pipe — see the restriction below |
+| `sort` | sorts — see the restriction below |
+| `head` / `limit` | keeps only the first N rows; a negative N is **refused** (SQLite would read it as "unlimited") |
+| `rex` | extracts fields from a text with a regular expression with named groups |
+| `fields` | restricts the columns returned |
+| `table` | presents the listed columns |
+| `rename` | renames a field (`champ as alias`) |
+| `dedup` | keeps the first event per field |
+| `top` / `rare` | most / least frequent values |
+| `eventstats` | like `stats`, but attaches the aggregate to each row without reducing them |
+| `rate` | rate per unit of time |
+| `eval` | creates a field from an expression |
+| `append` | appends the results of a `[search …]` subsearch |
+| `join` | joins the stream to a subsearch on a common field |
+| `mvexpand` | expands a multivalued field into one row per value |
+| `lookup` | enriches through a lookup table (`… OUTPUT …`) |
 
-Deux **bases** existent : `search` (le défaut, sur les événements) et `metric` (sur les séries
-d'observabilité). Quatre mots structurants les accompagnent : `by`, `span=`, `as`, `OUTPUT`.
+Two **bases** exist: `search` (the default, on events) and `metric` (on observability
+series). Four structural words accompany them: `by`, `span=`, `as`, `OUTPUT`.
 
-Une commande inconnue est **refusée en la nommant**, jamais ignorée.
+An unknown command is **refused by name**, never ignored.
 
-### 3.1 Deux restrictions — et le piège n'est pas le refus, c'est l'absence de refus
+### 3.1 Two restrictions — and the trap is not the refusal, it is the absence of refusal
 
-**MESURÉ LE 2026-08-27 EN COMPILANT** chaque forme ci-dessous par `guatx_core::soql::to_sql`, à
-l'étiquette qu'épingle `daemon/Cargo.toml`. La version précédente de cette section était établie par
-LECTURE des compilateurs d'étape, et elle se trompait sur le point qui compte.
+**MEASURED ON 2026-08-27 BY COMPILING** each form below with `guatx_core::soql::to_sql`, at
+the tag pinned by `daemon/Cargo.toml`. The previous version of this section was established by
+READING the stage compilers, and it was wrong on the point that matters.
 
-- **`where` n'accepte qu'UNE comparaison scalaire, ou UNE clause `in`/`not in` entière.** Il n'y a ni
-  `and` ni `or` dans un `where`.
-- **`sort` ne trie que sur UN champ** — le jeton qui suit la commande, préfixé de `-` pour
-  décroissant.
+- **`where` accepts only ONE scalar comparison, or ONE whole `in`/`not in` clause.** There is neither
+  `and` nor `or` in a `where`.
+- **`sort` sorts on only ONE field** — the token that follows the command, prefixed with `-` for
+  descending.
 
-Une version antérieure de cette page invitait le lecteur à comprendre « pourquoi son
-`where a=1 and b=2` **échoue** ». **C'est faux, et faux du mauvais côté : rien n'échoue.**
+An earlier version of this page invited the reader to understand "why their
+`where a=1 and b=2` **fails**". **That is false, and false on the wrong side: nothing fails.**
 
-| Ce qu'on écrit après un tube | Ce que le compilateur émet | Ce que l'exploitant obtient |
+| What is written after a pipe | What the compiler emits | What the operator gets |
 |---|---|---|
-| `where count > 5 and count < 100` | `WHERE "count" > '5 and count < 100'` | **aucun refus** — la fin de la ligne devient un littéral de texte, la comparaison porte sur une chaîne, la réponse est vide et a l'air complète |
-| `where a=1 and b=2` | `WHERE json_extract(fields,'$.a') = '1 and b=2'` | idem |
-| `sort host severity` | `ORDER BY "host" ASC` | **aucun refus** — le second champ est jeté en silence |
-| `sort host,severity` | *rien* | refusé : `sort : champ invalide : host,severity` |
+| `where count > 5 and count < 100` | `WHERE "count" > '5 and count < 100'` | **no refusal** — the end of the line becomes a text literal, the comparison applies to a string, the answer is empty and looks complete |
+| `where a=1 and b=2` | `WHERE json_extract(fields,'$.a') = '1 and b=2'` | likewise |
+| `sort host severity` | `ORDER BY "host" ASC` | **no refusal** — the second field is silently dropped |
+| `sort host,severity` | *nothing* | refused: `sort : champ invalide : host,severity` |
 
-Un second terme n'est donc signalé que s'il porte une **virgule** : c'est la virgule qui casse la
-forme d'un identifiant, pas la conjonction. Une espace passe.
+A second term is therefore only reported if it carries a **comma**: it is the comma that breaks the
+form of an identifier, not the conjunction. A space gets through.
 
-La conjonction s'écrit par un **tube** — `… | where a=1 | where b=2` — et celle-là est rendue
-exactement : chaque étape enveloppe la précédente. La disjonction s'écrit dans un `eval` (§2.2).
+Conjunction is written with a **pipe** — `… | where a=1 | where b=2` — and that one is rendered
+exactly: each stage wraps the previous one. Disjunction is written in an `eval` (§2.2).
 
-Ces écarts étaient dans les tables de description (`daemon/src/handlers/soql_meta.rs`, servies par
-`/api/soql/schema`) et dans l'aide intégrée de la console (`web/help_registry.js`, française **et**
-anglaise), pas dans le compilateur : c'est le texte affiché qui promettait plus que ce que le langage
-fait. **Quatre libellés servis** portaient la promesse, pas deux.
+These discrepancies were in the description tables (`daemon/src/handlers/soql_meta.rs`, served by
+`/api/soql/schema`) and in the console's built-in help (`web/help_registry.js`, French **and**
+English), not in the compiler: it was the displayed text that promised more than what the language
+does. **Four served labels** carried the promise, not two.
 
-#### La borne est déclarée ICI, et toute surface qui décrit la commande doit la porter
+#### The bound is declared HERE, and every surface that describes the command must carry it
 
-Le tableau ci-dessous n'est pas de la prose : un témoin de construction le LIT, et exige de chaque
-surface qui décrit la commande qu'elle porte la phrase de sa colonne. Une surface qui reviendrait à
-« un ou plusieurs champs » ne porterait plus « un champ » et ferait rougir l'intégration continue.
-Ajouter une ligne ici arme le témoin sur une commande de plus, sans le toucher.
+The table below is not prose: a build witness READS it, and requires every
+surface that describes the command to carry the phrase in its column. A surface that went back to
+"one or more fields" would no longer carry "one field" and would turn continuous integration red.
+Adding a row here arms the witness on one more command, without touching it.
 
-| Commande | Ce que le langage tient (mesuré le 2026-08-27) | Phrase exigée (fr) | Phrase exigée (en) |
+| Command | What the language holds (measured on 2026-08-27) | Required phrase (fr) | Required phrase (en) |
 |---|---|---|---|
-| `where` | UNE comparaison scalaire, ou UNE clause `in`/`not in` entière | `ni and ni or` | `no and, no or` |
-| `sort` | UN champ, le jeton qui suit la commande | `un champ` | `one field` |
+| `where` | ONE scalar comparison, or ONE whole `in`/`not in` clause | `ni and ni or` | `no and, no or` |
+| `sort` | ONE field, the token that follows the command | `un champ` | `one field` |
 
-Ce que ce témoin ne tient pas : il ne compile rien — il tient une **cohérence d'écriture** entre le
-corpus, la déclaration du démon et l'aide rendue. La mesure, elle, reste datée (§10).
+What this witness does not hold: it compiles nothing — it holds a **consistency of wording** between the
+corpus, the daemon's declaration and the rendered help. The measurement itself remains dated (§10).
 
 ---
 
-## 4. Les fonctions
+## 4. The functions
 
-### 4.1 Agrégation — utilisables par `stats`, `eventstats` et `timechart`
+### 4.1 Aggregation — usable by `stats`, `eventstats` and `timechart`
 
-| Fonction | Forme | Note |
+| Function | Form | Note |
 |---|---|---|
-| `count` | **nue**, sans parenthèses | compte les lignes ; l'alias de sortie est `count` |
-| `count(champ)` `sum` `avg` `min` `max` | `f(champ)` | l'alias de sortie est le nom de la fonction |
-| `dc(champ)` | | cardinalité — compte les valeurs distinctes |
-| `values(champ)` | | valeurs **distinctes**, concaténées, **bornées en longueur** |
-| `list(champ)` | | valeurs avec doublons, **bornées en longueur** |
+| `count` | **bare**, without parentheses | counts rows; the output alias is `count` |
+| `count(champ)` `sum` `avg` `min` `max` | `f(champ)` | the output alias is the function name |
+| `dc(champ)` | | cardinality — counts distinct values |
+| `values(champ)` | | **distinct** values, concatenated, **bounded in length** |
+| `list(champ)` | | values with duplicates, **bounded in length** |
 
-`values` et `list` sont plafonnées : au-delà, la liste est tronquée. C'est une borne mémoire
-délibérée, pas un bogue — une agrégation qui concatène sans borne est un moyen simple de faire sortir
-le démon de son budget.
+`values` and `list` are capped: beyond the cap, the list is truncated. This is a deliberate memory
+bound, not a bug — an aggregation that concatenates without bound is a simple way to push
+the daemon out of its budget.
 
-Une fonction inconnue est **refusée en la nommant**.
+An unknown function is **refused by name**.
 
-### 4.2 `eval` — la seule surface expressive
+### 4.2 `eval` — the only expressive surface
 
 `if`, `coalesce`, `ifnull`, `nullif`, `lower`, `upper`, `length`, `len`, `abs`, `round`, `min`, `max`,
 `substr`, `replace`, `trim`.
 
-Cette liste **est** l'allowlist : le compilateur la référence directement, il n'en tient pas une
-copie. La complétion de la console ne peut donc pas diverger de ce que le compilateur accepte.
+This list **is** the allowlist: the compiler references it directly, it does not keep a
+copy of it. The console's completion therefore cannot diverge from what the compiler accepts.
 
-**Deux bornes d'`eval`, mesurées le 2026-08-27 en compilant :**
+**Two bounds of `eval`, measured on 2026-08-27 by compiling:**
 
-- **Pas d'expression régulière** : le `~` est refusé en le nommant
-  (`eval : caractère non autorisé : '~'`). La disjonction sur un motif s'écrit donc autrement.
-- **`eval` ne résout PAS les clés du sac JSON**, et c'est la seule étape dans ce cas. Un nom y est
-  recopié **tel quel** dans le SQL : `… | eval r = dport * 2` émet `(dport * 2)`, pas
-  `json_extract(fields,'$.dport')`. Sur une **colonne réelle** (`severity`, `src_ip`, …) la requête
-  marche ; sur une clé du sac elle **compile** — donc `/api/soql/validate` répond `valid:true` — et
-  **échoue à la préparation** avec `no such column: dport`. Les deux moitiés ont été vérifiées : le
-  SQL rendu par le compilateur, puis sa préparation par SQLite sur le schéma de `db/schema.sql`.
-  C'est la même racine que l'absence de garde de nom dans `eval` (§2.3 vaut pour les autres étapes) :
-  `eval` est la seule surface arithmétique, et valider un nom y interdirait l'arithmétique.
-
----
-
-## 5. Les champs
-
-### 5.1 Colonnes réelles et sac JSON
-
-Le schéma des événements distingue deux natures de champ, et c'est essentiel pour comprendre les
-performances autant que la sécurité :
-
-| Nature | Exemples | Traduction |
-|---|---|---|
-| **colonne réelle** | `ts`, `host`, `source`, `category`, `severity`, `src_ip`, `dst_ip`, `url`, `xff`, `message` | identifiant quoté ; les colonnes sont en **liste blanche** |
-| **clé du sac JSON** | tout le reste | `json_extract(fields, '$.<nom>')`, avec conversion numérique en comparaison chiffrée |
-
-**À dire franchement : les clés du sac JSON ne sont PAS en liste blanche.** N'importe quel
-identifiant de forme valide est extrait. Ce qui empêche l'injection n'est pas la liste, c'est la
-**forme** exigée de l'identifiant (lettres, chiffres, tiret bas — rien d'autre), le quotage des
-identifiants générés et l'échappement des littéraux.
-
-### 5.2 Les champs « chauds »
-
-Une douzaine de clés JSON portent un **index d'expression** en base — `action`, `user`, `owner`,
-`kind`, `ns`, `role`, `scope`, `verb`, `resource`, `operation`, `dir`, `risk`. Filtrer sur celles-là
-est bien moins coûteux que sur une clé quelconque du sac.
-
-Cette liste existe en deux endroits — le cœur et le démon — et **une divergence ne compile pas** :
-une assertion constante compare les deux tableaux à la compilation. Un contrat tenu par le
-compilateur ne peut pas dériver.
-
-### 5.3 Le masquage se fait à la compilation
-
-Quand un filtre de champ masque une colonne pour le rôle courant, le compilateur **refuse** la
-requête au lieu de rendre une valeur creuse — y compris pour le plein texte, qui porte sur `message`.
-Une requête qui rendrait un résultat différent selon le rôle serait un oracle ; il vaut mieux un
-refus lisible.
+- **No regular expression**: the `~` is refused by name
+  (`eval : caractère non autorisé : '~'`). A disjunction on a pattern must therefore be written differently.
+- **`eval` does NOT resolve the keys of the JSON bag**, and it is the only stage in this situation. A name there is
+  copied **as is** into the SQL: `… | eval r = dport * 2` emits `(dport * 2)`, not
+  `json_extract(fields,'$.dport')`. On a **real column** (`severity`, `src_ip`, …) the query
+  works; on a bag key it **compiles** — so `/api/soql/validate` answers `valid:true` — and
+  **fails at preparation** with `no such column: dport`. Both halves were verified: the
+  SQL returned by the compiler, then its preparation by SQLite on the schema of `db/schema.sql`.
+  It is the same root cause as the absence of a name guard in `eval` (§2.3 applies to the other stages):
+  `eval` is the only arithmetic surface, and validating a name there would forbid arithmetic.
 
 ---
 
-## 6. Les bornes
+## 5. The fields
 
-### 6.1 À l'exécution
+### 5.1 Real columns and the JSON bag
 
-| Borne | Levier | Défaut |
+The event schema distinguishes two kinds of field, and this is essential to understand
+performance as much as security:
+
+| Kind | Examples | Translation |
 |---|---|---|
-| budget de temps d'une requête « automatique » (panneaux, règles, pagination) | `PLUME_QUERY_BUDGET_MS` | `5000` ms |
-| budget d'une requête **interactive** | `PLUME_QUERY_BUDGET_INTERACTIVE_MS` | `60000` ms |
-| plafond de lignes rendues | `PLUME_QUERY_MAX` | `5000` ; une valeur hors de `1`–`100000` retombe sur `5000` (§6.4) |
-| défaut et plafond de `/api/search` | `PLUME_SEARCH_LIMIT` / `PLUME_SEARCH_MAX` | `100` / `5000` |
-| requêtes simultanées | `PLUME_QUERY_CONCURRENCY` | `3`, **partagé** entre `/api/query` et `/api/search` |
-| jetons réservés aux requêtes légères | `PLUME_QUERY_RESERVE_LIGHT` | `1` : les lourdes (`interactive:true`, export, Pivot) tiennent au plus N − 1 jetons |
+| **real column** | `ts`, `host`, `source`, `category`, `severity`, `src_ip`, `dst_ip`, `url`, `xff`, `message` | quoted identifier; the columns are **allowlisted** |
+| **JSON bag key** | everything else | `json_extract(fields, '$.<nom>')`, with numeric conversion in a numeric comparison |
 
-Le dépassement de budget **interrompt** la requête en cours ; le dépassement du plafond de lignes la
-**tronque** et le signale dans les statistiques de réponse plutôt que de rendre un résultat partiel
-qui aurait l'air complet. Une requête peut aussi être **annulée** par le client, par identifiant.
+**To say it plainly: JSON bag keys are NOT allowlisted.** Any
+identifier of valid form is extracted. What prevents injection is not the list, it is the
+**form** required of the identifier (letters, digits, underscore — nothing else), the quoting of
+generated identifiers and the escaping of literals.
 
-### 6.2 À la compilation, avant toute exécution
+### 5.2 "Hot" fields
 
-Le compilateur borne le texte d'entrée, le nombre d'étapes, la taille du SQL produit — recalculée
-**après chaque étape**, pas seulement à la fin — l'intervalle d'un `timechart`, et la profondeur des
-sous-recherches. Ces bornes portent des noms préfixés `GUATX_SOQL_MAX_*`. Une valeur présente mais
-illisible est une **erreur rendue à l'appelant**, jamais un repli silencieux.
+About a dozen JSON keys carry an **expression index** in the database — `action`, `user`, `owner`,
+`kind`, `ns`, `role`, `scope`, `verb`, `resource`, `operation`, `dir`, `risk`. Filtering on these
+is much cheaper than on an arbitrary bag key.
 
-### 6.3 La lecture seule, en couches
+This list exists in two places — the core and the daemon — and **a divergence does not compile**:
+a constant assertion compares the two arrays at compile time. A contract held by the
+compiler cannot drift.
 
-C'est la propriété de sécurité centrale du produit, et elle ne repose pas sur un seul contrôle :
+### 5.3 Masking happens at compile time
 
-1. la connexion est **ouverte en lecture seule** ;
-2. `PRAGMA query_only=ON` ;
-3. l'instruction préparée est **rejetée si elle n'est pas en lecture** ;
-4. un **autorisateur** SQLite refuse les colonnes de mot de passe et de jeton **même à un
-   administrateur** ;
-5. les filtres de champ sont appliqués **à la compilation** (§5.3).
+When a field filter masks a column for the current role, the compiler **refuses** the
+query instead of returning a hollow value — including for full text, which applies to `message`.
+A query that returned a different result depending on the role would be an oracle; a
+readable refusal is better.
 
-**Précision qui corrige une formulation trop courte** : le chemin GXQL **n'utilise pas de paramètres
-liés** — il **incorpore des littéraux échappés** et n'accepte que des identifiants de forme
-restreinte. Ce sont l'échappement et la contrainte de forme, non le paramétrage, qui ferment
-l'injection sur ce chemin. Les paramètres liés existent, mais sur `/api/search`. De même, « un seul
-`SELECT` » n'est pas un contrôle explicite : c'est une **propriété structurelle** — le compilateur
-n'émet qu'un `SELECT` fait de sous-requêtes imbriquées, ne peut pas produire de `;`, et la
-préparation ne compile de toute façon que la première instruction.
+---
 
-### 6.4 Ce que le plafond coupe, et comment tout lire
+## 6. The bounds
 
-**`5000` n'est pas une limite de ce que plume interroge ni de ce qu'il compte.** C'est le nombre de
-**lignes rendues** dans un tableau — et, sous tier froid seulement, le nombre de lignes froides
-recopiées par un chemin de lecture (plus bas).
+### 6.1 At runtime
 
-`PLUME_QUERY_MAX` vaut `5000` par défaut et n'accepte qu'un entier de `1` à `100000`. **Toute autre
-valeur — au-delà de `100000`, `0`, négative, illisible — retombe en silence sur `5000`** : aucun refus,
-aucune ligne au démarrage. Écrire `PLUME_QUERY_MAX=200000` ne relève donc rien du tout.
+| Bound | Lever | Default |
+|---|---|---|
+| time budget of an "automatic" query (panels, rules, pagination) | `PLUME_QUERY_BUDGET_MS` | `5000` ms |
+| budget of an **interactive** query | `PLUME_QUERY_BUDGET_INTERACTIVE_MS` | `60000` ms |
+| ceiling on returned rows | `PLUME_QUERY_MAX` | `5000`; a value outside `1`–`100000` falls back to `5000` (§6.4) |
+| default and ceiling of `/api/search` | `PLUME_SEARCH_LIMIT` / `PLUME_SEARCH_MAX` | `100` / `5000` |
+| simultaneous queries | `PLUME_QUERY_CONCURRENCY` | `3`, **shared** between `/api/query` and `/api/search` |
+| permits reserved for light queries | `PLUME_QUERY_RESERVE_LIGHT` | `1`: heavy ones (`interactive:true`, export, Pivot) hold at most N − 1 permits |
 
-Le plafond s'applique une fois le SQL exécuté : au-delà, la lecture s'arrête, `truncated` est posé dans
-les statistiques de la réponse, et la console le dit. Sans tier froid, il ne touche pas au calcul :
+Exceeding the budget **interrupts** the running query; exceeding the row ceiling
+**truncates** it and reports it in the response statistics rather than returning a partial result
+that would look complete. A query can also be **cancelled** by the client, by identifier.
 
-- **un agrégat compte tout.** `search source=sshd | stats count` rend une seule ligne, et ce compte
-  porte sur tous les événements de la fenêtre, quel qu'en soit le nombre ;
-- **mais les groupes sont des lignes.** `stats count by src_ip` sur plus de `PLUME_QUERY_MAX` adresses
-  rend les premiers groupes et signale la troncature ; chaque compte rendu reste complet. Un
-  `| sort -count | head 100` après le `stats` choisit lesquels ;
-- **le tableau de lignes brutes est ce qui est coupé.** Pour le parcourir en entier, la pagination par
-  **curseur** de `/api/query` lit page par page sans plafond de comptage (exemple ci-dessous). Elle ne
-  vaut que pour une requête qui **garde ses lignes** (filtre, `table`, `fields`, tri par date) ; sur une
-  autre forme, la réponse retombe sur la pagination par décalage, plafonnée ;
-- **resserrer la fenêtre** (`from`, `to`) reste le moyen le plus sûr de lire moins.
+### 6.2 At compile time, before any execution
 
-**Avec le tier froid actif** (binaire construit avec `cold_tier`, `PLUME_COLD_TIER=1`) et une fenêtre
-qui descend dans le froid, la première puce ne tient plus toujours. Un des chemins de lecture recopie
-les lignes froides de la fenêtre dans une table temporaire, **au plus `PLUME_QUERY_MAX` lignes** (pour
-l'export complet, `/api/export` : au plus `PLUME_QUERY_MAX` ou sa borne et une ligne de plus, le plus grand
-des deux, voir la fin de cette section), puis exécute la requête sur cette copie. Quand la recopie a atteint ce plafond :
+The compiler bounds the input text, the number of stages, the size of the SQL produced — recomputed
+**after each stage**, not only at the end — the interval of a `timechart`, and the depth of
+subsearches. These bounds carry names prefixed `GUATX_SOQL_MAX_*`. A value that is present but
+unreadable is an **error returned to the caller**, never a silent fallback.
 
-- une requête dont **chaque étage est par événement** — `where`, `head`, `limit`, `eval`, `rex`,
-  `rename`, `table`, `fields`, et rien d'autre — rend des lignes vraies, en nombre incomplet, avec
-  `truncated` ;
-- toute autre requête — un agrégat (`stats`, `timechart`, `top`, `rare`), mais aussi `eventstats`,
-  `rate`, `dedup`, `sort`, `join`, `append`, `lookup`, `mvexpand` — **calcule ou choisit sur
-  l'ensemble**, et elle est **refusée** : la réponse est un `422` dont le corps porte
-  `"reason": "cold_truncated_aggregate"`, `"truncated": true`, `cold_rows_hydrated` et `cold_row_cap`
-  (les lignes recopiées et le plafond), et un message `error` qui nomme l'étape en cause et les voies
-  qui échappent au plafond. **Jamais un nombre calculé sur un
-  échantillon.**
+### 6.3 Read-only, in layers
 
-Certaines formes n'empruntent pas ce chemin : un pré-agrégé (réponse marquée `stats.approx`, donc
-approximative) ou le moteur colonnaire, qui lit tout le froid sans le recopier, peuvent les servir
-d'abord ; le message du refus les détaille. Pour obtenir une réponse là où le refus tombe :
+This is the central security property of the product, and it does not rest on a single control:
 
-- **resserrer la fenêtre** jusqu'à ce que la recopie tienne sous le plafond — l'ensemble lu redevient
-  complet ;
-- **relever `PLUME_QUERY_MAX`**, jusqu'à `100000` et pas au-delà (ci-dessus) : les lignes recopiées
-  sont tenues en mémoire, c'est donc la mémoire du démon qui paie. Un export recopie au moins autant
-  de lignes, et davantage quand sa borne (`PLUME_EXPORT_MAX`, ou le `limit` de la demande) plus une
-  ligne dépasse `PLUME_QUERY_MAX` ; le message du refus nomme le plafond qui s'est appliqué.
+1. the connection is **opened read-only**;
+2. `PRAGMA query_only=ON`;
+3. the prepared statement is **rejected if it is not read-only**;
+4. a SQLite **authorizer** refuses the password and token columns **even to an
+   administrator**;
+5. field filters are applied **at compile time** (§5.3).
 
-**Parcourir toutes les lignes par curseur.** Le premier appel porte `"keyset": true` ; la réponse rend
-`next_cursor` (et `has_more`) ; l'appel suivant renvoie ce `next_cursor` **tel quel** dans le champ
-`"cursor"` du corps, champ `espace` compris quand il y figure. `next_cursor` à `null` marque la dernière
-page ; `limit` (au plus `10000`, défaut `100`) fixe la taille d'une page.
+**Clarification that corrects a wording that was too short**: the GXQL path **does not use bound
+parameters** — it **embeds escaped literals** and only accepts identifiers of restricted
+form. It is escaping and the form constraint, not parameterisation, that close
+injection on this path. Bound parameters exist, but on `/api/search`. Likewise, "a single
+`SELECT`" is not an explicit control: it is a **structural property** — the compiler
+only emits one `SELECT` made of nested subqueries, cannot produce a `;`, and
+preparation only compiles the first statement anyway.
+
+### 6.4 What the ceiling cuts, and how to read everything
+
+**`5000` is not a limit on what plume queries nor on what it counts.** It is the number of
+**rows returned** in a table — and, under the cold tier only, the number of cold rows
+copied by one read path (below).
+
+`PLUME_QUERY_MAX` is `5000` by default and only accepts an integer from `1` to `100000`. **Any other
+value — above `100000`, `0`, negative, unreadable — silently falls back to `5000`**: no refusal,
+no line at startup. Writing `PLUME_QUERY_MAX=200000` therefore raises nothing at all.
+
+The ceiling applies once the SQL has run: beyond it, reading stops, `truncated` is set in
+the response statistics, and the console says so. Without the cold tier, it does not affect the computation:
+
+- **an aggregate counts everything.** `search source=sshd | stats count` returns a single row, and that count
+  covers all the events in the window, however many there are;
+- **but groups are rows.** `stats count by src_ip` over more than `PLUME_QUERY_MAX` addresses
+  returns the first groups and reports the truncation; each count returned remains complete. A
+  `| sort -count | head 100` after the `stats` chooses which ones;
+- **the table of raw rows is what gets cut.** To go through it entirely, **cursor**
+  pagination on `/api/query` reads page by page without a counting ceiling (example below). It only
+  applies to a query that **keeps its rows** (filter, `table`, `fields`, sort by date); for any
+  other form, the response falls back to offset pagination, which is capped;
+- **narrowing the window** (`from`, `to`) remains the safest way to read less.
+
+**With the cold tier active** (binary built with `cold_tier`, `PLUME_COLD_TIER=1`) and a window
+that reaches into the cold tier, the first bullet no longer always holds. One of the read paths copies
+the window's cold rows into a temporary table, **at most `PLUME_QUERY_MAX` rows** (for
+the full export, `/api/export`: at most `PLUME_QUERY_MAX` or its bound plus one row, whichever is larger,
+see the end of this section), then runs the query on that copy. When the copy has reached that ceiling:
+
+- a query whose **every stage is per event** — `where`, `head`, `limit`, `eval`, `rex`,
+  `rename`, `table`, `fields`, and nothing else — returns true rows, in incomplete number, with
+  `truncated`;
+- any other query — an aggregate (`stats`, `timechart`, `top`, `rare`), but also `eventstats`,
+  `rate`, `dedup`, `sort`, `join`, `append`, `lookup`, `mvexpand` — **computes or chooses over
+  the whole set**, and it is **refused**: the response is a `422` whose body carries
+  `"reason": "cold_truncated_aggregate"`, `"truncated": true`, `cold_rows_hydrated` and `cold_row_cap`
+  (the rows copied and the ceiling), and an `error` message that names the stage at fault and the paths
+  that escape the ceiling. **Never a number computed on a
+  sample.**
+
+Some forms do not take this path: a pre-aggregate (response marked `stats.approx`, hence
+approximate) or the columnar engine, which reads the whole cold tier without copying it, may serve them
+first; the refusal message details them. To get an answer where the refusal falls:
+
+- **narrow the window** until the copy fits under the ceiling — the set read becomes
+  complete again;
+- **raise `PLUME_QUERY_MAX`**, up to `100000` and no further (above): the copied rows
+  are held in memory, so it is the daemon's memory that pays. An export copies at least as many
+  rows, and more when its bound (`PLUME_EXPORT_MAX`, or the request's `limit`) plus one
+  row exceeds `PLUME_QUERY_MAX`; the refusal message names the ceiling that applied.
+
+**Going through all rows by cursor.** The first call carries `"keyset": true`; the response returns
+`next_cursor` (and `has_more`); the next call sends that `next_cursor` back **as is** in the
+`"cursor"` field of the body, including the `espace` field when it is present. A `next_cursor` of `null` marks the last
+page; `limit` (at most `10000`, default `100`) sets the size of a page.
 
 ```sh
 curl -sS -u admin -H 'Content-Type: application/json' https://soc.example.org/api/query \
   -d '{"soql":"search source=sshd","from":1767225600,"to":1767312000,"keyset":true,"limit":1000}'
-# puis, pour la page suivante, la valeur de next_cursor recopiée telle quelle :
+# then, for the next page, the value of next_cursor copied as is:
 curl -sS -u admin -H 'Content-Type: application/json' https://soc.example.org/api/query \
   -d '{"soql":"search source=sshd","from":1767225600,"to":1767312000,"keyset":true,"limit":1000,
        "cursor":{"ts":1767311999,"id":48213}}'
 ```
 
-`curl -u admin` demande le mot de passe sans l'écrire dans l'historique ; `from` et `to` sont des
-secondes depuis l'époque Unix.
+`curl -u admin` prompts for the password without writing it into the history; `from` and `to` are
+seconds since the Unix epoch.
 
-`PLUME_QUERY_MAX` est lu dans l'**environnement** du démon seul, pas dans le fichier de configuration :
-sur un hôte, il se pose par un drop-in de `plume-daemon.service`.
+`PLUME_QUERY_MAX` is read from the daemon's **environment** only, not from the configuration file:
+on a host, it is set through a drop-in for `plume-daemon.service`.
 
-**L'export complet** (`/api/export`) n'obéit pas à `PLUME_QUERY_MAX` : il n'obéit qu'à sa propre borne,
-`PLUME_EXPORT_MAX` (lu dans l'environnement aussi ; défaut `50000`, et une valeur hors de `1` à `100000` rend ce défaut), ou le `limit`
-de la demande s'il est plus petit, tier froid compris. Quand l'export s'arrête à cette borne, la réponse
-le dit : `x-plume-truncated: 1`, un nom de fichier qui porte `-TRONQUE-`, et `x-plume-export-borne`, qui
-vaut la borne appliquée. Sans `x-plume-export-borne`, une coupure dite par `x-plume-truncated` vient
-d'ailleurs : plafond du pré-agrégé ; recopie froide arrêtée à son plafond quand un filtre ou un `head`
-appliqué après la recopie laisse moins de lignes que la borne ; froid non lu, que dit aussi
-`x-plume-cold-coverage: cold_coverage_unread`.
+**The full export** (`/api/export`) does not obey `PLUME_QUERY_MAX`: it only obeys its own bound,
+`PLUME_EXPORT_MAX` (also read from the environment; default `50000`, and a value outside `1` to `100000` yields that default), or the request's `limit`
+if it is smaller, cold tier included. When the export stops at that bound, the response
+says so: `x-plume-truncated: 1`, a file name that carries `-TRONQUE-`, and `x-plume-export-borne`, which
+is the bound applied. Without `x-plume-export-borne`, a cut reported by `x-plume-truncated` comes
+from elsewhere: the pre-aggregate's ceiling; a cold copy stopped at its ceiling when a filter or a `head`
+applied after the copy leaves fewer rows than the bound; cold data not read, which
+`x-plume-cold-coverage: cold_coverage_unread` also reports.
 
 ---
 
-## 7. Les surfaces HTTP
+## 7. The HTTP surfaces
 
-| Route | Méthode | Ce qu'elle prend | Ce qu'elle rend |
+| Route | Method | What it takes | What it returns |
 |---|---|---|---|
 | `/api/query` | `POST` | `{"soql": "…"}` (+ `from`, `to`, `interactive`, `qid`, pagination) | `{"columns":[…], "rows":[[…]], "stats":{…}}` |
-| `/api/search` | `GET` | `q=` et quelques jetons ad-hoc | `{"results":[…]}` |
-| `/api/soql/schema` | `GET` | — | tout le vocabulaire |
-| `/api/soql/validate` | `POST` | `{"soql": "…"}` | `{"valid":true}` ou `{"valid":false,"error":"…"}` |
-| `/api/soql/templates` | `GET` | — | la bibliothèque de gabarits |
-| `/api/export` | `POST` | comme `/api/query` | export |
-| `/api/cancel` | `POST` | `{"qid": "…"}` | annule une requête en cours |
-| `/api/ds/query` | `GET`/`POST` | GXQL sur HTTP-JSON | pour Grafana — voir [`DATASOURCE.md`](DATASOURCE.md) |
+| `/api/search` | `GET` | `q=` and a few ad-hoc tokens | `{"results":[…]}` |
+| `/api/soql/schema` | `GET` | — | the whole vocabulary |
+| `/api/soql/validate` | `POST` | `{"soql": "…"}` | `{"valid":true}` or `{"valid":false,"error":"…"}` |
+| `/api/soql/templates` | `GET` | — | the template library |
+| `/api/export` | `POST` | like `/api/query` | export |
+| `/api/cancel` | `POST` | `{"qid": "…"}` | cancels a running query |
+| `/api/ds/query` | `GET`/`POST` | GXQL over HTTP-JSON | for Grafana — see [`DATASOURCE.md`](DATASOURCE.md) |
 
-Deux points à ne pas confondre :
+Two points not to confuse:
 
-- **`/api/search` n'est pas du GXQL.** C'est une barre de recherche à analyseur ad-hoc, adossée à
-  l'index plein texte, qui accepte quelques jetons (`limite`, expression régulière, `champ:valeur`
-  avec joker). Elle rend **toujours `200`**, même sur une erreur de moteur : le champ `error` de la
-  réponse porte alors une phrase fixe, jamais le texte du moteur.
-- **`/api/soql/validate` ne touche pas la base.** Il compile et rend son verdict — pas de handle,
-  pas d'exécution. C'est l'appel que fait la console pendant la frappe.
+- **`/api/search` is not GXQL.** It is a search bar with an ad-hoc parser, backed by the
+  full-text index, which accepts a few tokens (`limite`, regular expression, `champ:valeur`
+  with wildcard). It **always returns `200`**, even on an engine error: the `error` field of the
+  response then carries a fixed phrase, never the engine's text.
+- **`/api/soql/validate` does not touch the database.** It compiles and returns its verdict — no handle,
+  no execution. It is the call the console makes while typing.
 
-**Ce que porte `error` quand une requête n'est pas servie.** Deux sources, à ne pas confondre :
+**What `error` carries when a query is not served.** Two sources, not to be confused:
 
-- **le refus du compilateur GXQL** (commande, fonction ou champ inconnu, champ masqué, borne
-  dépassée) : `400`, et `error` porte le message du compilateur, tel quel. Le compilateur
-  n'exécute rien et ne lit aucun événement, mais il détend les macros **avant** d'analyser la
-  requête : son message cite la requête de l'appelant (le nom fautif qu'il a écrit), le
-  vocabulaire fermé du langage et, quand la requête appelle une macro, un extrait du **corps de
-  cette macro** (un objet de savoir, lisible par `GET /api/knowledge`). C'est voulu : sans lui,
-  une faute de frappe serait indiagnosticable ;
-- **l'échec à l'exécution** : la classe est décidée par le code du moteur, et `error` porte une
-  phrase fixe par classe — support de la base illisible ou base occupée en `503`, refus du moteur
-  (syntaxe du SQL compilé, autorisateur, motif) en `400`, phrase du produit (annulation, budget,
-  lecture seule, mémoire, motif refusé) à l'octet en `400`. Le texte du moteur ne part jamais au
-  client ; l'exploitant trouve la classe et le code au journal du démon (`[query] WARN`).
-  `/api/rule-test` (essai d'une règle) sert les mêmes phrases, mais garde son `200` `{error, sql}`.
+- **the GXQL compiler's refusal** (unknown command, function or field, masked field, bound
+  exceeded): `400`, and `error` carries the compiler's message, as is. The compiler
+  executes nothing and reads no event, but it expands macros **before** parsing the
+  query: its message quotes the caller's query (the offending name they wrote), the
+  closed vocabulary of the language and, when the query calls a macro, an excerpt of the **body of
+  that macro** (a knowledge object, readable through `GET /api/knowledge`). This is intended: without it,
+  a typo would be impossible to diagnose;
+- **a failure at execution**: the class is decided by the engine's code, and `error` carries a
+  fixed phrase per class — unreadable database storage or busy database as `503`, engine refusal
+  (syntax of the compiled SQL, authorizer, pattern) as `400`, product phrase (cancellation, budget,
+  read-only, memory, refused pattern) byte for byte as `400`. The engine's text never goes to the
+  client; the operator finds the class and the code in the daemon's log (`[query] WARN`).
+  `/api/rule-test` (testing a rule) serves the same phrases, but keeps its `200` `{error, sql}`.
 
-**Le SQL brut** (`{"sql": …}` sur `/api/query`) est réservé aux administrateurs, et il reste soumis
-à l'autorisateur : voir la note du [`README`](../README.md#sécurité-intégrée).
+**Raw SQL** (`{"sql": …}` on `/api/query`) is reserved for administrators, and it remains subject
+to the authorizer: see the note in the [`README`](../README.md#security-built-in).
 
-Les identifiants techniques restent en `soql` — route `/api/soql/*`, clé JSON `soql`, colonne
-`is_soql`, module `guatx_core::soql`, dossier `docs/soql-templates/`. C'est un identifiant de build,
-pas un libellé utilisateur.
+Technical identifiers remain `soql` — route `/api/soql/*`, JSON key `soql`, column
+`is_soql`, module `guatx_core::soql`, folder `docs/soql-templates/`. It is a build identifier,
+not a user-facing label.
 
 ---
 
-## 8. Les gabarits livrés
+## 8. The shipped templates
 
-`docs/soql-templates/templates.json` contient **16 gabarits** (relevé sur l'arbre le 2026-08-25),
-chacun avec `id`, `title`, `keywords` (français et anglais) et `soql` :
+`docs/soql-templates/templates.json` contains **16 templates** (read from the tree on 2026-08-25),
+each with `id`, `title`, `keywords` (French and English) and `soql`:
 
 ```sh
 python3 -c "import json;d=json.load(open('docs/soql-templates/templates.json'));print(len(d['templates']));print([t['id'] for t in d['templates']])"
 ```
 
-Ils sont **embarqués dans le binaire** par `include_str!` et servis tels quels — aucune lecture de
-fichier à l'exécution. Deux conséquences : le dossier doit être présent **avant** la compilation (le
-`Dockerfile` le copie pour cette seule raison), et **chaque gabarit est prouvé compilable par un test
-de la suite**. Un gabarit qui ne compilerait plus ferait rougir l'intégration continue, pas
-l'utilisateur.
+They are **embedded in the binary** through `include_str!` and served as is — no file read
+at runtime. Two consequences: the folder must be present **before** compilation (the
+`Dockerfile` copies it for that reason alone), and **each template is proven to compile by a test
+in the suite**. A template that no longer compiled would turn continuous integration red, not
+the user's screen.
 
 ---
 
-## 9. Pourquoi le langage est fermé
+## 9. Why the language is closed
 
-**Un langage fermé est une surface d'attaque qu'on peut énumérer.** Le vocabulaire tient en cinq
-listes courtes ; ce qui n'y est pas est refusé **en le nommant**. C'est ce qui permet d'exposer une
-recherche à un rôle *viewer* sans exposer la base, et c'est aussi ce qui rend possible le projet de
-traduction depuis le langage naturel : un texte produit par un modèle est inoffensif s'il doit
-franchir un compilateur fermé avant d'atteindre le moteur.
+**A closed language is an attack surface that can be enumerated.** The vocabulary fits in five
+short lists; what is not in them is refused **by name**. This is what makes it possible to expose a
+search to a *viewer* role without exposing the database, and it is also what makes the project of
+translation from natural language possible: a text produced by a model is harmless if it must
+pass through a closed compiler before reaching the engine.
 
-**Le prix est écrit** : plusieurs constructions de SPL n'existent pas ici — pas de disjonction dans
-le filtre, pas de groupement, pas de tri multi-champs, pas de `transaction`, pas de percentile. Un
-document de spécification du dépôt en promet certaines : ce sont des souhaits, pas des capacités.
-Ce que l'importeur Sigma ne sait pas traduire fidèlement est **signalé, jamais deviné** —
-[`SIGMA-IMPORTER.md`](SIGMA-IMPORTER.md) en donne la matrice exacte.
+**The price is written down**: several SPL constructs do not exist here — no disjunction in
+the filter, no grouping, no multi-field sort, no `transaction`, no percentile. A
+specification document in the repository promises some of them: these are wishes, not capabilities.
+What the Sigma importer cannot translate faithfully is **reported, never guessed** —
+[`SIGMA-IMPORTER.md`](SIGMA-IMPORTER.md) gives the exact matrix.
 
-**Le compilateur vit dans une caisse partagée** parce que deux moitiés d'une même suite doivent
-parler le même langage. La règle de contribution qui en découle est écrite dans
-[`../CONTRIBUTING.md`](../CONTRIBUTING.md) : on le corrige sur place, on ne le duplique jamais.
+**The compiler lives in a shared crate** because two halves of the same suite must
+speak the same language. The contribution rule that follows from this is written in
+[`../CONTRIBUTING.md`](../CONTRIBUTING.md): it is fixed in place, never duplicated.
 
 ---
 
-## 10. Ce qui n'a pas été vérifié
+## 10. What was not verified
 
-- **Aucune requête n'a été exécutée contre une instance.** Ce que cette page dit de la grammaire
-  repose, pour la plus grande part, sur une **COMPILATION** : le 2026-08-27, chaque requête alors
-  publiée ici, et chaque forme du tableau de §3.1, a été passée à `guatx_core::soql::to_sql`
-  (étiquette épinglée par `daemon/Cargo.toml`) et le SQL rendu a été relevé. C'est ce passage qui a
-  montré qu'un exemple de cette page ne compilait pas (§2.2) et que sa §3.1 annonçait un échec qui
-  n'arrive pas. Les BORNES d'exécution (§6.1, §6.4) et les formes de réponse (§7) restent, elles,
-  établies par lecture des gestionnaires.
+- **No query was run against an instance.** What this page says about the grammar
+  rests, for the most part, on a **COMPILATION**: on 2026-08-27, every query then
+  published here, and every form in the table of §3.1, was passed to `guatx_core::soql::to_sql`
+  (tag pinned by `daemon/Cargo.toml`) and the SQL returned was recorded. It is this pass that
+  showed that an example on this page did not compile (§2.2) and that its §3.1 announced a failure that
+  does not happen. The runtime BOUNDS (§6.1, §6.4) and the response forms (§7) remain, for their part,
+  established by reading the handlers.
 
-  Les requêtes que cette page publie se relèvent — **sur l'arbre suivi : 6 lignes** :
+  The queries this page publishes can be listed — **on the tracked tree: 6 lines**:
 
   ```sh
   grep -noE '(^|`)(search|metric) [^`]*' docs/GXQL.md
   ```
 
-  **Trois seulement ont été compilées** le 2026-08-27 : celle de l'en-tête et les deux de §2.2. Les
-  trois autres ont été ajoutées après ce relevé et **n'ont pas été compilées** — les deux de §2.4 et
-  celle de §6.4. Elles ont été **relues** contre le source du compilateur à l'étiquette épinglée : le
-  découpage en étapes, le filtre de base et l'aiguillage des commandes. Par cette lecture, la
-  requête à alternance de §2.4 échoue sur sa seconde étape (« commande GXQL inconnue »), comme la
-  section l'annonce, et les deux autres produisent un SQL. Sont **relues, non compilées** de la même
-  façon : les formes du tableau de §2.4, les étapes citées seules de §6.4 et la requête de l'exemple
-  d'appel par curseur.
+  **Only three were compiled** on 2026-08-27: the one in the header and the two in §2.2. The
+  other three were added after that reading and **were not compiled** — the two in §2.4 and
+  the one in §6.4. They were **reread** against the compiler source at the pinned tag: the
+  splitting into stages, the base filter and the command dispatch. By that reading, the
+  alternation query of §2.4 fails on its second stage ("commande GXQL inconnue"), as the
+  section announces, and the other two produce SQL. Also **reread, not compiled** in the same
+  way: the forms in the table of §2.4, the stages quoted alone in §6.4 and the query in the
+  cursor call example.
 
-  Cette commande ne voit **pas** une requête coupée sur deux lignes, ni une requête qui ne commence
-  pas par `search` ou `metric` (une étape citée seule, `| stats count by host`), ni une requête écrite
-  dans un corps JSON. Elle ne dit pas non plus si elles compilent : rien dans ce dépôt ne les compile,
-  le compilateur vivant dans une caisse externe (§1). **Cette page est donc tenue par une relecture
-  datée, pas par un cliquet.**
-- Le **corps du compilateur** appartient à une caisse externe au dépôt : les comptes publiés en §1
-  sont dérivés des **miroirs** présents ici, qu'un test de la suite tient égaux aux listes du cœur.
-- Le **taux d'acceptation** de l'importeur Sigma sur le dépôt SigmaHQ complet **n'est pas mesuré**,
-  et aucun chiffre n'en est publié tant que le banc n'a pas été passé.
+  This command does **not** see a query split over two lines, nor a query that does not start
+  with `search` or `metric` (a stage quoted alone, `| stats count by host`), nor a query written
+  inside a JSON body. Nor does it say whether they compile: nothing in this repository compiles them,
+  since the compiler lives in an external crate (§1). **This page is therefore held by a dated
+  reread, not by a ratchet.**
+- The **compiler's body** belongs to a crate external to the repository: the counts published in §1
+  are derived from the **mirrors** present here, which a test in the suite keeps equal to the core's lists.
+- The **acceptance rate** of the Sigma importer on the complete SigmaHQ repository **is not measured**,
+  and no figure for it is published until the bench has been run.

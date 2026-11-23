@@ -1,117 +1,117 @@
-# Profil d'infra — déployer le SOC sur N'IMPORTE QUELLE infra (sans toucher au code)
+# Infrastructure profile — deploying the SOC on ANY infrastructure (without touching the code)
 
-[Français](PROFILE.md) | [English](PROFILE.en.md)
+[English](PROFILE.md) | [Français](PROFILE.fr.md)
 
-Le SOC est **générique** : le moteur (daemon), la recherche (GXQL), les parsers et l'architecture
-des collecteurs ne contiennent **rien de spécifique à une infra**. Tout ce qui dépend de TON
-environnement passe par des **variables** (env / `EnvironmentFile` des units systemd, ou env du
-Deployment k8s). Ce fichier liste ces variables — c'est le **seul** endroit à adapter.
+The SOC is **generic**: the engine (daemon), search (GXQL), the parsers and the collector
+architecture contain **nothing specific to one infrastructure**. Everything that depends on YOUR
+environment goes through **variables** (env / `EnvironmentFile` of the systemd units, or env of the
+k8s Deployment). This file lists those variables — it is the **only** place to adapt.
 
-Principe : *moteur générique + spécifique-infra en CONFIG, jamais en dur* ; chaque collecteur est un
-**plugin auto-détecté** (s'éteint proprement si l'outil/log est absent), **OFF par défaut**.
+Principle: *generic engine + infrastructure-specific in CONFIG, never hardcoded*; each collector is an
+**auto-detected plugin** (switches itself off cleanly if the tool/log is absent), **OFF by default**.
 
-> Les valeurs par défaut ci-dessous sont des **exemples GuatX** (pour compat). Sur une autre infra,
-> remplace-les par les tiennes, ou laisse vide.
+> The default values below are **GuatX examples** (for compatibility). On another infrastructure,
+> replace them with your own, or leave empty.
 
 ## 1. Agent → central (forwarder)
-| Variable | Rôle | Défaut |
+| Variable | Role | Default |
 |---|---|---|
-| `PLUME_CENTRAL` | URL du daemon central (`https://central.example` ; `http://` n'est accepté par `ship.sh`, `respond.sh`, `prom-scrape.sh`, `engagement-adapter.sh` et le collecteur Windows que vers la boucle locale, ou avec `PLUME_SHIP_ALLOW_PLAINTEXT=1` posé dans le fichier d'environnement de chaque unité) | — |
-| `PLUME_TOKEN` | token d'agent (lié à un hôte, minté sur le central par `plume-daemon token`, démon démarré une fois avant ([`../docs/INSTALLER-SANS-OUVRIR-DE-BRECHE.md` §1.1](../docs/INSTALLER-SANS-OUVRIR-DE-BRECHE.md#11-démarrer-le-démon-une-fois-avant-toute-sous-commande-qui-écrit-dans-la-base)) : forme par mode — `sudo env PLUME_CONFIG=/etc/plume/soc.conf …` en hôte natif, `exec` dans le conteneur du démon en Docker et k3s — dans [`../docs/TROIS-MODES.md` §3.5](../docs/TROIS-MODES.md#35-créer-un-jeton-dagent)) | — |
-| `PLUME_HOST_LABEL` | nom d'hôte affiché (multi-hôte) | hostname |
-| `PLUME_HOST_HEADER` | en-tête `Host:` à envoyer (si forward-auth/SNI) | — |
-| `PLUME_TLS_*` | mTLS agent (cert/clé/CA) si le central l'exige | — |
-| `PLUME_EXTRA_COLLECTORS` | plugins à activer (`conntrack auditd kube-state pod-logs …`) | (socle seul) |
+| `PLUME_CENTRAL` | URL of the central daemon (`https://central.example`; `http://` is only accepted by `ship.sh`, `respond.sh`, `prom-scrape.sh`, `engagement-adapter.sh` and the Windows collector towards the loopback, or with `PLUME_SHIP_ALLOW_PLAINTEXT=1` set in each unit's environment file) | — |
+| `PLUME_TOKEN` | agent token (bound to a host, minted on the central by `plume-daemon token`, daemon started once beforehand ([`../docs/INSTALLER-SANS-OUVRIR-DE-BRECHE.md` §1.1](../docs/INSTALLER-SANS-OUVRIR-DE-BRECHE.md#11-start-the-daemon-once-before-any-subcommand-that-writes-to-the-database)): form per mode — `sudo env PLUME_CONFIG=/etc/plume/soc.conf …` on a native host, `exec` in the daemon's container in Docker and k3s — in [`../docs/TROIS-MODES.md` §3.5](../docs/TROIS-MODES.md#35-creating-an-agent-token)) | — |
+| `PLUME_HOST_LABEL` | displayed host name (multi-host) | hostname |
+| `PLUME_HOST_HEADER` | `Host:` header to send (if forward-auth/SNI) | — |
+| `PLUME_TLS_*` | agent mTLS (cert/key/CA) if the central requires it | — |
+| `PLUME_EXTRA_COLLECTORS` | plugins to enable (`conntrack auditd kube-state pod-logs …`) | (base only) |
 
-## 2. Cluster k8s / k3s (si applicable)
-| Variable | Rôle | Défaut |
+## 2. k8s / k3s cluster (if applicable)
+| Variable | Role | Default |
 |---|---|---|
-| `PLUME_KUBECTL` | commande kubectl (`kubectl` / `k3s kubectl` / `microk8s kubectl`) | auto-détection |
-| `PLUME_KUBECTL_TIMEOUT` | timeout API (anti-hang) | `8s` |
-| `PLUME_K3S_STORAGE` | chemin du provisioner local-path (métrique PV%) | auto (k3s / local-path-provisioner) |
-| **`PLUME_WATCH_STS`** | **apps critiques à surveiller** : `ns/nom ns/nom …` → métrique `kube_sts_ready_<nom>` + alerte sév 4 « `<nom>` indisponible ». Lu par `kube-state.sh` (émission) **et** le daemon (seed de la règle). | **(vide)** — définis tes apps ; le générique `kube_sts_notready` reste émis sans config |
+| `PLUME_KUBECTL` | kubectl command (`kubectl` / `k3s kubectl` / `microk8s kubectl`) | auto-detection |
+| `PLUME_KUBECTL_TIMEOUT` | API timeout (anti-hang) | `8s` |
+| `PLUME_K3S_STORAGE` | path of the local-path provisioner (PV% metric) | auto (k3s / local-path-provisioner) |
+| **`PLUME_WATCH_STS`** | **critical apps to watch**: `ns/nom ns/nom …` → metric `kube_sts_ready_<nom>` + sev 4 alert "`<nom>` unavailable". Read by `kube-state.sh` (emission) **and** the daemon (rule seed). | **(empty)** — define your apps; the generic `kube_sts_notready` is still emitted without config |
 
-> **Rotation des clés — aucune variable à régler, mais un minuteur à armer.** Si le cluster utilise
-> `external-secrets`, `kube-state` publie aussi `secretstore_notready` **et son dénominateur**
-> `secretstore_total` : le daemon lève alors **UNE** alerte native (sév. 4, famille
-> `heartbeat.magasin-de-secrets`) quand l'approvisionnement des secrets s'arrête — pas une par secret.
-> Rien à configurer ici ; mais le producteur est `plume-kube-state.timer`, que `bootstrap.sh` laisse
-> **éteint**, et tant qu'il l'est ce signal est **muet** — son silence ne vaut PAS « tout va bien ».
-> Détail et geste d'armement : `deploy/K8S.md`.
+> **Key rotation — no variable to set, but a timer to arm.** If the cluster uses
+> `external-secrets`, `kube-state` also publishes `secretstore_notready` **and its denominator**
+> `secretstore_total`: the daemon then raises **ONE** native alert (sev. 4, family
+> `heartbeat.magasin-de-secrets`) when secret provisioning stops — not one per secret.
+> Nothing to configure here; but the producer is `plume-kube-state.timer`, which `bootstrap.sh` leaves
+> **off**, and as long as it is off this signal is **silent** — its silence does NOT mean "all is well".
+> Details and arming operation: `deploy/K8S.md`.
 
-## 3. Collecteurs (réglages par source)
-| Variable | Rôle | Défaut |
+## 3. Collectors (per-source settings)
+| Variable | Role | Default |
 |---|---|---|
-| `PLUME_POD_LOG_SKIP` | pods exclus de `pod-logs` (déjà couverts par un collecteur dédié) — liste `\|` | `mailserver` |
-| `PLUME_POD_LOG_FILTER` | regex des lignes pod retenues (erreurs + auth) | `error\|fail\|denied\|…\|authenticated\|…` |
-| `PLUME_CROWDSEC_NS` / `PLUME_CROWDSEC_LAPI` | namespace / pod LAPI CrowdSec | `crowdsec` |
-| `PLUME_CROWDSEC_WHITELIST_SHARE_MAX` | seuil, en pour cent des lignes analysées, à partir duquel le battement CrowdSec dit `surtout_liste_blanche` (sévérité 2) ; la cause suit la répartition par liste blanche (`cscli metrics show whitelists`) : adresse cliente = relais d'un mandataire seulement si tout part dans `crowdsecurity/whitelists`, « vraies adresses » si une autre liste écarte, « répartition inconnue » si elle est illisible ; entier de 1 à 100, une autre valeur retombe sur le défaut et le dit (`unreadable-config`) | `90` |
-| `PLUME_CROWDSEC_SANS_SCENARIO_MAX_HEURES` | durée, en heures, sans aucune ligne aux scénarios (tout en liste blanche) avant que le battement CrowdSec refuse de conclure (`tout_en_liste_blanche`, sévérité 3, aveu) ; en deçà : `en_liste_blanche_sous_le_seuil`, sévérité 1, sans aveu — sauf horodatage du capteur absent ou illisible qui ne peut pas s'inscrire (état non inscriptible) : refus sans attendre le seuil, échec avoué (`etat/horodatage`). `0` = refus immédiat ; entier de 0 à 9999, une autre valeur retombe sur le défaut et le dit (`unreadable-config`) | `24` |
-| `PLUME_WEB_MAX` | borne de lecture du capteur `web` : lignes lues au plus par passage. En `PLUME_WEB_SRC=file`, la lecture suit un offset d'octets, qui tient lieu de filigrane — au-delà de la borne, le reste du journal est lu aux passages suivants, rien n'est sauté, même au milieu d'une seconde (seul le premier passage lit les `PLUME_WEB_MAX` dernières lignes et le dit) ; une rotation reprend `<journal>.1` (non compressé), sinon la perte est avouée (`missing-source`). En `k3s`, `kubectl logs --tail` ne rend que les dernières lignes de la fenêtre : les plus anciennes, jamais lues, sont comptées par un second `kubectl logs` (`--tail` explicite de 10 × `PLUME_WEB_MAX` par pod : au-delà, le nombre avoué est un minimum, « au moins N ») et avouées (`collection-capped`). Ne borne PAS le plafond de 9000 requêtes publiées par passage, qui est distinct | `10000` |
-| `PLUME_CONNTRACK_SCOPE` | portées conntrack collectées (`external internal loopback`) | toutes |
-| `PLUME_LOCKDOWN_IFACE` / `PLUME_LOCKDOWN_PORTS` | contrôle docker-lan-lockdown (laptop wifi) | `wlan0` (n/a si absent) |
-| `PLUME_MAIL_F2B` / `PLUME_MAIL_SKIP_IP` | collecteur mail (docker-mailserver) | — |
-| `PLUME_MAIL_SRC` / `PLUME_MAIL_DETECTION_DELAI` | source du journal du collecteur mail (P10.33-x) : `k3s`, `docker` ou `file`, **posée** = prise telle quelle, sans sonde (une valeur inconnue n'est pas devinée : l'échec de lecture est avoué). **Non posée** : détectée dans l'ordre k3s, Docker, fichier lisible, chaque sonde bornée par `timeout` de `PLUME_MAIL_DETECTION_DELAI` secondes (entier ≥ 1 sans zéro en tête, sinon avoué `unreadable-config` et 5) ; aucune : `missing-source`. Sous une unité contrainte (`CPUQuota`, cache de `k3s kubectl` froid), **poser** la source plutôt que la faire détecter. Détail : `deploy/MAIL.md` | non posée (détection), `5` |
-| `PLUME_MAIL_CLAMAV_LOG` / `PLUME_MAIL_FRESHCLAM_LOG` | journaux de clamd et de freshclam lus par le collecteur mail (P10.32-f), dans le même mode que `mail.log` (`PLUME_MAIL_SRC=k3s` : `kubectl exec`, `docker` : `docker exec`, `file` : fichier local). Posée **vide**, la lecture est coupée ; un fichier absent au chemin **par défaut** est dit `absent` dans l'enveloppe de config ; un chemin **posé** illisible est avoué | `/var/log/mail/clamav.log`, `/var/log/mail/freshclam.log` (k3s, docker) ; `/var/log/clamav/clamav.log`, `/var/log/clamav/freshclam.log` (file) |
-| `PLUME_MAIL_DEMASQUER_DESTINATAIRE_LOCAL` / `PLUME_MAIL_DOMAINES_LOCAUX` | `1` : le champ `rcpt` d'un événement mail `malware` (INFECTED) ou `banned` (BANNED) sort en clair si son domaine figure **exactement** (sans casse) dans la liste déclarée de domaines locaux (espaces ou virgules) ; tout le reste demeure masqué. Sans liste lisible, rien n'est démasqué ; une valeur ou une entrée illisible est avouée (`unreadable-config`). L'enveloppe de config dit l'état (`destinataire_local`) et la liste retenue (`domaines_locaux`). Risque et réglage : `deploy/CONFIDENTIALITE.md` | vide (masqué) |
-| `PLUME_MAIL_CLAMAV_UTC_OFFSET` | décalage UTC (`±hh:mm`) de l'heure murale du journal ClamAV, qui n'en porte pas | celui de la dernière ligne de `mail.log` du passage, sinon `+00:00` |
+| `PLUME_POD_LOG_SKIP` | pods excluded from `pod-logs` (already covered by a dedicated collector) — `\|` list | `mailserver` |
+| `PLUME_POD_LOG_FILTER` | regex of the pod lines kept (errors + auth) | `error\|fail\|denied\|…\|authenticated\|…` |
+| `PLUME_CROWDSEC_NS` / `PLUME_CROWDSEC_LAPI` | CrowdSec namespace / LAPI pod | `crowdsec` |
+| `PLUME_CROWDSEC_WHITELIST_SHARE_MAX` | threshold, as a percentage of the lines parsed, from which the CrowdSec heartbeat says `surtout_liste_blanche` (severity 2); the cause follows the breakdown per whitelist (`cscli metrics show whitelists`): client address = a proxy's relay only if everything goes to `crowdsecurity/whitelists`, "vraies adresses" if another list discards, "répartition inconnue" if it is unreadable; integer from 1 to 100, any other value falls back to the default and says so (`unreadable-config`) | `90` |
+| `PLUME_CROWDSEC_SANS_SCENARIO_MAX_HEURES` | duration, in hours, without any line reaching the scenarios (everything whitelisted) before the CrowdSec heartbeat refuses to conclude (`tout_en_liste_blanche`, severity 3, admission); below it: `en_liste_blanche_sous_le_seuil`, severity 1, no admission — except a missing or unreadable sensor timestamp that cannot be written (state not writable): refusal without waiting for the threshold, failure admitted (`etat/horodatage`). `0` = immediate refusal; integer from 0 to 9999, any other value falls back to the default and says so (`unreadable-config`) | `24` |
+| `PLUME_WEB_MAX` | read bound of the `web` sensor: lines read at most per run. With `PLUME_WEB_SRC=file`, reading follows a byte offset, which serves as the watermark — beyond the bound, the rest of the log is read on the following runs, nothing is skipped, even in the middle of a second (only the first run reads the last `PLUME_WEB_MAX` lines and says so); a rotation resumes from `<journal>.1` (uncompressed), otherwise the loss is admitted (`missing-source`). With `k3s`, `kubectl logs --tail` only returns the last lines of the window: the oldest ones, never read, are counted by a second `kubectl logs` (explicit `--tail` of 10 × `PLUME_WEB_MAX` per pod: beyond that, the admitted number is a minimum, "au moins N") and admitted (`collection-capped`). Does NOT bound the ceiling of 9000 requests published per run, which is separate | `10000` |
+| `PLUME_CONNTRACK_SCOPE` | conntrack scopes collected (`external internal loopback`) | all |
+| `PLUME_LOCKDOWN_IFACE` / `PLUME_LOCKDOWN_PORTS` | docker-lan-lockdown check (laptop wifi) | `wlan0` (n/a if absent) |
+| `PLUME_MAIL_F2B` / `PLUME_MAIL_SKIP_IP` | mail collector (docker-mailserver) | — |
+| `PLUME_MAIL_SRC` / `PLUME_MAIL_DETECTION_DELAI` | log source of the mail collector (P10.33-x): `k3s`, `docker` or `file`, **set** = taken as is, without a probe (an unknown value is not guessed: the read failure is admitted). **Not set**: detected in the order k3s, Docker, readable file, each probe bounded by a `timeout` of `PLUME_MAIL_DETECTION_DELAI` seconds (integer ≥ 1 without a leading zero, otherwise admitted `unreadable-config` and 5); none: `missing-source`. Under a constrained unit (`CPUQuota`, cold `k3s kubectl` cache), **set** the source rather than have it detected. Details: `deploy/MAIL.md` | not set (detection), `5` |
+| `PLUME_MAIL_CLAMAV_LOG` / `PLUME_MAIL_FRESHCLAM_LOG` | clamd and freshclam logs read by the mail collector (P10.32-f), in the same mode as `mail.log` (`PLUME_MAIL_SRC=k3s`: `kubectl exec`, `docker`: `docker exec`, `file`: local file). Set **empty**, reading is cut off; a file absent at the **default** path is reported `absent` in the config envelope; an unreadable **set** path is admitted | `/var/log/mail/clamav.log`, `/var/log/mail/freshclam.log` (k3s, docker); `/var/log/clamav/clamav.log`, `/var/log/clamav/freshclam.log` (file) |
+| `PLUME_MAIL_DEMASQUER_DESTINATAIRE_LOCAL` / `PLUME_MAIL_DOMAINES_LOCAUX` | `1`: the `rcpt` field of a mail `malware` (INFECTED) or `banned` (BANNED) event comes out in plaintext if its domain appears **exactly** (case-insensitively) in the declared list of local domains (spaces or commas); everything else stays masked. Without a readable list, nothing is unmasked; an unreadable value or entry is admitted (`unreadable-config`). The config envelope states the state (`destinataire_local`) and the list retained (`domaines_locaux`). Risk and setting: `deploy/CONFIDENTIALITE.md` | empty (masked) |
+| `PLUME_MAIL_CLAMAV_UTC_OFFSET` | UTC offset (`±hh:mm`) of the wall-clock time of the ClamAV log, which carries none | that of the last line of the run's `mail.log`, otherwise `+00:00` |
 
-## 4. Daemon central
-| Variable | Rôle | Défaut |
+## 4. Central daemon
+| Variable | Role | Default |
 |---|---|---|
-| `PLUME_RETENTION_DAYS` | rétention des events | `30` |
-| `PLUME_QUERY_MAX` | plafond de lignes par requête | `5000` |
-| `PLUME_USER` / `PLUME_PASS_HASH` | auth native (argon2) — sinon mode SETUP | — |
-| `PLUME_SSO_HEADER_SECRET` + `PLUME_SSO_GROUP_*` | SSO trusted-header (Authentik/forward-auth) | — |
-| `PLUME_GESTURE_SECRET_FILE` | fichier de l'**empreinte** argon2id (PHC) du secret des gestes — exigé, avec le droit, pour créer un compte, promouvoir un administrateur, réinitialiser un autre compte, frapper un jeton ou une clé de livraison, poser un fournisseur d'identité ou un droit (en-tête `x-plume-secret-des-gestes`). Engendrée par `plume-daemon secret-des-gestes --generer`. Relu à chaque geste (rotation = remplacer le fichier). Voir `docs/TROIS-MODES.md` §3.11 | **(vide)** — ces gestes sont alors **refusés**, nommés |
-| `PLUME_HOST` | hôte(s) autorisé(s) (anti-DNS-rebinding) | — |
-| `PLUME_SQLITE_BUDGET_MB` | budget RAM total concédé à SQLite ; réparti automatiquement entre les porteurs (connexions du pool + tris en vol), d'où `cache_size` | `1088` (= 17 × 64 Mio, reproduit à l'octet le dimensionnement historique) |
-| `PLUME_SQLITE_DEVERSEMENT` | **échange confidentialité ↔ mémoire.** À `0`, les tris restent en RAM : rien d'un événement ne touche le disque en clair, mais **une agrégation assez large peut épuiser la mémoire** (SQLite n'a aucun mécanisme de déversement dans ce mode). À `1`, les gros tris débordent sur disque **en clair, hors de la base SQLCipher** — n'activez que si votre modèle de menace exclut le vol du volume, et pointez alors `SQLITE_TMPDIR` sur un support chiffré (jamais un tmpfs : ce serait de la RAM au même cgroup). | `0` |
-| `PLUME_SQLITE_DEVERSEMENT_QUOTA_MO` | **la borne du volume écrit en clair**, en Mio, quand `PLUME_SQLITE_DEVERSEMENT=1`. Au-delà, l'instruction en cours est ARRÊTÉE et **aucun résultat n'est rendu** (un résultat partiel serait faux sans le dire) ; le refus nomme ce levier. Il borne **ce que le PROCESSUS détient ouvert** sous le répertoire de déversement — pas la requête fautive, pas la RAM, et rien du tout quand le déversement vaut `0` (aucune mesure n'est armée). `0` = aucune borne. Si la mesure du système devient illisible en cours de route, le quota cesse d'être opposable et la cause est écrite une fois sur la sortie d'erreur. | `1024` |
+| `PLUME_RETENTION_DAYS` | event retention | `30` |
+| `PLUME_QUERY_MAX` | ceiling of rows per query | `5000` |
+| `PLUME_USER` / `PLUME_PASS_HASH` | native auth (argon2) — otherwise SETUP mode | — |
+| `PLUME_SSO_HEADER_SECRET` + `PLUME_SSO_GROUP_*` | trusted-header SSO (Authentik/forward-auth) | — |
+| `PLUME_GESTURE_SECRET_FILE` | file holding the argon2id **digest** (PHC) of the gesture secret — required, together with the permission, to create an account, promote an administrator, reset another account, mint a token or a delivery key, set an identity provider or a permission (header `x-plume-secret-des-gestes`). Generated by `plume-daemon secret-des-gestes --generer`. Reread on every operation (rotation = replace the file). See `docs/TROIS-MODES.md` §3.11 | **(empty)** — these operations are then **refused**, by name |
+| `PLUME_HOST` | allowed host(s) (anti-DNS-rebinding) | — |
+| `PLUME_SQLITE_BUDGET_MB` | total RAM budget granted to SQLite; automatically shared among the holders (pool connections + in-flight sorts), hence `cache_size` | `1088` (= 17 × 64 MiB, reproduces the historical sizing to the byte) |
+| `PLUME_SQLITE_DEVERSEMENT` | **confidentiality ↔ memory trade-off.** At `0`, sorts stay in RAM: nothing of an event touches the disk in plaintext, but **a wide enough aggregation can exhaust memory** (SQLite has no spill mechanism in this mode). At `1`, large sorts spill to disk **in plaintext, outside the SQLCipher database** — only enable it if your threat model excludes theft of the volume, and then point `SQLITE_TMPDIR` to an encrypted medium (never a tmpfs: that would be RAM in the same cgroup). | `0` |
+| `PLUME_SQLITE_DEVERSEMENT_QUOTA_MO` | **the bound on the volume written in plaintext**, in MiB, when `PLUME_SQLITE_DEVERSEMENT=1`. Beyond it, the current statement is STOPPED and **no result is returned** (a partial result would be wrong without saying so); the refusal names this lever. It bounds **what the PROCESS holds open** under the spill directory — not the offending query, not RAM, and nothing at all when spilling is `0` (no measurement is armed). `0` = no bound. If the system's measurement becomes unreadable along the way, the quota stops being enforceable and the cause is written once to standard error. | `1024` |
 
-## Inputs custom (scripted inputs) — ajouter une source SANS code
-Le collecteur générique `custom.sh` (OPT-IN, `PLUME_EXTRA_COLLECTORS="… custom"` + `plume-custom.timer`)
-lit `/etc/plume/inputs.d/*.input` : tu décris une commande, sa sortie devient des events. C'est
-l'équivalent « inputs » du registre de parsers — toute source, toute infra, **zéro code**.
+## Custom inputs (scripted inputs) — adding a source WITHOUT code
+The generic collector `custom.sh` (OPT-IN, `PLUME_EXTRA_COLLECTORS="… custom"` + `plume-custom.timer`)
+reads `/etc/plume/inputs.d/*.input`: you describe a command, its output becomes events. It is
+the "inputs" equivalent of the parser registry — any source, any infrastructure, **zero code**.
 
 ```ini
 # /etc/plume/inputs.d/nginx.input
 SOURCE=nginx-app
 CMD=journalctl -u nginx --since -90s --no-pager -o cat
 SEVERITY=2
-FILTER=error|warn|denied        # optionnel
-# CATEGORY=web  MAX=100         # optionnels
+FILTER=error|warn|denied        # optional
+# CATEGORY=web  MAX=100         # optional
 ```
-Chaque ligne de la sortie de `CMD` → 1 event `source=nginx-app` (dédupé source+ligne/heure, borné `MAX`),
-puis **les parsers du registre l'enrichissent** (champs groupables). Voir `deploy/example.input`.
-Sécurité : `CMD` tourne en root → `/etc/plume/inputs.d` doit être **root-only** (l'opérateur a déjà root).
+Each line of the output of `CMD` → 1 event `source=nginx-app` (deduplicated on source+line/hour, bounded by `MAX`),
+then **the registry's parsers enrich it** (groupable fields). See `deploy/example.input`.
+Security: `CMD` runs as root → `/etc/plume/inputs.d` must be **root-only** (the operator already has root).
 
-## Démo publique (sécurisée)
-Pour exposer une démo publique **sans risque** :
-- **`PLUME_PUBLIC_DEMO=1`** → accès **anonyme en lecture seule** (rôle *viewer* forcé) : lecture OK
-  (overview, search, explore, dashboards, alertes…), **tout le reste bloqué 403** (création/màj/suppression,
-  `/api/users`, `/api/actions`, `/api/ingest`, `/api/mail/body`). Réutilise le RBAC viewer, PLUS une porte propre
-  à la démonstration (`P10.28-i`) : le rôle *viewer* écrit pour lui-même ses requêtes enregistrées, ses préférences,
-  son second facteur et son mot de passe, et tous les visiteurs anonymes partagent la même identité — ces écritures
-  sont donc refusées aussi (403 nommé), les lectures restent.
-- La démonstration **ne s'active pas** si le nom `demo` appartient déjà à quelqu'un (`P10.28-j`) : un compte `demo`,
-  `PLUME_USER=demo`, des lignes tenues sous ce nom ou une identité d'annuaire qui l'a porté. Le démon démarre sans
-  elle (accès anonyme refusé) : le journal de démarrage nomme la cause et le remède, le registre inscrit le refus
-  (`demo.activation.refusee`) et le paquet de diagnostic rend `public_demo_served` à côté de la configuration.
-  L'assistant d'installation ne pose pas ce nom ; démonstration active, un annuaire ne peut pas le présenter (hors
-  démonstration, il le prend comme un autre nom — et la démonstration demandée ensuite refusera de s'activer).
-- **`PLUME_DEMO=1`** → uniquement des **données factices** (aucune vraie donnée).
-- **Instance ISOLÉE** : un déploiement séparé, **jamais** le SOC de prod (sa DB, ses tokens, son réseau).
-- Rate-limit intégré ; mets-la derrière un reverse-proxy / Cloudflare. Pas de secret réel, pas d'agent.
+## Public demo (secured)
+To expose a public demo **without risk**:
+- **`PLUME_PUBLIC_DEMO=1`** → **anonymous read-only** access (*viewer* role forced): reading OK
+  (overview, search, explore, dashboards, alerts…), **everything else blocked with 403** (create/update/delete,
+  `/api/users`, `/api/actions`, `/api/ingest`, `/api/mail/body`). Reuses the viewer RBAC, PLUS a gate specific
+  to the demo (`P10.28-i`): the *viewer* role writes for itself its saved queries, its preferences,
+  its second factor and its password, and all anonymous visitors share the same identity — those writes
+  are therefore refused too (named 403), reads remain.
+- The demo **does not activate** if the name `demo` already belongs to someone (`P10.28-j`): a `demo` account,
+  `PLUME_USER=demo`, rows held under that name or a directory identity that has carried it. The daemon starts without
+  it (anonymous access refused): the startup log names the cause and the remedy, the ledger records the refusal
+  (`demo.activation.refusee`) and the diagnostic bundle returns `public_demo_served` next to the configuration.
+  The setup wizard does not set this name; with the demo active, a directory cannot present it (outside
+  the demo, it takes it like any other name — and a demo requested afterwards will refuse to activate).
+- **`PLUME_DEMO=1`** → only **fake data** (no real data).
+- **ISOLATED instance**: a separate deployment, **never** the production SOC (its DB, its tokens, its network).
+- Built-in rate limiting; put it behind a reverse proxy / Cloudflare. No real secret, no agent.
 
 ```sh
-PLUME_PUBLIC_DEMO=1 PLUME_DEMO=1 docker compose up -d   # instance dédiée, lecture seule, données démo
+PLUME_PUBLIC_DEMO=1 PLUME_DEMO=1 docker compose up -d   # dedicated instance, read-only, demo data
 ```
 
-## Déployer ailleurs (résumé)
-1. Central : `docker compose up` **ou** `deploy/k3s.yaml` **ou** `bootstrap.sh` (hôte natif) — mode-aware.
-2. Agent : `bootstrap-agent.sh` avec `PLUME_CENTRAL`/`PLUME_TOKEN` + `PLUME_EXTRA_COLLECTORS`.
-3. Adapter **ce profil** : surtout `PLUME_WATCH_STS` (tes apps critiques) ; le reste s'auto-détecte.
-4. Les collecteurs absents (pas de k8s, pas de crowdsec, …) se désactivent **tout seuls**.
+## Deploying elsewhere (summary)
+1. Central: `docker compose up` **or** `deploy/k3s.yaml` **or** `bootstrap.sh` (native host) — mode-aware.
+2. Agent: `bootstrap-agent.sh` with `PLUME_CENTRAL`/`PLUME_TOKEN` + `PLUME_EXTRA_COLLECTORS`.
+3. Adapt **this profile**: above all `PLUME_WATCH_STS` (your critical apps); the rest is auto-detected.
+4. Absent collectors (no k8s, no crowdsec, …) disable themselves **on their own**.
 
-Rien d'autre n'est à toucher : aucun nom d'app, namespace ou IP n'est codé en dur dans la logique.
+Nothing else needs touching: no app name, namespace or IP is hardcoded in the logic.

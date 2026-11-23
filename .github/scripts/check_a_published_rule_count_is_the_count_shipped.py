@@ -80,18 +80,30 @@ def catalogue_actives(fichiers, lire):
 
 
 # (fichier publié, motif à UN groupe qui capture le nombre, compte dérivé de l'arbre, ce que c'est)
+# Chaque document existe en deux langues (`X.md` anglais, `X.fr.md` français) : la phrase de chaque langue
+# porte le même compte, et chacune est jugée, pour qu'une langue ne garde pas un nombre que l'autre a perdu.
 ANNONCES = [
-    ("README.md", r"\*\*(\d+) règles Sigma d'exemple\*\*", sigma_exemples, "règles Sigma d'exemple (config.d/sigma/)"),
-    ("README.md", r"\*\*(\d+) règles de catalogue\*\*", catalogue, "règles de catalogue (config.d/rules/catalog/)"),
-    ("README.md", r"\*\*(\d+) règles overlay\*\*", overlays_racine_compte, "règles overlay à la racine de config.d/rules/"),
-    ("README.md", r"\*\*dont (\d+) actives\*\*", overlays_racine_actives,
+    ("README.fr.md", r"\*\*(\d+) règles Sigma d'exemple\*\*", sigma_exemples, "règles Sigma d'exemple (config.d/sigma/)"),
+    ("README.fr.md", r"\*\*(\d+) règles de catalogue\*\*", catalogue, "règles de catalogue (config.d/rules/catalog/)"),
+    ("README.fr.md", r"\*\*(\d+) règles overlay\*\*", overlays_racine_compte, "règles overlay à la racine de config.d/rules/"),
+    ("README.fr.md", r"\*\*dont (\d+) actives\*\*", overlays_racine_actives,
      "règles overlay racine actives au démarrage (enabled absent ou vrai)"),
-    ("README.md", r"\*\*sauf (\d+) règles? actives?\*\*", catalogue_actives,
+    ("README.fr.md", r"\*\*sauf (\d+) règles? actives?\*\*", catalogue_actives,
      "règles de catalogue actives au démarrage (enabled absent ou vrai)"),
-    ("docs/DETECTION-CATALOG.md", r"\*\*(\d+) règles LIVRÉES\*\*", catalogue, "règles de catalogue (config.d/rules/catalog/)"),
+    ("README.md", r"\*\*(\d+) sample Sigma rules\*\*", sigma_exemples, "règles Sigma d'exemple (config.d/sigma/)"),
+    ("README.md", r"\*\*(\d+) catalog rules\*\*", catalogue, "règles de catalogue (config.d/rules/catalog/)"),
+    ("README.md", r"\*\*(\d+) overlay rules\*\*", overlays_racine_compte, "règles overlay à la racine de config.d/rules/"),
+    ("README.md", r"\*\*of which (\d+) are active\*\*", overlays_racine_actives,
+     "règles overlay racine actives au démarrage (enabled absent ou vrai)"),
+    ("README.md", r"\*\*except (\d+) active rules?\*\*", catalogue_actives,
+     "règles de catalogue actives au démarrage (enabled absent ou vrai)"),
+    ("docs/DETECTION-CATALOG.fr.md", r"\*\*(\d+) règles LIVRÉES\*\*", catalogue, "règles de catalogue (config.d/rules/catalog/)"),
+    ("docs/DETECTION-CATALOG.md", r"\*\*(\d+) SHIPPED rules\*\*", catalogue, "règles de catalogue (config.d/rules/catalog/)"),
     # Le test qui charge le catalogue lit TOUT `config.d/rules/catalog/` (`read_dir`, sans filtre) : le
     # nombre de règles qu'il « exige » de compiler est donc le compte du catalogue, pas celui des tables.
-    ("docs/DETECTION-CATALOG.md", r"exige que les (\d+) compilent", catalogue,
+    ("docs/DETECTION-CATALOG.fr.md", r"exige que les (\d+) compilent", catalogue,
+     "règles de catalogue que le test de chargement exige de compiler"),
+    ("docs/DETECTION-CATALOG.md", r"requires all (\d+) to compile", catalogue,
      "règles de catalogue que le test de chargement exige de compiler"),
 ]
 

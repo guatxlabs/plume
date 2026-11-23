@@ -5,7 +5,7 @@ LE DÉFAUT VISÉ
 --------------
 Une traduction se relit pour son style ; ce qu'elle perd en route ne se voit pas à la relecture. Un
 titre sauté, une commande recopiée avec une option en moins, un chiffre retouché, un lien qui vise
-encore le document français alors que sa version anglaise existe : chacun laisse un texte lisible,
+encore le document anglais alors que sa version française existe : chacun laisse un texte lisible,
 fluide, et faux. Ce sont des faits que la langue ne change pas, donc des faits qu'une machine peut
 comparer sans juger la traduction elle-même.
 
@@ -16,15 +16,14 @@ CE QUI EST COMPARÉ, PAIRE PAR PAIRE
   qui commence par `#` ou `//` est un commentaire, comme la fin de ligne qui suit ` # ` ou ` // ` :
   c'est la part qu'une traduction a le droit de réécrire) ;
 - les TABLEAUX : leur nombre et le nombre de lignes de chacun ;
-- les CIBLES DE LIENS : un lien vers `Y.md` doit viser `Y.en.md` côté traduction quand ce fichier
+- les CIBLES DE LIENS : un lien vers `Y.md` doit viser `Y.fr.md` côté traduction quand ce fichier
   existe, et rester tel quel sinon ; l'ancre (`#…`) est retirée avant comparaison, car elle dérive
   d'un titre, et un titre traduit change d'ancre. La cible se résout depuis le dossier du document,
   ou depuis la racine quand elle commence par `/`. Un lien vers le document lui-même ou vers sa
   traduction ne bascule pas : c'est celui du sélecteur de langue ;
 - le SÉLECTEUR DE LANGUE : la première ligne non vide sous le premier titre de niveau 1, la même des
   deux côtés, faite d'un lien vers l'original puis d'un lien vers la traduction et de séparateurs
-  seulement (`[Français](X.md) | [English](X.en.md)`, ou `[English](X.md) | [Français](X.fr.md)`
-  pour un original anglais). Absent d'un côté ou des deux, inversé, visant un autre fichier, ou
+  seulement (`[English](X.md) | [Français](X.fr.md)`). Absent d'un côté ou des deux, inversé, visant un autre fichier, ou
   différent d'un côté à l'autre : écart nommé ;
 - les ANCRES DE LA TRADUCTION : un lien interne de la traduction dont l'ancre vise un document
   Markdown de l'arbre (elle-même comprise, pour `#…` seul) doit désigner un titre de ce fichier,
@@ -44,10 +43,16 @@ traduction, côté traduction quand elle porte quelque chose en trop.
 
 LA CONVENTION DE SUFFIXE EST UN PARAMÈTRE
 -----------------------------------------
-Aujourd'hui l'original est `X.md` (français) et la traduction `X.en.md`. La convention basculera en
-`X.fr.md` / `X.md` ; l'outil ne la code pas en dur : `--suffixe-original ""` et
-`--suffixe-traduction .en` sont les défauts, `--suffixe-original .fr --suffixe-traduction ""` est la
-bascule.
+L'anglais d'abord : l'original est `X.md` (anglais) et la traduction `X.fr.md`. L'outil ne code pas
+la convention en dur : `--suffixe-original ""` et `--suffixe-traduction .fr` sont les défauts, et
+deux autres suffixes de la forme `.xx` se passent de la même façon.
+
+LES DOCUMENTS EN UNE SEULE LANGUE SONT UN ENSEMBLE NOMMÉ
+--------------------------------------------------------
+`UNE_SEULE_LANGUE` nomme chaque document suivi qui n'a pas de traduction, avec sa raison écrite à
+côté. Un document suivi sans sa paire et hors de cet ensemble est un écart ; une entrée de
+l'ensemble qui a retrouvé sa paire, ou qui ne désigne plus un document suivi, en est un aussi : une
+exception qu'on ne retire pas devient une trappe où l'on range ce qu'on n'a pas traduit.
 
 DEUX MODES
 ----------
@@ -61,12 +66,12 @@ DEUX MODES
   n'est pas de l'UTF-8 laisse la paire lue en partie : une ancre qu'on n'a pas pu chercher n'est ni
   juste ni fausse, elle n'est pas jugée, la paire est nommée, et ses autres écarts sont imprimés (code
   1 s'il y en a, 2 sinon).
-- `--inventaire` : liste les documents suivis sans traduction, et les traductions sans original. Il
-  rend 0 tant que `--strict` n'est pas passé ; avec `--strict`, un document sans traduction rend 1.
-  Sur zéro document suivi, ou sur un dépôt illisible, il rend 2 dans les deux cas.
+- `--inventaire` : compte les paires, et liste les écarts de l'inventaire — document suivi sans
+  traduction hors de `UNE_SEULE_LANGUE`, traduction sans original, entrée périmée de l'ensemble. Il
+  rend 0 tant que `--strict` n'est pas passé ; avec `--strict`, un écart quelconque rend 1. Sur zéro
+  document suivi, ou sur un dépôt illisible, il rend 2 dans les deux cas.
 
-L'outil n'est câblé dans aucun flux d'intégration : son nom ne porte pas le préfixe des gardes, et
-c'est délibéré tant que le corpus n'a pas de paires.
+L'outil n'est câblé dans aucun flux d'intégration : son nom ne porte pas le préfixe des gardes.
 
 CE QU'IL NE VOIT PAS
 --------------------
@@ -123,6 +128,13 @@ COMMENTAIRE_FINAL = re.compile(r"\s+(?:#|//)(?:\s.*)?$")
 # Lignes qui commencent par `#` sans être des commentaires : attribut Rust, shebang, préprocesseur C.
 DIESE_DE_CODE = re.compile(
     r"^#(?:\[|!|(?:include|define|undef|if|ifdef|ifndef|elif|else|endif|pragma|error)\b)")
+
+# Documents suivis tenus en UNE seule langue, chacun avec sa raison. Tout autre document suivi a sa
+# paire ; une entrée qui retrouve la sienne, ou qui ne désigne plus un document suivi, est un écart.
+UNE_SEULE_LANGUE = {
+    "docs/ROADMAP.md": "journal de travail tenu en français",
+    "docs/BENCHMARK.md": "rendu par bench/report.py, version bilingue en cours",
+}
 
 
 @dataclass
@@ -367,7 +379,7 @@ def analyser(texte, chemin):
 class Convention:
     """`X<original>.md` ↔ `X<traduction>.md` ; l'un des deux suffixes peut être vide, pas les deux."""
 
-    def __init__(self, original="", traduction=".en"):
+    def __init__(self, original="", traduction=".fr"):
         for s in (original, traduction):
             if s and not re.fullmatch(r"\.[A-Za-z][A-Za-z_-]*", s):
                 raise ValueError(f"suffixe « {s} » : attendu vide ou de la forme .xx")
@@ -383,7 +395,7 @@ class Convention:
     def est_original(self, chemin):
         if self._tige(chemin, self.original) is None:
             return False
-        # Avec un suffixe d'original vide, `X.en.md` finit aussi par `.md` : c'est une traduction.
+        # Avec un suffixe d'original vide, `X.fr.md` finit aussi par `.md` : c'est une traduction.
         return bool(self.original) or self._tige(chemin, self.traduction) is None
 
     def est_traduction(self, chemin):
@@ -675,14 +687,29 @@ def documents_suivis(racine):
     return sorted(p for p in sortie.decode("utf-8").split("\0") if p)
 
 
-def inventaire(documents, convention):
-    """(originaux sans traduction, traductions sans original), en chemins relatifs."""
+def inventaire(documents, convention, une_seule_langue=None):
+    """(originaux sans traduction, traductions sans original, entrées périmées de l'ensemble en une
+    seule langue), en chemins relatifs.
+
+    Un original sans traduction nommé dans `une_seule_langue` n'est pas un écart. Une entrée de cet
+    ensemble en est un quand le document a sa traduction, ou quand il n'est plus suivi : la raison
+    écrite à côté ne vaut plus rien."""
+    seules = UNE_SEULE_LANGUE if une_seule_langue is None else une_seule_langue
     present = set(documents)
     sans_traduction = [d for d in documents
-                       if convention.est_original(d) and convention.traduction_de(d) not in present]
+                       if convention.est_original(d) and convention.traduction_de(d) not in present
+                       and d not in seules]
     orphelines = [d for d in documents
                   if convention.est_traduction(d) and convention.original_de(d) not in present]
-    return sans_traduction, orphelines
+    perimees = []
+    for d in sorted(seules):
+        if d not in present:
+            perimees.append((d, "n'est plus un document suivi"))
+        elif not convention.est_original(d):
+            perimees.append((d, "n'est pas un original sous la convention"))
+        elif convention.traduction_de(d) in present:
+            perimees.append((d, f"a retrouvé sa traduction {convention.traduction_de(d)}"))
+    return sans_traduction, orphelines, perimees
 
 
 def paires(documents, convention):
@@ -700,7 +727,7 @@ def main(argv=None):
     p = argparse.ArgumentParser(description="Parité entre un document et sa traduction.")
     p.add_argument("--racine", default=racine_par_defaut())
     p.add_argument("--suffixe-original", default="")
-    p.add_argument("--suffixe-traduction", default=".en")
+    p.add_argument("--suffixe-traduction", default=".fr")
     p.add_argument("--paire", nargs=2, metavar=("ORIGINAL", "TRADUCTION"))
     p.add_argument("--inventaire", action="store_true")
     p.add_argument("--strict", action="store_true")
@@ -721,17 +748,24 @@ def main(argv=None):
                   file=sys.stderr)
             return 2
         if a.inventaire:
-            sans_traduction, orphelines = inventaire(documents, convention)
+            sans_traduction, orphelines, perimees = inventaire(documents, convention)
             for d in sans_traduction:
-                print(f"{d}: sans traduction (attendue : {convention.traduction_de(d)})")
+                print(f"{d}: sans traduction (attendue : {convention.traduction_de(d)}), et absent de "
+                      f"UNE_SEULE_LANGUE")
             for d in orphelines:
                 print(f"{d}: traduction sans original (attendu : {convention.original_de(d)})")
-            print(f"{len(sans_traduction)} document(s) sans traduction, {len(orphelines)} traduction(s) "
-                  f"sans original, sur {len(documents)} documents suivis")
+            for d, pourquoi in perimees:
+                print(f"{d}: entrée périmée de UNE_SEULE_LANGUE ({UNE_SEULE_LANGUE[d]}) : {pourquoi}")
+            ecarts = len(sans_traduction) + len(orphelines) + len(perimees)
+            seules = sorted(set(UNE_SEULE_LANGUE) & set(documents))
+            print(f"{len(paires(documents, convention))} paire(s), {len(seules)} document(s) en une seule "
+                  f"langue déclarés, {ecarts} écart(s) ({len(sans_traduction)} document(s) sans "
+                  f"traduction, {len(orphelines)} traduction(s) sans original, {len(perimees)} entrée(s) "
+                  f"périmée(s)), sur {len(documents)} documents suivis")
             if not documents:
                 print("aucun document suivi : rien inventorié", file=sys.stderr)
                 return 2
-            return 1 if a.strict and sans_traduction else 0
+            return 1 if a.strict and ecarts else 0
         a_comparer = paires(documents, convention)
         if not a_comparer:
             print("aucune paire de documents suivis : rien comparé (voir --inventaire)", file=sys.stderr)

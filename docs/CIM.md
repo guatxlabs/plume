@@ -1,155 +1,155 @@
 # Plume CIM — Common Information Model (v1.0)
 
-[Français](CIM.md) | [English](CIM.en.md)
+[English](CIM.md) | [Français](CIM.fr.md)
 
-> **Statut : contrat NORMATIF, versionné.** Ce document formalise le modèle d'information
-> canonique de Plume — le vocabulaire NEUTRE de `category` et le jeu de champs cœur — sur
-> lequel *toute* détection compose déjà, de façon **vendor-agnostique**. Il rend EXPLICITE
-> un contrat jusqu'ici implicite dans le code ; **il ne change aucun comportement runtime**.
+> **Status: NORMATIVE, versioned contract.** This document formalises Plume's canonical
+> information model — the NEUTRAL `category` vocabulary and the core field set — on
+> which *every* detection already composes, in a **vendor-agnostic** way. It makes EXPLICIT
+> a contract that was until now implicit in the code; **it changes no runtime behaviour**.
 
-- **Version** : `1.3` (SemVer `majeur.mineur` ; majeur = rupture de taxonomie/champs). v1.1 (#57) ajoute
-  les catégories `posture` (config-assessment / SCA-CIS) et `inventory` (inventaire endpoint) ; v1.2 (#41)
-  ajoute la catégorie `trace` (télémétrie OpenTelemetry, corrélable par `trace_id`) ; v1.3 (Reorg Wave 2)
-  ajoute des **homes canoniques rétroactifs** pour des catégories DÉJÀ émises par des collecteurs live —
-  `exec` (auditd execve), `secrets` (vault-audit), `account` (auditd), `recon` et les sous-étapes du
-  collecteur mail (`postscreen`/`reject`/`mailflow`/`mail-phishing`/`mail-url`) — **plus un tampon de version
-  par event** (`fields.cim`, §4f). Tout additif (aucune ligne réécrite, zéro migration).
-- **Miroir machine** : [`config.d/cim/cim.v1.json`](../config.d/cim/cim.v1.json).
-- **Ancre code** : `CIM_VERSION` / `CIM_CATEGORIES` / `CIM_CORE_FIELDS` / `CIM_ACTION_VOCAB`
-  + le validateur `cim_category_ok()` dans `guatx_core::cim` (crate `guatx-core`, `src/cim.rs`).
-- **Garde anti-dérive** : deux tests exigent que **le const code == le JSON** — `cim_contract_is_self_consistent`
-  (module `tests` de `guatx_core::cim`, cohérence interne du contrat) et
-  `cim_const_mirror_matches_config_schema` (`daemon/src/tests/detection.rs`, miroir const ↔ schéma).
-  Doc, code et schéma ne peuvent pas diverger sans casser `cargo test`.
-
----
-
-## 0. Principe directeur — ENRICH, jamais SUPPRESS
-
-Le CIM est un modèle de **PARSE / MAP / ENRICH**. Reconnaître, mapper ou enrichir une
-`category` **ne supprime jamais** un événement. Une `category` hors-taxonomie est
-**acceptée telle quelle** (l'ingest est inchangé) et seulement **signalée** (`warn`) — jamais
-rejetée. Toute réduction de collecte (drop/suppress) est un **filtre**, qui appartient au
-panneau *whitelists* (#10) et à l'audit `sev 3` (`/api/sources/settings`), **pas au CIM**.
-
-C'est la garantie anti-angle-mort : le CIM enrichit la donnée, il ne la censure pas.
-
-> **Vue d'ensemble des extensions.** Le CIM est le **pivot** du modèle *bring-your-own-vendor* : voir
-> [`docs/SDK.md`](SDK.md) pour la carte des seams (parser, connecteur, détection, threat-intel, enforcer) et
-> la règle « décrire, pas coder ».
+- **Version**: `1.3` (SemVer `majeur.mineur`; major = breaking change to the taxonomy/fields). v1.1 (#57) adds
+  the `posture` (config-assessment / SCA-CIS) and `inventory` (endpoint inventory) categories; v1.2 (#41)
+  adds the `trace` category (OpenTelemetry telemetry, correlatable by `trace_id`); v1.3 (Reorg Wave 2)
+  adds **retroactive canonical homes** for categories ALREADY emitted by live collectors —
+  `exec` (auditd execve), `secrets` (vault-audit), `account` (auditd), `recon` and the sub-stages of the
+  mail collector (`postscreen`/`reject`/`mailflow`/`mail-phishing`/`mail-url`) — **plus a per-event version
+  stamp** (`fields.cim`, §4f). Everything additive (no row rewritten, zero migrations).
+- **Machine mirror**: [`config.d/cim/cim.v1.json`](../config.d/cim/cim.v1.json).
+- **Code anchor**: `CIM_VERSION` / `CIM_CATEGORIES` / `CIM_CORE_FIELDS` / `CIM_ACTION_VOCAB`
+  + the `cim_category_ok()` validator in `guatx_core::cim` (crate `guatx-core`, `src/cim.rs`).
+- **Anti-drift guard**: two tests require that **the code const == the JSON** — `cim_contract_is_self_consistent`
+  (`tests` module of `guatx_core::cim`, internal consistency of the contract) and
+  `cim_const_mirror_matches_config_schema` (`daemon/src/tests/detection.rs`, const ↔ schema mirror).
+  Doc, code and schema cannot diverge without breaking `cargo test`.
 
 ---
 
-## 1. La ligne canonique — `EventRow`
+## 0. Guiding principle — ENRICH, never SUPPRESS
 
-Tout chemin d'ingest (syslog, journal, collecteurs shell, MinIO natif, agents) **converge**
-sur une seule ligne, `EventRow` (`guatx_core::store`, crate `guatx-core`, `src/store.rs`), insérée par un unique SQL figé
-(`EVENT_INSERT_SQL`, `INSERT OR IGNORE` sur `dedup`). Les colonnes ci-dessous forment le
-**jeu de champs CŒUR** (première classe : indexées / filtrables directement).
+The CIM is a **PARSE / MAP / ENRICH** model. Recognising, mapping or enriching a
+`category` **never suppresses** an event. An out-of-taxonomy `category` is
+**accepted as is** (ingest is unchanged) and only **reported** (`warn`) — never
+rejected. Any reduction of collection (drop/suppress) is a **filter**, which belongs to the
+*whitelists* panel (#10) and to the `sev 3` audit (`/api/sources/settings`), **not to the CIM**.
 
-| champ           | type    | sémantique |
+This is the anti-blind-spot guarantee: the CIM enriches the data, it does not censor it.
+
+> **Overview of extensions.** The CIM is the **pivot** of the *bring-your-own-vendor* model: see
+> [`docs/SDK.md`](SDK.md) for the map of seams (parser, connector, detection, threat intel, enforcer) and
+> the "describe, don't code" rule.
+
+---
+
+## 1. The canonical row — `EventRow`
+
+Every ingest path (syslog, journal, shell collectors, native MinIO, agents) **converges**
+on a single row, `EventRow` (`guatx_core::store`, crate `guatx-core`, `src/store.rs`), inserted by a single fixed SQL statement
+(`EVENT_INSERT_SQL`, `INSERT OR IGNORE` on `dedup`). The columns below form the
+**CORE field set** (first class: indexed / directly filterable).
+
+| field           | type    | semantics |
 |-----------------|---------|------------|
-| `ts`            | integer | Horodatage de l'événement — **epoch secondes, UTC**. |
-| `source`        | string  | Identité du **PRODUCTEUR / vendeur** (`fortigate`, `suricata`, `web`…). **Jamais la sémantique.** |
-| `category`      | string  | Classe **sémantique NEUTRE** (§2) — l'axe de composition des détections. |
+| `ts`            | integer | Event timestamp — **epoch seconds, UTC**. |
+| `source`        | string  | Identity of the **PRODUCER / vendor** (`fortigate`, `suricata`, `web`…). **Never the semantics.** |
+| `category`      | string  | **NEUTRAL semantic** class (§2) — the axis along which detections compose. |
 | `severity`      | integer | **0..4** (§3). |
-| `message`       | string  | Résumé lisible par un humain. |
-| `host`          | string  | Hôte observateur/rapporteur. **RÉSOLU À L'ÉCRITURE, EN UN SEUL ENDROIT** : `HoteIngere::resoudre` (`daemon/src/ingest/store.rs`) rend l'hôte **du jeton** quand celui-ci est lié à une machine, et l'hôte **déclaré** sinon. Un jeton de machine ne peut donc écrire que sous son propre hôte, **sur toutes les surfaces d'ingestion** (`/api/ingest`, `/api/ingest/journal`, `/api/ingest/minio`, `/api/metrics/prom`, `/api/metrics/write`, `/loki/api/v1/push`, `/services/collector`, `/v1/traces`) — la résolution ne connaît pas les routes, elle ne peut donc pas en oublier une. Un jeton **relais** (`--relais`, forwarder multi-hôtes) écrit sous l'hôte qu'il déclare : cet hôte-là n'est **pas** attesté. *Avant : le liage n'était consulté que sur les voies `/api/ingest` et `/loki/api/v1/push`. Mesuré le 2026‑08‑02 avec un jeton lié à `WS22-LAB` — `/api/metrics/prom?host=HOTE-USURPE-PAR-METRICS` → HTTP 200 et métrique stockée sous l'hôte usurpé ; `/api/metrics/write` (label `instance`) → 204, idem ; `/services/collector` (HEC, `"host":"HEC-USURPE"`) → 200, idem. Quatre surfaces, dont une seule était documentée comme telle.* |
-| `src_ip`        | string  | IP source — colonne **promue** depuis `fields.src_ip` \| `fields.rhost` (§4). |
-| `dst_ip`        | string  | IP destination — colonne **promue** depuis `fields.dst_ip`. |
-| `url`           | string  | URL / host+path — colonne **promue** depuis `fields.url`. |
-| `dedup`         | string  | Clé anti-doublon (`INSERT OR IGNORE`). **CLOISONNÉE PAR HÔTE À L'ÉCRITURE** : la valeur STOCKÉE est `dedup_scoped_by_host(host, dedup)` (`daemon/src/ingest/store.rs`), donc la portée d'unicité est l'HÔTE de la ligne, pas la base. Un émetteur n'a **pas** à faire figurer l'hôte dans sa clé — et **ne peut pas** en produire une qui collisionne entre machines, quel que soit son langage. Il doit en revanche produire une clé **stable et déterministe** pour un même événement, c'est elle qui absorbe les réémissions du spool (at-least-once). *Avant ce cloisonnement, deux machines se volaient leurs événements en silence : mesuré 45 événements Sysmon disparus sur Windows (cf. `collectors/windows/README.md`) et 26 sur 78 côté Linux (cf. le bandeau de `ingest/store.rs`).* |
-| `fields`        | object  | Sac JSON des champs **ÉTENDUS** (spécifiques vendeur/parser). |
-| `engagement_id` | string  | Corrélation d'engagement purple-team. |
-| `origin`        | string  | Marqueur d'origine d'ingestion. |
-| `env_id`        | string  | Liaison d'environnement (défaut `prod`). |
+| `message`       | string  | Human-readable summary. |
+| `host`          | string  | Observing/reporting host. **RESOLVED AT WRITE TIME, IN A SINGLE PLACE**: `HoteIngere::resoudre` (`daemon/src/ingest/store.rs`) returns the host **of the token** when that token is bound to a machine, and the **declared** host otherwise. A machine token can therefore only write under its own host, **on every ingestion surface** (`/api/ingest`, `/api/ingest/journal`, `/api/ingest/minio`, `/api/metrics/prom`, `/api/metrics/write`, `/loki/api/v1/push`, `/services/collector`, `/v1/traces`) — the resolution does not know the routes, so it cannot forget one. A **relay** token (`--relais`, multi-host forwarder) writes under the host it declares: that host is **not** attested. *Before: the binding was only consulted on the `/api/ingest` and `/loki/api/v1/push` paths. Measured on 2026‑08‑02 with a token bound to `WS22-LAB` — `/api/metrics/prom?host=HOTE-USURPE-PAR-METRICS` → HTTP 200 and the metric stored under the spoofed host; `/api/metrics/write` (label `instance`) → 204, likewise; `/services/collector` (HEC, `"host":"HEC-USURPE"`) → 200, likewise. Four surfaces, only one of which was documented as such.* |
+| `src_ip`        | string  | Source IP — column **promoted** from `fields.src_ip` \| `fields.rhost` (§4). |
+| `dst_ip`        | string  | Destination IP — column **promoted** from `fields.dst_ip`. |
+| `url`           | string  | URL / host+path — column **promoted** from `fields.url`. |
+| `dedup`         | string  | Anti-duplicate key (`INSERT OR IGNORE`). **PARTITIONED BY HOST AT WRITE TIME**: the STORED value is `dedup_scoped_by_host(host, dedup)` (`daemon/src/ingest/store.rs`), so the uniqueness scope is the row's HOST, not the database. A sender does **not** have to include the host in its key — and **cannot** produce one that collides across machines, whatever its language. It must, however, produce a **stable and deterministic** key for the same event; that key is what absorbs re-sends from the spool (at-least-once). *Before this partitioning, two machines silently stole each other's events: measured 45 Sysmon events lost on Windows (see `collectors/windows/README.md`) and 26 out of 78 on the Linux side (see the header of `ingest/store.rs`).* |
+| `fields`        | object  | JSON bag of **EXTENDED** fields (vendor/parser-specific). |
+| `engagement_id` | string  | Purple-team engagement correlation. |
+| `origin`        | string  | Ingestion origin marker. |
+| `env_id`        | string  | Environment binding (default `prod`). |
 
-> La struct `EventRow` + `EVENT_INSERT_SQL` restent la définition qui **fait foi** ;
-> `CIM_CORE_FIELDS` en est le miroir-de-contrat testé.
+> The `EventRow` struct + `EVENT_INSERT_SQL` remain the **authoritative** definition;
+> `CIM_CORE_FIELDS` is its tested contract mirror.
 
 ---
 
-## 2. Taxonomie `category` (v1.3 — 40 valeurs, closed-ish)
+## 2. `category` taxonomy (v1.3 — 40 values, closed-ish)
 
-`source` = **QUI** produit (vendeur). `category` = **QUOI** sémantiquement (neutre,
-inter-vendeur). Les règles composent **`category=…`, jamais par vendeur** — c'est ce qui rend
-une détection portable de FortiGate à Suricata à un futur connecteur Defender sans réécriture.
+`source` = **WHO** produces (vendor). `category` = **WHAT** semantically (neutral,
+cross-vendor). Rules compose on **`category=…`, never by vendor** — this is what makes
+a detection portable from FortiGate to Suricata to a future Defender connector without a rewrite.
 
-Deux **namespaces**. La scission est une **GUIDANCE** (le runtime traite toutes les
-catégories à l'identique) :
+Two **namespaces**. The split is **GUIDANCE** (the runtime treats all
+categories identically):
 
-- **security** — signal d'attaque/sécurité ; l'axe où composent les règles de détection.
-- **operational** — télémétrie collecteur, état de config, piste d'audit ; **pas** un signal
-  d'attaque primaire — alimente santé / couverture / whitelists.
+- **security** — attack/security signal; the axis on which detection rules compose.
+- **operational** — collector telemetry, configuration state, audit trail; **not** a primary attack
+  signal — feeds health / coverage / whitelists.
 
-### 2a. Namespace `security` (27)
+### 2a. `security` namespace (27)
 
-| category | signification | sources d'exemple |
+| category | meaning | example sources |
 |----------|---------------|-------------------|
-| `firewall`    | Filtrage L3/L4, allow/deny, session/traffic.                              | `fortigate(traffic)`, `ufw`, `nft`, `origin-drop` |
-| `ids`         | Détection/prévention d'intrusion, anomalie.                              | `suricata`, `fortigate(ips/anomaly)` |
-| `alert`       | Alerte signature IDS.                                                     | `suricata` |
-| `web`         | Filtrage web / proxy / WAF / accès HTTP applicatif.                       | `web`, `fortigate(webfilter/waf)`, `cloudflare-http` |
-| `malware`     | Détection antivirus / EDR / YARA.                                        | `clamav`, `yara`, `fortigate(virus)` |
-| `auth`        | Authentification / autorisation (login, sudo, session).                   | `journal(sshd/sudo)`, `fortigate(user)` |
-| `dns`         | Requête / filtrage DNS.                                                   | `fortigate(dns)` |
-| `mail`        | Sécurité / filtrage email.                                               | `mail`, `fortigate(emailfilter)` |
-| `dlp`         | Prévention de fuite de données.                                          | `fortigate(dlp)` |
-| `vpn`         | Événements de tunnel VPN.                                                | `fortigate(vpn)` |
-| `application` | Contrôle applicatif (app-ctrl).                                          | `fortigate(app-ctrl)` |
+| `firewall`    | L3/L4 filtering, allow/deny, session/traffic.                              | `fortigate(traffic)`, `ufw`, `nft`, `origin-drop` |
+| `ids`         | Intrusion detection/prevention, anomaly.                              | `suricata`, `fortigate(ips/anomaly)` |
+| `alert`       | IDS signature alert.                                                     | `suricata` |
+| `web`         | Web filtering / proxy / WAF / application HTTP access.                       | `web`, `fortigate(webfilter/waf)`, `cloudflare-http` |
+| `malware`     | Antivirus / EDR / YARA detection.                                        | `clamav`, `yara`, `fortigate(virus)` |
+| `auth`        | Authentication / authorisation (login, sudo, session).                   | `journal(sshd/sudo)`, `fortigate(user)` |
+| `dns`         | DNS query / filtering.                                                   | `fortigate(dns)` |
+| `mail`        | Email security / filtering.                                               | `mail`, `fortigate(emailfilter)` |
+| `dlp`         | Data loss prevention.                                          | `fortigate(dlp)` |
+| `vpn`         | VPN tunnel events.                                                | `fortigate(vpn)` |
+| `application` | Application control (app-ctrl).                                          | `fortigate(app-ctrl)` |
 | `endpoint`    | Endpoint / EMS / EDR.                                                     | `fortigate(endpoint/ems)` |
-| `network`     | Flux / télémétrie réseau ; bucket neutre des types FortiGate non mappés. | `conntrack`, `crowdsec`, `fortigate(router/inconnu)` |
-| `data`        | Accès aux données / stockage objet / RBAC-vers-données.                  | `minio`, `kube-rbac`, `dataaccess`, `dataacl` |
-| `tamper`      | Altération d'un objet critique d'intégrité (tripwire).                   | `auditd(sudoers.d/shadow)` |
-| `vuln`        | Constat de vulnérabilité.                                                | `vuln` |
-| `utm`         | Fourre-tout UTM FortiGate (sous-type non mappé) — bucket neutre.          | `fortigate(utm)` |
-| `posture`     | Évaluation de configuration / conformité (SCA-CIS) : hôte × benchmark × contrôle × pass\|fail × cadre. | `wazuh(sca)`, `openscap`, `osquery(pack)` |
-| `exec`        | **Exécution de processus** (execve) — surveillance d'exécution hôte. v1.3 : home canonique du flux **dominant** auditd (~30 % des events), conforme **rétroactivement**. | `auditd(execve)`, `osquery(process_events)` |
-| `secrets`     | Accès au **coffre de secrets** (lecture / écriture / suppression d'un secret). v1.3. | `vault-audit` |
-| `account`     | **Gestion de compte** (création / modification / suppression d'utilisateur ou de groupe). v1.3. | `auditd(useradd/usermod/passwd)`, `journal` |
-| `recon`       | Activité de **reconnaissance** / énumération / découverte. v1.3. | `nft(portscan corrélé)`, `moat-probe` |
-| `postscreen`  | Postfix **postscreen** — pré-filtrage de connexion SMTP entrante (sous-étape mail). v1.3. | `mail(postscreen)` |
-| `reject`      | **Rejet SMTP** (relais / politique / RBL) — sous-étape mail. v1.3. | `mail(reject)` |
-| `mailflow`    | Étape de **flux mail** (livraison / file / transport) — sous-étape mail. v1.3. | `mail(mailflow)` |
-| `mail-phishing`| Signal de **phishing** détecté dans le flux mail — sous-étape mail. v1.3. | `mail(phishing)` |
-| `mail-url`    | **URL extraite** d'un message (analyse de lien) — sous-étape mail. v1.3. | `mail(url)` |
+| `network`     | Network flows / telemetry; neutral bucket for unmapped FortiGate types. | `conntrack`, `crowdsec`, `fortigate(router/inconnu)` |
+| `data`        | Data access / object storage / RBAC-to-data.                  | `minio`, `kube-rbac`, `dataaccess`, `dataacl` |
+| `tamper`      | Tampering with an integrity-critical object (tripwire).                   | `auditd(sudoers.d/shadow)` |
+| `vuln`        | Vulnerability finding.                                                | `vuln` |
+| `utm`         | FortiGate UTM catch-all (unmapped subtype) — neutral bucket.          | `fortigate(utm)` |
+| `posture`     | Configuration / compliance assessment (SCA-CIS): host × benchmark × check × pass\|fail × framework. | `wazuh(sca)`, `openscap`, `osquery(pack)` |
+| `exec`        | **Process execution** (execve) — host execution monitoring. v1.3: canonical home of the **dominant** auditd flow (~30 % of events), compliant **retroactively**. | `auditd(execve)`, `osquery(process_events)` |
+| `secrets`     | Access to the **secrets vault** (read / write / delete of a secret). v1.3. | `vault-audit` |
+| `account`     | **Account management** (creation / modification / deletion of a user or group). v1.3. | `auditd(useradd/usermod/passwd)`, `journal` |
+| `recon`       | **Reconnaissance** / enumeration / discovery activity. v1.3. | `nft(portscan corrélé)`, `moat-probe` |
+| `postscreen`  | Postfix **postscreen** — pre-filtering of inbound SMTP connections (mail sub-stage). v1.3. | `mail(postscreen)` |
+| `reject`      | **SMTP rejection** (relay / policy / RBL) — mail sub-stage. v1.3. | `mail(reject)` |
+| `mailflow`    | **Mail flow** stage (delivery / queue / transport) — mail sub-stage. v1.3. | `mail(mailflow)` |
+| `mail-phishing`| **Phishing** signal detected in the mail flow — mail sub-stage. v1.3. | `mail(phishing)` |
+| `mail-url`    | **URL extracted** from a message (link analysis) — mail sub-stage. v1.3. | `mail(url)` |
 
-> **Note v1.3 — sous-étapes mail.** `mail` reste la catégorie de sécurité email primaire ; les cinq
-> sous-étapes ci-dessus (`postscreen`/`reject`/`mailflow`/`mail-phishing`/`mail-url`) sont les **labels que
-> le collecteur mail émet DÉJÀ** en `category`. On leur donne un home canonique SANS toucher le collecteur
-> (ADDITIF, cf. §0) : le but est la parité contrat↔producteurs, pas la re-normalisation. Une évolution
-> future POURRAIT replier ces labels en `category=mail` + `fields.mail_stage=…`, mais ce serait un
-> changement de producteur (hors périmètre) et non rétro-conforme.
+> **v1.3 note — mail sub-stages.** `mail` remains the primary email security category; the five
+> sub-stages above (`postscreen`/`reject`/`mailflow`/`mail-phishing`/`mail-url`) are the **labels that
+> the mail collector ALREADY emits** as `category`. They are given a canonical home WITHOUT touching the collector
+> (ADDITIVE, see §0): the goal is contract↔producer parity, not re-normalisation. A future
+> evolution COULD fold these labels into `category=mail` + `fields.mail_stage=…`, but that would be a
+> producer change (out of scope) and not backward-compatible.
 
-### 2b. Namespace `operational` (13)
+### 2b. `operational` namespace (13)
 
-| category | signification | sources d'exemple |
+| category | meaning | example sources |
 |----------|---------------|-------------------|
-| `health`    | Battement de cœur / liveness du collecteur (0 attaque = normal ; distingue **silence** de **panne**). | tous les collecteurs (health beat) |
-| `config`    | Auto-report du collecteur : transparence des filtres (**whitelists #10**) **et DISPONIBILITÉ** — `fields.collect_status` ∈ {`unavailable`, `disabled`, `fallback`, `partial`} + `fields.reason` : les deux premiers disent qu'un capteur ne PEUT PAS collecter (dépendance/source/réglage absent), au lieu de sortir silencieusement en succès. Voir `plume_unavailable` / `plume_disabled` (`collectors/lib.sh`). Un septième mot de `reason` ne décrit PAS une incapacité : `collection-capped` dit que le capteur a collecté puis a COUPÉ lui-même, à une borne QUI EST SIENNE (plafond de lignes par passage, borne de durée sur une commande d'exploitant) — la source allait bien, la couverture est incomplète par construction, et le détail porte le nombre de lignes écartées (ou « nombre inconnu » quand la borne ne permet pas de le lire). Il est interdit sur les primitives qui SORTENT (une borne franchie n'arrête pas un passage) ; sa porte est `plume_collecte_tronquee`. **TROISIÈME ÉTAT, DÉCLARÉ le 2026-09-09 (`P4.6-c`)** : `fallback` / `reason=unreadable-config` dit qu'un RÉGLAGE n'a pas pu être lu et qu'un défaut s'applique à sa place, la collecte étant ENTIÈRE — mesuré le 2026-08-27 sur `collectors/custom.sh` (`MAX=deux` → 4 événements publiés), qui empruntait alors `unavailable / missing-config` et faisait basculer la pastille d'une source saine. Sa porte est `plume_reglage_illisible` (`collectors/lib.sh`), sévérité 1, interdite sur les primitives qui SORTENT ; la règle livrée `de-collector-unavailable` ne l'interroge pas, et il se requête : `search category=config collect_status=fallback`. **QUATRIÈME ÉTAT, DÉCLARÉ le 2026-09-29 (`P10.23-i`)** : `partial` / `reason=unreadable-address` dit que le capteur a LU la source et CLASSÉ des lignes (échec ou succès d'authentification, blocage, rejet) qu'il n'a pas émises, faute d'une adresse source valide (par exemple le client `unknown[unknown]` de Postfix) ; le détail porte leur nombre et leur ventilation par catégorie, la clé de dédoublonnage ne porte pas le nombre. Ce n'est ni une incapacité (`unavailable` ferait alerter la règle livrée et basculer la pastille d'une source saine), ni une borne du capteur (`collection-capped`, qu'un exploitant relève), ni une collecte entière (`fallback`). Sa porte est `plume_adresse_illisible` (`collectors/lib.sh`), sévérité 2 (des événements sont perdus), elle ne sort pas ; la règle livrée `de-collector-unavailable` ne l'interroge pas, et il se requête : `search category=config collect_status=partial`. **`fields.hors_vocabulaire`** (décision du 2026-09-10, `P11.19-b`) : quand un producteur Rust (agent, collecteur mail, collecteur syslog) émet pour `reason` ou `cause` un mot hors de l'ensemble qu'il déclare, le mot part TEL QUEL et ce champ nomme, séparés par des virgules, le(s) champ(s) concerné(s) — rien n'est perdu, la dette est visible et requêtable : `search category=config hors_vocabulaire=*`. | `web`, `nft`, `portscan`, `auditd`, **tout capteur incapable** |
-| `audit`     | Transport de piste d'audit.                                              | `auditd(audit.sh)` |
-| `system`    | Événements système / hôte.                                              | `fortigate(system/ha/config)` |
-| `update`    | Dérive d'image / paquets & mises à jour.                                | `imgdrift` |
-| `container` | Événements du runtime conteneur.                                        | `containerd` |
-| `k8s`       | Audit Kubernetes.                                                        | `kube-audit` |
-| `ebpf`      | Sécurité runtime eBPF.                                                   | `falco` |
-| `ban`       | Registre des bannissements (fail2ban / CAPI).                            | `bans` |
-| `integrity` | Surveillance d'intégrité de fichiers (FIM).                             | `integrity`, `wazuh(syscheck)` |
-| `syslog`    | Repli syslog générique / non classé (bucket « pas encore mappé »).       | `collector-syslog` (parser `Generic`) |
-| `inventory` | Télémétrie d'inventaire endpoint (syscollector) : paquets/ports/processus. | `wazuh(syscollector)`, `osquery` |
-| `trace`     | Télémétrie OpenTelemetry : spans de traces distribuées (opération × service × durée × statut), **corrélables aux logs par `trace_id`** (#41). | `otlp(/v1/traces)`, `otel-collector`, `otel-sdk` |
+| `health`    | Collector heartbeat / liveness (0 attacks = normal; distinguishes **silence** from **failure**). | all collectors (health beat) |
+| `config`    | Collector self-report: transparency of filters (**whitelists #10**) **and AVAILABILITY** — `fields.collect_status` ∈ {`unavailable`, `disabled`, `fallback`, `partial`} + `fields.reason`: the first two say that a sensor CANNOT collect (missing dependency/source/setting), instead of silently exiting with success. See `plume_unavailable` / `plume_disabled` (`collectors/lib.sh`). A seventh `reason` word does NOT describe an inability: `collection-capped` says that the sensor collected and then CUT OFF by itself, at a bound THAT IS ITS OWN (line ceiling per pass, duration bound on an operator command) — the source was fine, the coverage is incomplete by construction, and the detail carries the number of lines discarded (or "nombre inconnu" when the bound does not allow it to be read). It is forbidden on primitives that EXIT (a crossed bound does not stop a pass); its gate is `plume_collecte_tronquee`. **THIRD STATE, DECLARED on 2026-09-09 (`P4.6-c`)**: `fallback` / `reason=unreadable-config` says that a SETTING could not be read and that a default applies in its place, the collection being COMPLETE — measured on 2026-08-27 on `collectors/custom.sh` (`MAX=deux` → 4 events published), which at the time used `unavailable / missing-config` and flipped the status badge of a healthy source. Its gate is `plume_reglage_illisible` (`collectors/lib.sh`), severity 1, forbidden on primitives that EXIT; the shipped rule `de-collector-unavailable` does not query it, and it can be queried: `search category=config collect_status=fallback`. **FOURTH STATE, DECLARED on 2026-09-29 (`P10.23-i`)**: `partial` / `reason=unreadable-address` says that the sensor READ the source and CLASSIFIED lines (authentication failure or success, block, rejection) that it did not emit, for lack of a valid source address (for example Postfix's `unknown[unknown]` client); the detail carries their number and their breakdown by category, the deduplication key does not carry the number. It is neither an inability (`unavailable` would make the shipped rule alert and flip the status badge of a healthy source), nor a sensor bound (`collection-capped`, which an operator raises), nor a complete collection (`fallback`). Its gate is `plume_adresse_illisible` (`collectors/lib.sh`), severity 2 (events are lost), it does not exit; the shipped rule `de-collector-unavailable` does not query it, and it can be queried: `search category=config collect_status=partial`. **`fields.hors_vocabulaire`** (decision of 2026-09-10, `P11.19-b`): when a Rust producer (agent, mail collector, syslog collector) emits for `reason` or `cause` a word outside the set it declares, the word goes out AS IS and this field names, separated by commas, the field(s) concerned — nothing is lost, the debt is visible and queryable: `search category=config hors_vocabulaire=*`. | `web`, `nft`, `portscan`, `auditd`, **any sensor that cannot collect** |
+| `audit`     | Audit trail transport.                                              | `auditd(audit.sh)` |
+| `system`    | System / host events.                                              | `fortigate(system/ha/config)` |
+| `update`    | Image drift / packages & updates.                                | `imgdrift` |
+| `container` | Container runtime events.                                        | `containerd` |
+| `k8s`       | Kubernetes audit.                                                        | `kube-audit` |
+| `ebpf`      | eBPF runtime security.                                                   | `falco` |
+| `ban`       | Ban register (fail2ban / CAPI).                            | `bans` |
+| `integrity` | File integrity monitoring (FIM).                             | `integrity`, `wazuh(syscheck)` |
+| `syslog`    | Generic / unclassified syslog fallback ("not yet mapped" bucket).       | `collector-syslog` (parser `Generic`) |
+| `inventory` | Endpoint inventory telemetry (syscollector): packages/ports/processes. | `wazuh(syscollector)`, `osquery` |
+| `trace`     | OpenTelemetry telemetry: distributed trace spans (operation × service × duration × status), **correlatable with logs through `trace_id`** (#41). | `otlp(/v1/traces)`, `otel-collector`, `otel-sdk` |
 
-> **Mapping guidance.** Un mapping vendeur DEVRAIT cibler une catégorie existante. En cas de
-> doute : `network` (flux L3/L4 inconnu), `system` (état hôte), ou `syslog` (non classé) sont
-> les buckets neutres de repli — **jamais** un drop. Ajouter une catégorie = **bump
-> `CIM_VERSION`** + mettre à jour `docs/CIM.md` + `config.d/cim/cim.v1.json` (le test garde la
-> parité). Une valeur hors-taxonomie est acceptée à l'ingest mais **signalée** (`warn`).
+> **Mapping guidance.** A vendor mapping SHOULD target an existing category. When in
+> doubt: `network` (unknown L3/L4 flow), `system` (host state), or `syslog` (unclassified) are
+> the neutral fallback buckets — **never** a drop. Adding a category = **bump
+> `CIM_VERSION`** + update `docs/CIM.md` + `config.d/cim/cim.v1.json` (the test guards
+> parity). An out-of-taxonomy value is accepted at ingest but **reported** (`warn`).
 
 ---
 
-## 3. Échelle de sévérité (0..4)
+## 3. Severity scale (0..4)
 
-| valeur | sens     | syslog RFC5424 (mappé par `syslog_sev_to_plume`) | FortiGate (`level_to_sev`) |
+| value | meaning  | syslog RFC5424 (mapped by `syslog_sev_to_plume`) | FortiGate (`level_to_sev`) |
 |:------:|----------|--------------------------------------------------|----------------------------|
 | `0`    | info     | info, debug                                      | information, debug |
 | `1`    | notice   | notice                                           | notice |
@@ -159,412 +159,412 @@ catégories à l'identique) :
 
 ---
 
-## 4. Champs étendus (`fields`) — promotion, dimensions chaudes, outcome
+## 4. Extended fields (`fields`) — promotion, hot dimensions, outcome
 
-Tout ce qui n'est pas une colonne cœur vit dans `fields` (objet JSON). Trois sous-contrats :
+Everything that is not a core column lives in `fields` (JSON object). Three sub-contracts:
 
-### 4a. Champs PROMUS en colonnes (par nom)
+### 4a. Fields PROMOTED to columns (by name)
 
-Le daemon promeut certains champs de `fields` vers les colonnes cœur (`fields_ip` /
-`fields_dst` / `fields_url`). Un parser/mapping DOIT poser ces clés pour peupler les colonnes :
+The daemon promotes certain `fields` entries to the core columns (`fields_ip` /
+`fields_dst` / `fields_url`). A parser/mapping MUST set these keys to populate the columns:
 
-| colonne cible | clés `fields` sources |
+| target column | source `fields` keys |
 |---------------|-----------------------|
 | `src_ip`      | `fields.src_ip`, `fields.rhost` |
 | `dst_ip`      | `fields.dst_ip` |
 | `url`         | `fields.url` |
 
-> `ip` (ambigu source/destination) **n'est pas** promu — pas de faux sens src/dst.
+> `ip` (ambiguous source/destination) **is not** promoted — no false src/dst meaning.
 
-### 4b. Dimensions ÉTENDUES chaudes (`HOT_FIELDS`) — le « cœur étendu »
+### 4b. Hot EXTENDED dimensions (`HOT_FIELDS`) — the "extended core"
 
-Clés de `fields` indexées / groupables (cardinalité bornée = énumérés/identités d'un parc
-borné). C'est le cœur étendu du CIM sur lequel les détections filtrent/groupent en plus des
-colonnes :
+`fields` keys that are indexed / groupable (bounded cardinality = enumerations/identities of a bounded
+fleet). This is the extended core of the CIM on which detections filter/group in addition to the
+columns:
 
 ```
 action  user  owner  kind  ns  role  scope  verb  resource  operation  dir  risk
 ```
 
-> **`dir` et `risk` (2026‑08‑05) — entrés par ce que du contenu LIVRÉ interroge, pas par prédiction.**
-> Ces deux clés étaient censées être servies par un mécanisme d'auto‑indexation piloté par la chaleur
-> d'usage. Ce mécanisme **ne pouvait plus rien promouvoir** — ses crochets de comptage sont devenus du
-> code mort quand le compilateur GXQL a migré dans `guatx-core` — et il a été retiré (P6.8‑b) ; sa
-> purge de fond a droppé les index `idx_ev_auto_dir` / `idx_ev_auto_risk` / `idx_ev_auto_vtype` qui,
-> eux, **existaient réellement en production** (relevés avec leur taille dans `bench/profile-prod.json`,
-> `provenance: measured`, 2026‑07‑30 : quelques Mio pour `dir`, quelques Kio pour `risk`). Le critère d'entrée
-> dans cette liste est donc devenu explicite
-> et vérifiable : **une règle livrée filtre‑t‑elle sur ce champ ?** — `dir=outbound` : trois règles du
-> catalogue (`ex-egress-fanout-external`, `lm-conntrack-internal-ssh`, `di-conntrack-internal-sweep`) ;
-> `risk=public` : une (`cl-minio-public-bucket`). `vtype`, qu'aucun contenu livré n'interroge, n'a
-> **pas** été restauré. La liste est **ordonnée** et dupliquée dans `guatx-core` ; une assertion de
-> compilation refuse toute divergence entre les deux (`daemon/src/soql_glue.rs`).
+> **`dir` and `risk` (2026‑08‑05) — added because SHIPPED content queries them, not by prediction.**
+> These two keys were supposed to be served by an auto-indexing mechanism driven by usage
+> heat. That mechanism **could no longer promote anything** — its counting hooks became dead
+> code when the GXQL compiler migrated into `guatx-core` — and it was removed (P6.8‑b); its
+> background purge dropped the `idx_ev_auto_dir` / `idx_ev_auto_risk` / `idx_ev_auto_vtype` indexes which,
+> for their part, **really existed in production** (recorded with their size in `bench/profile-prod.json`,
+> `provenance: measured`, 2026‑07‑30: a few MiB for `dir`, a few KiB for `risk`). The criterion for entry
+> into this list has therefore become explicit
+> and verifiable: **does a shipped rule filter on this field?** — `dir=outbound`: three rules in the
+> catalogue (`ex-egress-fanout-external`, `lm-conntrack-internal-ssh`, `di-conntrack-internal-sweep`);
+> `risk=public`: one (`cl-minio-public-bucket`). `vtype`, which no shipped content queries, was
+> **not** restored. The list is **ordered** and duplicated in `guatx-core`; a compile-time
+> assertion refuses any divergence between the two (`daemon/src/soql_glue.rs`).
 
-### 4c. Vocabulaire NEUTRE de `action` (outcome normalisé — CIM v29)
+### 4c. NEUTRAL vocabulary of `action` (normalised outcome — CIM v29)
 
-`fields.action` porte l'**outcome normalisé** cross-source (produit par `journal_action`, les
-parsers FortiGate/web, etc.). Guidance de mapping (réutiliser ces verbes neutres) :
+`fields.action` carries the cross-source **normalised outcome** (produced by `journal_action`, the
+FortiGate/web parsers, etc.). Mapping guidance (reuse these neutral verbs):
 
 ```
 success  failure  allowed  blocked  ban  read  modify  delete  sudo  session_open  session_close
 ```
 
-**`action` EST UNE ISSUE — donc son absence n'est PAS uniforme, et ce document le disait mal.**
-Ce paragraphe listait un vocabulaire sans jamais dire **où** `action` s'applique, ni ce que son
-absence signifie. Deux relevés du 2026‑08‑02 montrent que la question n'est pas cosmétique :
+**`action` IS AN OUTCOME — so its absence is NOT uniform, and this document used to say it poorly.**
+This paragraph listed a vocabulary without ever saying **where** `action` applies, nor what its
+absence means. Two readings from 2026‑08‑02 show that the question is not cosmetic:
 
-- **Base réelle** (extraction lecture seule `bench/prod-profile.sql`, de l'ordre du million d'événements) :
-  `fields.action` est présent sur **68,7 %** des lignes, cardinalité 18.
-- **Hôte Linux avec les collecteurs livrés** (base de labo peuplée par `collectors/*.sh` + journald
-  réel) : absent sur **12,6 %** des lignes — et ces lignes-là sont **exactement** les catégories
-  `health`, `config` et les flux `network`, c'est-à-dire celles qui **n'ont pas d'issue**.
+- **Real database** (read-only extraction `bench/prod-profile.sql`, on the order of a million events):
+  `fields.action` is present on **68.7 %** of rows, cardinality 18.
+- **Linux host with the shipped collectors** (lab database populated by `collectors/*.sh` + real
+  journald): absent on **12.6 %** of rows — and those rows are **exactly** the categories
+  `health`, `config` and the `network` flows, that is, those that **have no outcome**.
 
-La règle est donc : **une catégorie qui décrit un ACTE porte son issue ; une catégorie qui décrit un
-ÉTAT n'en a pas.** Un battement de cœur ne réussit ni n'échoue ; un auto-report de disponibilité non
-plus. Ce qui reste **exigible** :
+The rule is therefore: **a category that describes an ACT carries its outcome; a category that describes a
+STATE has none.** A heartbeat neither succeeds nor fails; nor does an availability self-report.
+What remains **required**:
 
-| famille | `action` attendu |
+| family | expected `action` |
 |---|---|
-| `auth` (ouverture/échec de session, Kerberos/NTLM, sudo, session) | **OUI** — `success` / `failure` / `session_open` / `session_close` / `sudo` |
-| `firewall`, `web`, `dns`, `mail`, `dlp`, `application` (filtrage : il y a un verdict) | **OUI** — `allowed` / `blocked` |
-| `ban` | **OUI** — `ban` |
-| `data`, `secrets`, `integrity`, `account` (accès/mutation) | **OUI** — `read` / `modify` / `delete` |
-| `exec` | **OUI** — `success` / `failure` (`auditd` rend `failure` sur un `execve` refusé ; Windows n'écrit 4688 que sur succès) |
-| `health`, `config`, `inventory`, `posture`, `trace`, `network` (flux) | **NON** — pas d'issue à porter |
+| `auth` (session opening/failure, Kerberos/NTLM, sudo, session) | **YES** — `success` / `failure` / `session_open` / `session_close` / `sudo` |
+| `firewall`, `web`, `dns`, `mail`, `dlp`, `application` (filtering: there is a verdict) | **YES** — `allowed` / `blocked` |
+| `ban` | **YES** — `ban` |
+| `data`, `secrets`, `integrity`, `account` (access/mutation) | **YES** — `read` / `modify` / `delete` |
+| `exec` | **YES** — `success` / `failure` (`auditd` returns `failure` on a refused `execve`; Windows only writes 4688 on success) |
+| `health`, `config`, `inventory`, `posture`, `trace`, `network` (flows) | **NO** — no outcome to carry |
 
-> Ce tableau est **NORMATIF** (ce qui est exigible d'un émetteur), pas un relevé de l'existant : la
-> conformité n'est mesurée aujourd'hui que sur les chemins cités dans ce document. Un émetteur qui porte
-> l'outcome sous un autre nom (`operation` pour `vault-audit`, par exemple) reste hors de portée des
-> détections qui composent sur `action` — non mesuré ailleurs, donc non affirmé ailleurs.
+> This table is **NORMATIVE** (what is required of a sender), not a survey of what exists: compliance
+> is only measured today on the paths cited in this document. A sender that carries
+> the outcome under another name (`operation` for `vault-audit`, for example) remains out of reach of
+> detections that compose on `action` — not measured elsewhere, so not asserted elsewhere.
 
-> **Écart déclaré, `mail` (`P10.32-f`).** Les verdicts d'authentification de l'EXPÉDITEUR que
-> `collectors/mail.sh` émet en `category=mail` (opendkim, opendmarc, policyd-spf) portent le résultat
-> de la vérification (`pass`, `fail`, `none`, `softfail`, `neutral`, `temperror`, `permerror` ; `signed` et
-> `error` pour opendkim), pas `allowed`/`blocked` : un tel verdict ne décide pas de la livraison, il ne se
-> ramène ni à l'un ni à l'autre. Une détection qui compose `category=mail action=blocked` ne les voit pas.
-> Le sortant (`postfix/smtp`) et la file (`postfix/qmgr`) sont émis en `mailflow` (livraison, file).
+> **Declared gap, `mail` (`P10.32-f`).** The SENDER authentication verdicts that
+> `collectors/mail.sh` emits as `category=mail` (opendkim, opendmarc, policyd-spf) carry the result
+> of the check (`pass`, `fail`, `none`, `softfail`, `neutral`, `temperror`, `permerror`; `signed` and
+> `error` for opendkim), not `allowed`/`blocked`: such a verdict does not decide delivery, it maps
+> to neither one nor the other. A detection that composes `category=mail action=blocked` does not see them.
+> Outbound (`postfix/smtp`) and the queue (`postfix/qmgr`) are emitted as `mailflow` (delivery, queue).
 
-> **Ce que l'absence coûtait, mesuré.** Les deux règles de brute-force livrées compilent
-> `category=auth action=failure`, et **aucun** des deux émetteurs Windows livrés ne posait `action`.
-> Trois échecs d'ouverture de session Windows (4625) réellement ingérés : `search category=auth |
-> stats count by source` rendait `windows-security 2 · WinEventLog:Security 1 · sudo 366`, tandis que
-> `search category=auth action=failure | stats count by source` rendait **`sudo 17` et RIEN pour
-> Windows**. Une détection T1110 activée était aveugle sur l'OS où le brute-force est le plus courant.
-> Fermé côté émetteur : l'agent (`agent/src/source/windows.rs`) décide catégorie, sévérité **et**
-> issue en **une seule variante de type sans champ optionnel** — une branche qui oublierait l'issue ne
-> compile pas ; le collecteur PowerShell (`collectors/windows/plume-collector.ps1`) dérive sa liste
-> d'identifiants d'une **table `identifiant → issue`**, donc collecter sans déclarer l'issue n'est plus
-> exprimable (garde de CI `check_windows_collector_is_honest.py`).
+> **What the absence cost, measured.** The two shipped brute-force rules compile
+> `category=auth action=failure`, and **neither** of the two shipped Windows senders set `action`.
+> Three Windows logon failures (4625) actually ingested: `search category=auth |
+> stats count by source` returned `windows-security 2 · WinEventLog:Security 1 · sudo 366`, while
+> `search category=auth action=failure | stats count by source` returned **`sudo 17` and NOTHING for
+> Windows**. An enabled T1110 detection was blind on the OS where brute force is most common.
+> Closed on the sender side: the agent (`agent/src/source/windows.rs`) decides category, severity **and**
+> outcome in **a single type variant with no optional field** — a branch that forgot the outcome would not
+> compile; the PowerShell collector (`collectors/windows/plume-collector.ps1`) derives its list
+> of identifiers from an **`identifiant → issue` table**, so collecting without declaring the outcome is no longer
+> expressible (CI guard `check_windows_collector_is_honest.py`).
 
-### 4d. Champs à FORTE cardinalité — ne comptez pas les indexer
+### 4d. HIGH-cardinality fields — do not expect them to be indexed
 
-Guidance de mapping, pas un réglage. Ces champs coûtent ~73 Mo d'index d'expression sur 2,6 M lignes,
-hors budget RAM (2 Gio) : **leur agrégation passe par les rollups**, jamais par un index.
+Mapping guidance, not a setting. These fields cost ~73 MB of expression index over 2.6 M rows,
+outside the RAM budget (2 GiB): **their aggregation goes through the rollups**, never through an index.
 
 ```
 path  src_ip  uid  pid  url  message  dedup  remote_address
 msg  time  logSource  request_id  trace_id  span_id  latency  duration  thread
 ```
 
-> **Ce que cette section disait avant, et pourquoi c'était trompeur.** Elle s'intitulait « denylist
-> d'auto-index » et citait une constante `AUTOINDEX_DENY`, ce qui laissait entendre qu'il existait un
-> mécanisme d'auto-indexation *dont ces champs étaient exclus* — donc que les **autres** champs, eux,
-> finiraient par être indexés à l'usage. C'était faux. Ce mécanisme adaptatif n'a **jamais promu un seul
-> index** et il a été retiré (P6.8-b). La seule indexation de champs JSON qui existe est la liste FERMÉE
-> `HOT_FIELDS` (§4b) ; **tout champ qui n'y figure pas est scanné**, qu'il soit dans le bloc ci-dessus ou
-> non. Le bloc ci-dessus reste utile pour une raison plus modeste et exacte : ce sont les champs qu'il ne
-> faut même pas *envisager* d'ajouter à `HOT_FIELDS`.
+> **What this section used to say, and why it was misleading.** It was titled "auto-index
+> denylist" and cited an `AUTOINDEX_DENY` constant, which implied that there was an
+> auto-indexing mechanism *from which these fields were excluded* — so that the **other** fields
+> would eventually be indexed through use. That was false. This adaptive mechanism **never promoted a single
+> index** and it was removed (P6.8-b). The only indexing of JSON fields that exists is the CLOSED list
+> `HOT_FIELDS` (§4b); **every field that does not appear in it is scanned**, whether it is in the block above or
+> not. The block above remains useful for a more modest and accurate reason: these are the fields that should not
+> even be *considered* for addition to `HOT_FIELDS`.
 
-### 4e. Familles de champs SÉCURITÉ ENDPOINT (#57 — BYO-agent)
+### 4e. ENDPOINT SECURITY field families (#57 — BYO-agent)
 
-Télémétrie endpoint-sécurité **ingérée** depuis l'agent que le client fait déjà tourner (Wazuh,
-osquery, EDR) et normalisée en `fields.*` par le preset `endpoint_normalize` (schéma Wazuh) **ou** par
-un parseur déclaratif (`docs/PARSER-DSL.md`) pour tout autre vendeur. Voir **`docs/ENDPOINT-SECURITY.md`**.
-Plume **n'exécute AUCUN scan endpoint lui-même** (non-goal assumé) — il est le cerveau analytique/réponse.
+Endpoint security telemetry **ingested** from the agent the customer already runs (Wazuh,
+osquery, EDR) and normalised into `fields.*` by the `endpoint_normalize` preset (Wazuh schema) **or** by
+a declarative parser (`docs/PARSER-DSL.md`) for any other vendor. See **`docs/ENDPOINT-SECURITY.md`**.
+Plume **runs NO endpoint scan itself** (an acknowledged non-goal) — it is the analytics/response brain.
 
-| category    | familles de `fields` normalisés |
+| category    | normalised `fields` families |
 |-------------|---------------------------------|
 | `posture`   | `posture_policy` `posture_policy_id` `posture_check_id` `posture_check_title` `posture_result`(pass\|fail\|na) `posture_remediation` `posture_framework` `posture_compliance` `posture_kind`(check\|summary) `posture_score` `posture_passed` `posture_failed` |
 | `vuln`      | `cve` `vuln_severity`(critical..low) `vuln_package` `vuln_package_version` `vuln_status` `vuln_cvss` `vuln_title` |
 | `integrity` | `fim_path` `fim_event`(added\|modified\|deleted) `fim_mode` `fim_sha256` `fim_md5` `fim_size` `fim_actor` (+ `action`=modify\|delete) |
 | `inventory` | `inv_type`(package\|port\|process\|hotfix) `inv_name` `inv_version` `inv_vendor` `inv_port` `inv_protocol` `inv_process` `inv_pid` `inv_cmd` |
 
-`agent_name` / `agent_id` / `agent_ip` (identité de l'endpoint rapporté) sont posés pour **toutes** les
-familles : un forwarder central relaie plusieurs hôtes, donc la colonne `host` peut être le forwarder ;
-`agent_name` est le **vrai** endpoint sur lequel les vues groupent.
+`agent_name` / `agent_id` / `agent_ip` (identity of the reported endpoint) are set for **all**
+families: a central forwarder relays several hosts, so the `host` column may be the forwarder;
+`agent_name` is the **real** endpoint on which views group.
 
-### 4f. Tampon de version CIM par event (`fields.cim`) — dérive détectable AU REPOS
+### 4f. Per-event CIM version stamp (`fields.cim`) — drift detectable AT REST
 
-Chaque event est tamponné **à l'ingest** avec `fields.cim = CIM_VERSION` (helper `cim_stamp`, appliqué sur
-les DEUX voies d'insertion : events génériques `ingest_events_batch_env` — qui absorbe /api/ingest, spool,
-HEC, MinIO, OTLP, Loki, connecteurs — et journald `ingest_journal_lines`). But : rendre la **dérive de
-contrat détectable sur des données figées**, sans quoi rien ne distingue une ligne d'ancienne convention
-d'une ligne récente.
+Each event is stamped **at ingest** with `fields.cim = CIM_VERSION` (helper `cim_stamp`, applied on
+BOTH insertion paths: generic events `ingest_events_batch_env` — which absorbs /api/ingest, spool,
+HEC, MinIO, OTLP, Loki, connectors — and journald `ingest_journal_lines`). Goal: make **contract
+drift detectable on frozen data**, without which nothing distinguishes a row written under an old convention
+from a recent row.
 
-- **Lecture au repos** : une ligne **sans** clé `fields.cim` a été écrite **avant** le tampon (« pré-tampon »,
-  convention inconnue) ; une valeur **ancienne** (`< CIM_VERSION`) signale un contrat périmé. Ex. GXQL :
+- **Reading at rest**: a row **without** a `fields.cim` key was written **before** the stamp ("pre-stamp",
+  unknown convention); an **old** value (`< CIM_VERSION`) signals an outdated contract. GXQL example:
   `search category=exec | where json_extract(fields,'$.cim')!="1.3"`.
-- **Additif / idempotent / fail-safe** : `cim_stamp` n'écrase jamais une clé `cim` déjà posée ; un sac vide
-  devient `{"cim":"1.3"}` ; un JSON non-objet imprévu est laissé INCHANGÉ (jamais de perte). Le tampon ne
-  participe pas au `dedup` (explicite ou NULL, jamais dérivé de `fields`) → idempotence `INSERT OR IGNORE`
-  préservée.
-- **Blast-radius minimal** : un champ du sac `fields` déjà sérialisé — **pas** de colonne, donc **aucune
-  migration de schéma**, aucun changement d'`EventRow`/`EVENT_INSERT_SQL` (pas de parité de store à
-  re-prouver). Les lignes **pré-tampon** ne sont pas ré-écrites — elles restent lisibles comme telles.
+- **Additive / idempotent / fail-safe**: `cim_stamp` never overwrites a `cim` key that is already set; an empty bag
+  becomes `{"cim":"1.3"}`; an unexpected non-object JSON is left UNCHANGED (never any loss). The stamp does not
+  take part in `dedup` (explicit or NULL, never derived from `fields`) → `INSERT OR IGNORE` idempotence
+  preserved.
+- **Minimal blast radius**: a field of the already-serialised `fields` bag — **not** a column, so **no
+  schema migration**, no change to `EventRow`/`EVENT_INSERT_SQL` (no store parity to
+  re-prove). **Pre-stamp** rows are not rewritten — they remain readable as such.
 
 ---
 
-### 4.x Renommer un champ vendeur vers une colonne d'entité — `P4.12-b` (2026-09-10)
+### 4.x Renaming a vendor field to an entity column — `P4.12-b` (2026-09-10)
 
-La promotion (`promoted_fields`) ne lit que `fields.src_ip` / `fields.rhost`, `fields.dst_ip`, `fields.url`.
-Un producteur qui nomme autrement son adresse — un attribut OTLP `otel.client.address`, une clé HEC `src`,
-un label Loki, un `remotehost` MinIO — laisse la colonne `src_ip` vide, et les règles par entité s'appliquent
-au vide. Le renommage champ→champ des connecteurs (`field_map`) ne couvrait que `http_pull`, Firehose et
-Pub/Sub ; les six autres voies d'entrée (`/api/ingest`, journald, MinIO, HEC, OTLP, Loki) n'en avaient aucun.
+Promotion (`promoted_fields`) only reads `fields.src_ip` / `fields.rhost`, `fields.dst_ip`, `fields.url`.
+A producer that names its address differently — an OTLP attribute `otel.client.address`, a HEC key `src`,
+a Loki label, a MinIO `remotehost` — leaves the `src_ip` column empty, and per-entity rules apply
+to emptiness. Connector field→field renaming (`field_map`) only covered `http_pull`, Firehose and
+Pub/Sub; the six other entry paths (`/api/ingest`, journald, MinIO, HEC, OTLP, Loki) had none.
 
-Le levier est le **moteur des processeurs** (action `rename`, table `ingest_rule`, API admin, rechargé à
-chaud), qui s'exécute sur TOUTES les voies après la promotion : `match_field=source`, `match_op=eq`,
-`match_value=<source>`, `action=rename`, `action_arg=fields.otel.client.address->src_ip`. Cibles admises :
-`src_ip`, `dst_ip`, `url`, `host`, `fields.<clé>` ; l'origine reste dans `fields` ; une colonne déjà posée
-par le producteur GAGNE (précédence collecteur > parseur) et la préemption est comptée par clé
+The lever is the **processor engine** (`rename` action, `ingest_rule` table, admin API, hot
+reloaded), which runs on ALL paths after promotion: `match_field=source`, `match_op=eq`,
+`match_value=<source>`, `action=rename`, `action_arg=fields.otel.client.address->src_ip`. Allowed targets:
+`src_ip`, `dst_ip`, `url`, `host`, `fields.<clé>`; the origin stays in `fields`; a column already set
+by the producer WINS (precedence collector > parser) and the pre-emption is counted per key
 (`ingest.fields_preempted`, `P4.12-f`).
 
-Ce qui le mesure : `ingest.events_without_src_ip_total` et `ingest.sources_without_src_ip{source}` dans
-`/api/metrics` (et `plume_ingest_events_without_src_ip_total` en Prometheus) comptent, depuis le démarrage,
-les événements ÉCRITS sans adresse source, par source, parmi ceux dont la nature admet une adresse : les
-battements de santé (`category=health`) et les aveux de configuration (`config`) de toute source, l'exécution
-locale (`exec`) d'auditd, de windows-security et de l'agent (`WinEventLog:Security`), la gestion de comptes
-(`account`) d'auditd et de windows-security, l'écriture sur un fichier surveillé (`tamper` d'auditd), les
-empreintes d'integrity, l'`auth` locale de `sudo` et `su`, et la catégorie `data` des sources locales
-(dataaccess, dataacl, kube-rbac, minio) n'y entrent pas (liste `EVENEMENTS_SANS_ADRESSE_PAR_NATURE` de
-`daemon/src/metrics.rs`), ni, jugés sur le contenu (liste `ADRESSE_ABSENTE_SELON_LE_CONTENU`), un échec
-d'authentification auditd dont le noyau écrit `addr=?` et les lignes d'ouverture et de fermeture de session de
-`sshd` et `sshd-session` (`action=session_open` / `session_close`), ni la gestion de comptes que l'agent Rust range en
-`auth` sous `WinEventLog:Security` (`event_id` 4720, 4722, 4724, 4725, 4726, 4728, 4732, 4735, 4738, 4740, cf. §5.5) ; l'inventaire des sources porte le même compte
-(`without_src_ip_since_start`). Une règle `rename` qui remplit la colonne fait descendre ce compte : c'est
-la preuve de son effet. Reste connu : le mode multi-tenant (control-plane) ne lie pas un jeton à un
-connecteur, et un renommage par JETON exigerait de transporter `connector_id` jusqu'au cœur (canal de
-l'`env_id` Firehose) — non construit, le prédicat par `source` couvre le besoin mesuré.
+What measures it: `ingest.events_without_src_ip_total` and `ingest.sources_without_src_ip{source}` in
+`/api/metrics` (and `plume_ingest_events_without_src_ip_total` in Prometheus) count, since startup,
+the events WRITTEN without a source address, per source, among those whose nature admits an address: the
+health beats (`category=health`) and configuration admissions (`config`) of any source, local
+execution (`exec`) from auditd, windows-security and the agent (`WinEventLog:Security`), account management
+(`account`) from auditd and windows-security, writes to a monitored file (`tamper` from auditd), the
+integrity hashes, the local `auth` of `sudo` and `su`, and the `data` category of local sources
+(dataaccess, dataacl, kube-rbac, minio) are not counted (list `EVENEMENTS_SANS_ADRESSE_PAR_NATURE` in
+`daemon/src/metrics.rs`), nor, judged on content (list `ADRESSE_ABSENTE_SELON_LE_CONTENU`), an auditd authentication
+failure for which the kernel writes `addr=?` and the session open and close lines of
+`sshd` and `sshd-session` (`action=session_open` / `session_close`), nor the account management that the Rust agent files under
+`auth` with `WinEventLog:Security` (`event_id` 4720, 4722, 4724, 4725, 4726, 4728, 4732, 4735, 4738, 4740, see §5.5); the source inventory carries the same count
+(`without_src_ip_since_start`). A `rename` rule that fills the column makes this count go down: that is
+the proof of its effect. Known remainder: multi-tenant mode (control plane) does not bind a token to a
+connector, and renaming per TOKEN would require carrying `connector_id` down to the core (the channel of the
+Firehose `env_id`) — not built, the predicate on `source` covers the measured need.
 
-## 5. Politique de version
+## 5. Versioning policy
 
-- `CIM_VERSION = "1.3"`. **Additif** (nouvelle catégorie/nouveau champ étendu) → bump
-  **mineur** (`1.1` a ajouté `posture`+`inventory`, #57 ; `1.2` a ajouté `trace`, #41 ; `1.3` a ajouté
-  `exec`/`secrets`/`account`/`recon` + 5 sous-étapes mail + le tampon `fields.cim`, Reorg Wave 2).
-  **Rupture** (retrait/renommage d'une catégorie ou d'un champ cœur) → bump **majeur** (`2.0`) + nouveau
-  fichier `config.d/cim/cim.v2.json`.
-- Le trio **doc (`docs/CIM.md`) ↔ code (`CIM_*` dans `guatx_core::cim`) ↔ schéma
-  (`config.d/cim/cim.v1.json`)** est maintenu cohérent par le test de parité. Modifier l'un
-  sans les autres **casse `cargo test`** — c'est voulu : une seule source de vérité. Un **garde-fou à la
-  COMPILATION** (`daemon/build.rs`) va plus loin : il extrait la `version` du schéma embarqué et
-  const-assert qu'elle égale `CIM_VERSION` du cœur LINKÉ — un build lié à un cœur STALE **échoue à compiler**.
-- **RÉTRO-CONFORMITÉ** : ajouter un nom à l'allow-list `CIM_CATEGORIES` ne réécrit **aucune** ligne. Les
-  events déjà stockés sous une catégorie nouvellement canonisée (ex. tout l'historique `exec`) deviennent
-  in-contract **immédiatement, sans migration de données** — `cim_category_ok()` est une pure appartenance.
+- `CIM_VERSION = "1.3"`. **Additive** (new category/new extended field) → **minor**
+  bump (`1.1` added `posture`+`inventory`, #57; `1.2` added `trace`, #41; `1.3` added
+  `exec`/`secrets`/`account`/`recon` + 5 mail sub-stages + the `fields.cim` stamp, Reorg Wave 2).
+  **Breaking** (removal/renaming of a category or a core field) → **major** bump (`2.0`) + new
+  file `config.d/cim/cim.v2.json`.
+- The trio **doc (`docs/CIM.md`) ↔ code (`CIM_*` in `guatx_core::cim`) ↔ schema
+  (`config.d/cim/cim.v1.json`)** is kept consistent by the parity test. Modifying one
+  without the others **breaks `cargo test`** — that is intended: a single source of truth. A **COMPILE-time
+  safeguard** (`daemon/build.rs`) goes further: it extracts the `version` of the embedded schema and
+  const-asserts that it equals `CIM_VERSION` of the LINKED core — a build linked against a STALE core **fails to compile**.
+- **BACKWARD COMPATIBILITY**: adding a name to the `CIM_CATEGORIES` allow-list rewrites **no** row. The
+  events already stored under a newly canonised category (e.g. the whole `exec` history) become
+  in-contract **immediately, without data migration** — `cim_category_ok()` is pure membership.
 
-### 5.1 Catégorie hors taxonomie à l'ingestion — accepté, jamais rejeté
+### 5.1 Out-of-taxonomy category at ingestion — accepted, never rejected
 
-Une `category` déclarée par un collecteur et **absente** de `CIM_CATEGORIES` est **stockée telle quelle**.
-Le CIM est un contrat de PARSE/MAP/ENRICH, **jamais un DROP** : refuser ferait perdre au SOC les
-événements d'un collecteur tiers mal réglé, sans rejeu possible. La réduction de collecte a son chemin
-explicite et audité (whitelists, audit sev 3) — le CIM n'en décide pas.
+A `category` declared by a collector and **absent** from `CIM_CATEGORIES` is **stored as is**.
+The CIM is a PARSE/MAP/ENRICH contract, **never a DROP**: refusing would make the SOC lose the
+events of a misconfigured third-party collector, with no possible replay. Collection reduction has its own
+explicit and audited path (whitelists, sev 3 audit) — the CIM does not decide it.
 
-Ce qui a changé (2026-07-28) : la valeur n'était confrontée à la taxonomie **nulle part** sur le chemin
-d'ingest — pas même un `warn` (les garde-fous existants étaient en amont : chargement d'un parseur
-d'overlay, création d'un data-model, mapping HEC). Désormais la **première** occurrence de chaque couple
-(`source`, `category`) hors taxonomie est journalisée en nommant le collecteur ; **une seule ligne par
-couple et par vie du process** (un warn qui noie le journal n'avertit personne). La ligne stockée est
-inchangée.
+What changed (2026-07-28): the value was checked against the taxonomy **nowhere** on the ingest
+path — not even a `warn` (the existing safeguards were upstream: loading of an overlay
+parser, creation of a data model, HEC mapping). Now the **first** occurrence of each
+out-of-taxonomy (`source`, `category`) pair is logged, naming the collector; **a single line per
+pair and per process lifetime** (a warning that floods the log warns nobody). The stored row is
+unchanged.
 
-### 5.1bis Catégorie **ABSENTE** à l'ingestion — acceptée, mais plus jamais silencieuse
+### 5.1bis **MISSING** category at ingestion — accepted, but never silent again
 
-La §5.1 ne couvrait qu'un cas sur deux. Il y a **trois** états possibles, pas deux :
+§5.1 only covered one case out of two. There are **three** possible states, not two:
 
-| état | ligne stockée | signalé | vu par une règle `category=…` |
+| state | stored row | reported | seen by a `category=…` rule |
 |---|---|---|---|
-| **canonique** (dans `CIM_CATEGORIES`) | telle quelle | non | oui |
-| **hors taxonomie** (non vide, inconnue) | telle quelle | `warn`, une fois par couple (source, category) | non |
-| **absente** (`category` vide) | telle quelle, **vide** | `warn`, une fois par source | **non, définitivement** |
+| **canonical** (in `CIM_CATEGORIES`) | as is | no | yes |
+| **out of taxonomy** (non-empty, unknown) | as is | `warn`, once per (source, category) pair | no |
+| **missing** (empty `category`) | as is, **empty** | `warn`, once per source | **no, permanently** |
 
-Le troisième état sortait **avant tout contrôle**, sur ce motif écrit dans le code : « *Vide → rien
-(le dparser tranchera côté serveur)* ». **C'était faux, et c'est mesuré** (2026‑08‑02) : quatre
-événements à la forme exacte de l'agent livré (`WinEventLog:Security` 4768/4769,
-`WinEventLog:Application` 1000, `macos-unified-log`) avec `category:""` → HTTP 202, **4 stockés tels
-quels, zéro ligne de journal** ; et sur les **cinq** parseurs déclaratifs livrés, **aucun** ne cible
-les sources de l'agent (ils ciblent `cloudflare`, `firewall`, `fim-agent`, `nginx`, `nft`). Rien ne
-tranchait, ni à l'ingestion ni plus tard.
+The third state went out **before any check**, on this reasoning written in the code: "*Vide → rien
+(le dparser tranchera côté serveur)*". **That was false, and it is measured** (2026‑08‑02): four
+events in the exact form of the shipped agent (`WinEventLog:Security` 4768/4769,
+`WinEventLog:Application` 1000, `macos-unified-log`) with `category:""` → HTTP 202, **4 stored as
+is, zero log lines**; and of the **five** shipped declarative parsers, **none** targets
+the agent's sources (they target `cloudflare`, `firewall`, `fim-agent`, `nginx`, `nft`). Nothing
+decided, neither at ingestion nor later.
 
-C'était l'état **le plus produit** par les émetteurs livrés : la classification Windows de l'agent
-rend « non classé » pour tout identifiant hors de sa table, et le lecteur macOS rend une catégorie
-vide pour toute ligne bénigne.
+It was the state **most produced** by the shipped senders: the agent's Windows classification
+returns "unclassified" for any identifier outside its table, and the macOS reader returns an empty
+category for every benign line.
 
-**On n'invente PAS de valeur.** Poser d'office un `unknown` serait pire que le vide : ce serait une
-classification **fabriquée**, et `search category=unknown` ressemblerait à une classe alors que rien
-n'a été reconnu. La ligne reste donc vide — ce qui est honnête. Ce qui est fermé, c'est le **silence** :
+**No value is invented.** Setting an `unknown` by default would be worse than emptiness: it would be a
+**fabricated** classification, and `search category=unknown` would look like a class when nothing
+was recognised. The row therefore stays empty — which is honest. What is closed is the **silence**:
 
-- la résolution est un **type à champ privé, constructeur unique** (`CategorieIngeree::resoudre`,
-  `daemon/src/ingest/store.rs`), et sa somme est **exhaustive** : la valeur ne se fabrique pas hors de
-  ce module, et un état ajouté demain ne compile pas tant qu'il n'est pas traité. *Limite exacte : le
-  type n'OBLIGE pas un futur point d'écriture à l'emprunter — la colonne `category` d'`EventRow` reste
-  une `String`. La garantie est « un seul endroit résout, et l'ingest y passe », pas « rien d'autre ne
-  peut écrire ».*
-- **mesurable au repos**, sur les données et non sur un compteur de processus (qui repart à zéro à
-  chaque redémarrage) : `GET /api/system/diag` publie `counts.events_without_category` et la
-  ventilation `unclassified_by_source`. En GXQL : `search category="" | stats count by source`.
+- resolution is a **type with a private field and a single constructor** (`CategorieIngeree::resoudre`,
+  `daemon/src/ingest/store.rs`), and its sum is **exhaustive**: the value cannot be built outside
+  this module, and a state added tomorrow does not compile until it is handled. *Exact limit: the
+  type does NOT FORCE a future write point to go through it — the `category` column of `EventRow` remains
+  a `String`. The guarantee is "a single place resolves, and ingest goes through it", not "nothing else
+  can write".*
+- **measurable at rest**, on the data and not on a process counter (which restarts from zero on
+  every restart): `GET /api/system/diag` publishes `counts.events_without_category` and the
+  `unclassified_by_source` breakdown. In GXQL: `search category="" | stats count by source`.
 
-### 5.2 Dette de migration — alias de lecture `exec` ⊃ `process` (péremption **2027-07-23**)
+### 5.2 Migration debt — read alias `exec` ⊃ `process` (expiry **2027-07-23**)
 
-Les deux collecteurs Windows (`collectors/windows/plume-collector.ps1`, `agent/src/source/windows.rs`)
-ont déclaré `category='process'` pour la **création de processus** (EventID 4688) jusqu'au **2026-07-23**.
-`process` **n'appartient pas** à `CIM_CATEGORIES` ; le nom canonique v1.3 est **`exec`**. Les collecteurs
-émettent `exec` depuis cette date.
+The two Windows collectors (`collectors/windows/plume-collector.ps1`, `agent/src/source/windows.rs`)
+declared `category='process'` for **process creation** (EventID 4688) until **2026-07-23**.
+`process` **does not belong** to `CIM_CATEGORIES`; the canonical v1.3 name is **`exec`**. The collectors
+have emitted `exec` since that date.
 
-L'historique **n'est pas migré** : rétention 365 jours, tier froid **scellé** (Parquet chiffré, jamais
-réécrit) ⇒ immuable par construction. La réconciliation se fait à la **LECTURE** :
+The history **is not migrated**: 365-day retention, **sealed** cold tier (encrypted Parquet, never
+rewritten) ⇒ immutable by construction. Reconciliation happens at **READ time**:
 
-- une requête `category=exec` compile `category IN ('exec','process')` — posé au point de traversée à
-  100 % de l'émission de lecture (`SqlcipherStore::soql_to_sql*`, cf. `soql_glue::cim_read_alias_exec`),
-  plus la barre `/api/search` qui construit son SQL à la main ;
-- **ce n'est pas un moteur de réécriture** : une seule équivalence écrite en dur, aucune table, aucune
-  config, aucun ENV, inatteignable pour toute autre valeur. Elle ne s'applique qu'à l'**égalité** d'un
-  filtre (`table_conds` / `where`) — `!=`, glob et regex ne sont **pas** aliasés ;
-- **portée** : filtre de base, étage `where`, sous-recherches. **Hors portée** : corps de macro et filtre
-  d'`eventtype` (détendus dans le cœur, après ce pré-pass).
+- a `category=exec` query compiles to `category IN ('exec','process')` — placed at the point that
+  100 % of read emission passes through (`SqlcipherStore::soql_to_sql*`, see `soql_glue::cim_read_alias_exec`),
+  plus the `/api/search` bar, which builds its SQL by hand;
+- **this is not a rewrite engine**: a single hardcoded equivalence, no table, no
+  config, no ENV, unreachable for any other value. It only applies to the **equality** of a
+  filter (`table_conds` / `where`) — `!=`, glob and regex are **not** aliased;
+- **scope**: base filter, `where` stage, subsearches. **Out of scope**: macro bodies and
+  `eventtype` filters (expanded in the core, after this pre-pass).
 
-Conséquences mesurées (lecture du cœur v0.2.1) : la liste `in (…)` est émise `COLLATE NOCASE` (sur-match
-de casse, **jamais** un sous-match) ; `idx_event_category` (BINARY) ne sert plus ce filtre ; le tier froid
-n'élague pas sur `category` pour une requête aliasée (`extract_cold_dim_preds` refuse la forme `IN`) et le
-moteur colonnaire **décline** de vectoriser ces requêtes — l'oracle SQL les sert, donc une seule réponse
-possible quelle que soit la route.
+Measured consequences (reading of core v0.2.1): the `in (…)` list is emitted `COLLATE NOCASE` (case
+over-match, **never** an under-match); `idx_event_category` (BINARY) no longer serves this filter; the cold tier
+does not prune on `category` for an aliased query (`extract_cold_dim_preds` refuses the `IN` form) and the
+columnar engine **declines** to vectorise these queries — the SQL oracle serves them, so only one possible answer
+whatever the route.
 
-**Retrait.** Dernier événement `process` connu (bascule du schéma) le 2026-07-23 ; rétention 365 jours ⇒ le dernier Parquet le
-portant sort de rétention le **2027-07-23**. Après cette date (purge passée), supprimer le bloc
-`cim_read_alias_exec` de `soql_glue.rs`, ses 4 sites d'appel (`ingest/store.rs` ×3, `handlers/search.rs`),
-la garde `carries_cim_read_alias` du planner froid, et les tests `cim_read_alias_*` / `cim_aliased_*`.
+**Removal.** Last known `process` event (schema switch) on 2026-07-23; 365-day retention ⇒ the last Parquet file
+carrying it leaves retention on **2027-07-23**. After that date (purge done), remove the
+`cim_read_alias_exec` block from `soql_glue.rs`, its 4 call sites (`ingest/store.rs` ×3, `handlers/search.rs`),
+the `carries_cim_read_alias` guard of the cold planner, and the `cim_read_alias_*` / `cim_aliased_*` tests.
 
-### 5.3 Conséquence en aval — l'import Sigma réconcilié sur `exec`
+### 5.3 Downstream consequence — the Sigma import reconciled on `exec`
 
-Poser `exec` comme home canonique laissait une surface **non réconciliée** : l'importeur Sigma mappait le
-logsource `process_creation` sur `endpoint`. Toute règle Sigma de création de processus importée filtrait
-donc `category=endpoint` alors que **le 4688 des collecteurs livrés arrive en `exec`** — elle était
-aveugle à la télémétrie qu'elle vise. Corrigé : `process_creation` → **`exec`**
-(`SIGMA_LOGSOURCE_CATEGORY`, `daemon/src/sigma.rs`), avec une garde **dérivée** qui LIT les collecteurs
-livrés et exige que la table s'accorde avec eux
+Setting `exec` as the canonical home left a **non-reconciled** surface: the Sigma importer mapped the
+`process_creation` logsource to `endpoint`. Every imported Sigma process-creation rule therefore filtered
+on `category=endpoint` while **the 4688 of the shipped collectors arrives as `exec`** — it was
+blind to the telemetry it targets. Fixed: `process_creation` → **`exec`**
+(`SIGMA_LOGSOURCE_CATEGORY`, `daemon/src/sigma.rs`), with a **derived** guard that READS the shipped
+collectors and requires the table to agree with them
 (`sigma_process_creation_targets_the_category_the_shipped_4688_path_emits`).
 
-**L'historique est couvert, et c'est prouvé.** L'importeur **recompile** la requête traduite par
-`rule_sql` → `soql_to_sql_x` → `SqlcipherStore::soql_to_sql`, donc elle traverse
-`cim_read_alias_exec` : une règle Sigma `process_creation` importée aujourd'hui voit la télémétrie `exec`
-du jour **et** l'historique scellé `process`. Vérifié de bout en bout par
-`sigma_process_creation_rule_fires_on_real_4688_event` (fixture 4688 réelle) — structure (`IN
-('exec','process')` présent dans le SQL émis) **et** comptage ; neutraliser l'alias fait tomber le compte
-de 2 à 1.
+**The history is covered, and it is proven.** The importer **recompiles** the translated query through
+`rule_sql` → `soql_to_sql_x` → `SqlcipherStore::soql_to_sql`, so it goes through
+`cim_read_alias_exec`: a `process_creation` Sigma rule imported today sees today's `exec` telemetry
+**and** the sealed `process` history. Verified end to end by
+`sigma_process_creation_rule_fires_on_real_4688_event` (real 4688 fixture) — structure (`IN
+('exec','process')` present in the emitted SQL) **and** count; neutralising the alias drops the count
+from 2 to 1.
 
-**Angle mort qui subsiste, mesuré.** `classer` (`agent/src/source/windows.rs`) range **Sysmon ID 1**
-(création de processus) en `endpoint`, pas en `exec` — c'est la branche par défaut « Sysmon hors 3/22 ».
-La création de processus est donc **scindée entre deux catégories émises** : `exec` (4688 + `execve`
-auditd) et `endpoint` (Sysmon ID 1). Une règle `process_creation` ne peut pas voir les deux ; l'importeur
-le **signale** (avertissement) et un test l'**épingle**. Le refermer signifie changer la catégorie
-**émise** par l'agent : c'est un changement de data-plane qui rouvre exactement la dette du §5.2
-(l'historique Sysmon rangé en `endpoint` deviendrait inatteignable par `category=exec`, et aucun alias ne
-peut le désambiguïser puisque `endpoint` porte aussi image-load / registry / installation de service).
-**Décision consciente** : non fait, écrit.
+**Remaining blind spot, measured.** `classer` (`agent/src/source/windows.rs`) files **Sysmon ID 1**
+(process creation) under `endpoint`, not `exec` — it is the default branch "Sysmon other than 3/22".
+Process creation is therefore **split between two emitted categories**: `exec` (4688 + auditd
+`execve`) and `endpoint` (Sysmon ID 1). A `process_creation` rule cannot see both; the importer
+**reports** it (warning) and a test **pins** it. Closing it means changing the category
+**emitted** by the agent: that is a data-plane change that reopens exactly the debt of §5.2
+(the Sysmon history filed under `endpoint` would become unreachable through `category=exec`, and no alias can
+disambiguate it since `endpoint` also carries image-load / registry / service installation).
+**Conscious decision**: not done, written down.
 
-**Mesuré en conditions réelles le 2026‑08‑02** (Windows 11 Enterprise 24H2 build 26100, Sysmon 15.21
-installé en 18 s avec une config minimale `ProcessCreate`, agent Rust cross-compilé et enregistré en
-service SCM) : l'angle mort n'est plus déduit du code, il est **constaté**. Sysmon ID 1 arrive bien en
-`category=endpoint` (36 événements), et sur le **même** poste, au **même** moment, la requête de la règle
-Sigma `process_creation` importée telle quelle —
-`search category=exec CommandLine=~(?i)whoami | stats count` — compte **50**, tandis que
-`search category=endpoint CommandLine=~(?i)whoami | stats count` en compte **20** de plus qu'elle ne
-voit pas. Ce sont les mêmes exécutions, vues deux fois, rangées dans deux catégories.
+**Measured under real conditions on 2026‑08‑02** (Windows 11 Enterprise 24H2 build 26100, Sysmon 15.21
+installed in 18 s with a minimal `ProcessCreate` config, Rust agent cross-compiled and registered as an
+SCM service): the blind spot is no longer inferred from the code, it is **observed**. Sysmon ID 1 does arrive as
+`category=endpoint` (36 events), and on the **same** workstation, at the **same** moment, the query of the
+`process_creation` Sigma rule imported as is —
+`search category=exec CommandLine=~(?i)whoami | stats count` — counts **50**, while
+`search category=endpoint CommandLine=~(?i)whoami | stats count` counts **20** more that it does not
+see. These are the same executions, seen twice, filed under two categories.
 
-Deux conséquences pratiques que la lecture du code ne donnait pas :
-- **Sysmon peuple `CommandLine` sans AUCUNE GPO** (c'est dans son schéma d'événement, pas dans l'audit
-  Windows). Un parc équipé de Sysmon a donc la ligne de commande partout — y compris, mesuré, **les
-  secrets passés en argv** (cf. l'avertissement de `collectors/windows/README.md`) — alors même que la
-  règle `process_creation` reste aveugle à ces événements.
-- La bascule d'`endpoint` vers `exec` serait donc *plus* payante qu'estimé (elle rendrait visible une
-  télémétrie déjà riche en `CommandLine`), et *aussi* plus coûteuse (l'historique `endpoint` est mêlé).
-  La décision reste inchangée ; seul son chiffrage est désormais mesuré.
+Two practical consequences that reading the code did not give:
+- **Sysmon populates `CommandLine` without ANY GPO** (it is in its event schema, not in Windows
+  auditing). A fleet equipped with Sysmon therefore has the command line everywhere — including, measured, **the
+  secrets passed in argv** (see the warning in `collectors/windows/README.md`) — even though the
+  `process_creation` rule remains blind to these events.
+- Switching from `endpoint` to `exec` would therefore pay off *more* than estimated (it would make visible
+  telemetry that is already rich in `CommandLine`), and *also* cost more (the `endpoint` history is mixed).
+  The decision remains unchanged; only its costing is now measured.
 
-**Corollaire pour la taxonomie.** L'axe `category` a désormais un oracle d'émission **mesuré**, ce que
-`daemon/src/collected.rs` déclarait explicitement absent : `SIGMA_TARGET_CATEGORY_EMITTERS` cite, pour
-chaque catégorie visée par l'import Sigma, **le fichier livré et le fragment qui l'émet** ; la garde
-vérifie les deux sens. Le périmètre reste celui des cibles de l'import (16 catégories), pas la taxonomie
-entière — **le reste n'est pas mesuré, donc pas affirmé**.
+**Corollary for the taxonomy.** The `category` axis now has a **measured** emission oracle, which
+`daemon/src/collected.rs` explicitly declared absent: `SIGMA_TARGET_CATEGORY_EMITTERS` cites, for
+each category targeted by the Sigma import, **the shipped file and the fragment that emits it**; the guard
+checks both directions. The scope remains that of the import's targets (16 categories), not the whole
+taxonomy — **the rest is not measured, so it is not asserted**.
 
 ---
 
-## 5.4 L'autre ligne canonique — l'INSTANTANÉ (`snapshot`), et sa portée d'unicité
+## 5.4 The other canonical row — the SNAPSHOT (`snapshot`), and its uniqueness scope
 
-Un émetteur ne produit pas que des événements : il peut publier un **instantané d'état**
-(enveloppe spool `{"ts","host","kind","hash","data"}` — `collectors/firewall.sh`,
-`collectors/controls.sh`, ou `POST /api/ingest` avec n'importe quel `kind`). Le daemon ne
-réécrit `data` que si `hash` a **changé** ; sinon il avance le `ts` de la ligne existante
-(*heartbeat* : un capteur stable ne doit pas être déclaré muet).
+A sender does not produce only events: it can publish a **state snapshot**
+(spool envelope `{"ts","host","kind","hash","data"}` — `collectors/firewall.sh`,
+`collectors/controls.sh`, or `POST /api/ingest` with any `kind`). The daemon only
+rewrites `data` if `hash` has **changed**; otherwise it advances the `ts` of the existing row
+(*heartbeat*: a stable sensor must not be declared silent).
 
-**LA SÉRIE EST `(kind, host)`, JAMAIS `kind` SEUL.** Un instantané capture ce que l'émetteur
-peut OBSERVER, et un émetteur n'observe que sa machine. Toute la voie snapshot est donc
-cloisonnée par l'hôte de la ligne (`SnapshotSeries`, `daemon/src/ingest/store.rs`) :
-comparaison d'état, heartbeat, clés d'alerte d'état (`firewall.lockdown`, `control.catalog`,
-`control.catalog.vide`), sondes de fraîcheur et surfaces de lecture.
+**THE SERIES IS `(kind, host)`, NEVER `kind` ALONE.** A snapshot captures what the sender
+can OBSERVE, and a sender only observes its own machine. The whole snapshot path is therefore
+partitioned by the row's host (`SnapshotSeries`, `daemon/src/ingest/store.rs`):
+state comparison, heartbeat, state alert keys (`firewall.lockdown`, `control.catalog`,
+`control.catalog.vide`), freshness probes and read surfaces.
 
-**UN INSTANTANÉ VIDE EST UNE RÉPONSE, PAS UN SILENCE.** Un émetteur qui a bien tourné et n'a
-RIEN à évaluer publie un instantané dont la liste est vide, plutôt que de ne rien publier : la
-série reste vivante et la surface peut dire « rien n'est mesuré ici », au lieu de laisser un
-« en attente du capteur » indéfini se lire comme une machine encore silencieuse. Pour le
-catalogue de contrôles, le daemon en tire l'alerte `control.catalog.vide` — la condition est
-« zéro contrôle évalué », jamais la RAISON du zéro.
+**AN EMPTY SNAPSHOT IS AN ANSWER, NOT A SILENCE.** A sender that ran correctly and has
+NOTHING to evaluate publishes a snapshot whose list is empty, rather than publishing nothing: the
+series stays alive and the surface can say "nothing is measured here", instead of leaving an
+indefinite "waiting for the sensor" to be read as a machine that is still silent. For the
+control catalogue, the daemon derives the `control.catalog.vide` alert from it — the condition is
+"zero controls evaluated", never the REASON for the zero.
 
-Conséquences pour qui écrit un émetteur :
+Consequences for anyone writing a sender:
 
-- **`host` est ce qui vous identifie.** Deux machines qui publient le même `kind` avec le même
-  `hash` sont **deux séries** ; aucune ne peut effacer l'autre. *Avant ce cloisonnement, un parc
-  homogène de 3 machines rendait **1 seule ligne** — deux tiers du parc jetés en silence — et le
-  battement d'une machine rajeunissait la ligne d'une autre (mesuré : +3540 s sur la ligne d'un
-  hôte mort depuis 3600 s).*
-- **Omettre `host` n'est pas un oubli toléré, c'est une DÉCLARATION** : l'instantané rejoint la
-  série `(kind, NULL)`, celle de ce qui décrit **le déploiement** et non une machine. C'est ainsi —
-  et seulement ainsi — qu'un instantané est légitimement global.
-- **`hash` doit être stable et déterministe pour un même état**, et ne dépendre que de ce que
-  l'émetteur observe (`firewall.sh` retire les compteurs volatils du ruleset avant de hasher).
-- La **fraîcheur d'un parc** est celle de la machine la **plus en retard** (`MIN` sur les `MAX(ts)`
-  par hôte) : une machine encore vivante ne peut plus faire passer tout le parc pour frais.
+- **`host` is what identifies you.** Two machines that publish the same `kind` with the same
+  `hash` are **two series**; neither can erase the other. *Before this partitioning, a homogeneous
+  fleet of 3 machines yielded **only 1 row** — two thirds of the fleet silently discarded — and the
+  heartbeat of one machine refreshed the row of another (measured: +3540 s on the row of a
+  host dead for 3600 s).*
+- **Omitting `host` is not a tolerated oversight, it is a DECLARATION**: the snapshot joins the
+  `(kind, NULL)` series, the one for what describes **the deployment** and not a machine. That is how —
+  and only how — a snapshot is legitimately global.
+- **`hash` must be stable and deterministic for the same state**, and depend only on what
+  the sender observes (`firewall.sh` removes the volatile counters from the ruleset before hashing).
+- The **freshness of a fleet** is that of the machine **furthest behind** (`MIN` over the per-host `MAX(ts)`):
+  a machine that is still alive can no longer make the whole fleet look fresh.
 
-### 5.5 Deux émetteurs Windows, deux catégories pour le MÊME événement — mesuré, non corrigé
+### 5.5 Two Windows senders, two categories for the SAME event — measured, not fixed
 
-Les deux émetteurs Windows **livrés** rangent la gestion de comptes (4720/4722/4724/4726/4732/4756)
-dans deux catégories différentes :
+The two **shipped** Windows senders file account management (4720/4722/4724/4726/4732/4756)
+under two different categories:
 
-| émetteur | `category` émise |
+| sender | emitted `category` |
 |---|---|
-| `collectors/windows/plume-collector.ps1` | **`account`** (le home canonique v1.3) |
+| `collectors/windows/plume-collector.ps1` | **`account`** (the canonical v1.3 home) |
 | `agent/src/source/windows.rs` | **`auth`** |
 
-Conséquence : une règle `category=account` ne voit que les postes équipés du collecteur PowerShell,
-et une règle `category=auth` ramasse la gestion de comptes des postes équipés de l'agent. Aucune des
-deux ne voit le parc entier — **c'est le même défaut de forme que le §5.3** (Sysmon ID 1 rangé en
-`endpoint` alors que le 4688 va en `exec`).
+Consequence: a `category=account` rule only sees the workstations equipped with the PowerShell collector,
+and a `category=auth` rule picks up the account management of workstations equipped with the agent. Neither
+sees the whole fleet — **it is the same kind of defect as in §5.3** (Sysmon ID 1 filed under
+`endpoint` while 4688 goes to `exec`).
 
-**Décision consciente, comme au §5.3 : non fait, écrit.** Basculer l'agent vers `account` rouvrirait
-exactement la dette du §5.2 — l'historique agent rangé en `auth` deviendrait inatteignable par
-`category=account`, et **aucun alias de lecture ne peut le désambiguïser**, puisque `auth` porte
-aussi les ouvertures de session, Kerberos et sudo. Le coût d'un alias `account ⊃ auth` serait de
-faire remonter tout le trafic d'authentification sur une requête de gestion de comptes : le remède
-serait pire.
+**Conscious decision, as in §5.3: not done, written down.** Switching the agent to `account` would reopen
+exactly the debt of §5.2 — the agent history filed under `auth` would become unreachable through
+`category=account`, and **no read alias can disambiguate it**, since `auth` also carries
+session openings, Kerberos and sudo. The cost of an `account ⊃ auth` alias would be to
+pull all authentication traffic into an account management query: the remedy
+would be worse.
 
 ---
 
-## 6. Ce que le CIM n'est PAS (encore)
+## 6. What the CIM is NOT (yet)
 
-Le CIM v1 est la **pièce 1** de la slice #7 (formalisation). Il **n'introduit aucun** nouveau
-chemin d'ingest et ne modifie pas le data-plane. Les pièces qui s'appuient dessus (hors
-périmètre de ce document) :
+CIM v1 is **piece 1** of slice #7 (formalisation). It **introduces no** new
+ingest path and does not modify the data plane. The pieces that build on it (outside the
+scope of this document):
 
-- **Pièce 2 — DSL de parser déclaratif** : mapper des champs vendeur → champs CIM en
-  `config.d` sans rebuild Rust (PARSE/MAP/ENRICH, jamais DROP).
-- **Pièce 3 — Importeur Sigma** : traduire les règles Sigma → règles Plume (GXQL) via le
-  mapping logsource → `source`/`category` de ce contrat.
+- **Piece 2 — declarative parser DSL**: map vendor fields → CIM fields in
+  `config.d` without a Rust rebuild (PARSE/MAP/ENRICH, never DROP).
+- **Piece 3 — Sigma importer**: translate Sigma rules → Plume rules (GXQL) through the
+  logsource → `source`/`category` mapping of this contract.
 
-Ces deux pièces **référencent** cette taxonomie ; elles ne la redéfinissent pas.
+These two pieces **reference** this taxonomy; they do not redefine it.

@@ -1,198 +1,198 @@
-# collector-syslog — recepteur syslog + parsers vendeur (1er = FortiGate)
+# collector-syslog — syslog receiver + vendor parsers (1st = FortiGate)
 
-[Français](SYSLOG.md) | [English](SYSLOG.en.md)
+[English](SYSLOG.md) | [Français](SYSLOG.fr.md)
 
-Le SOC traite un appareil reseau (**FortiGate**, switch, routeur, tout equipement syslog) comme **un
-collecteur de plus** : l'appareil emet du syslog vers ce recepteur, qui **decadre** (RFC5424 + RFC3164
-legacy, UDP+TCP), **dispatche** vers un **parser vendeur pluggable**, **normalise** en events Plume et
-les ecrit dans le **spool** -> `ship.sh` -> central (`/api/ingest`, mTLS + token). **Exactement le meme
-chemin que `conntrack.sh`.** Le **data-plane du daemon n'est PAS touche** : on ajoute UNE source.
+The SOC treats a network appliance (**FortiGate**, switch, router, any syslog device) as **one more
+collector**: the appliance sends syslog to this receiver, which **deframes** (RFC5424 + legacy RFC3164,
+UDP+TCP), **dispatches** to a **pluggable vendor parser**, **normalizes** into Plume events and
+writes them to the **spool** -> `ship.sh` -> central (`/api/ingest`, mTLS + token). **Exactly the same
+path as `conntrack.sh`.** The **daemon's data plane is NOT touched**: ONE source is added.
 
-Avant ce collecteur, la seule voie source externe etait le connecteur Defender (PULL). Il n'existait
-**aucun** moyen d'onboarder un FortiGate. C'est desormais le cas — et le parser FortiGate est le
-**premier d'une famille pluggable** : ajouter un vendeur = implementer `VendorParser` + l'enregistrer.
+Before this collector, the only external source path was the Defender connector (PULL). There was
+**no** way to onboard a FortiGate. That is now the case — and the FortiGate parser is the
+**first of a pluggable family**: adding a vendor = implementing `VendorParser` + registering it.
 
-## Taxonomie source -> category (composition INTER-VENDEUR)
+## Source -> category taxonomy (CROSS-VENDOR composition)
 
-- `source = "fortigate"` : identite du **vendeur**.
-- `category` : **semantique NEUTRE** partagee par tous les vendeurs, pour que les regles composent :
+- `source = "fortigate"`: identity of the **vendor**.
+- `category`: **NEUTRAL semantics** shared by all vendors, so that rules compose:
   `firewall | malware | ids | web | dns | application | vpn | auth | mail | dlp | endpoint | system | utm | network`.
-  (FortiGate `type=traffic` -> `firewall` ; `type=utm subtype=virus` -> `malware` ; `subtype=ips` -> `ids` ; ...)
-- `fields.log_type` / `fields.subtype` : le `type`/`subtype` FortiGate **bruts** (drilldown).
-- `fields.action` : action normalisee = **dimension de rollup CIM** du daemon (`json_extract(fields,'$.action')`).
-- `src_ip`/`dst_ip`/`url` : **promus en colonnes** indexees par `ingest_events_batch` (top-level de l'event).
+  (FortiGate `type=traffic` -> `firewall`; `type=utm subtype=virus` -> `malware`; `subtype=ips` -> `ids`; ...)
+- `fields.log_type` / `fields.subtype`: the **raw** FortiGate `type`/`subtype` (drilldown).
+- `fields.action`: normalized action = the daemon's **CIM rollup dimension** (`json_extract(fields,'$.action')`).
+- `src_ip`/`dst_ip`/`url`: **promoted to indexed columns** by `ingest_events_batch` (top level of the event).
 
-Une regle `search category=malware | stats count` matche donc FortiGate **et** n'importe quel futur
-vendeur qui mappe ses menaces sur `malware` : **zero couplage Fortinet**. Deux regles overlay livrees,
-**toutes deux OPT-IN (`enabled:false`)** pour ne PAS changer la detection d'une stack sans FortiGate :
-`config.d/rules/fw-malware-blocked-any-vendor.json` (compose sur `category=malware action=blocked` -> le
-blocage perimetre, EXCLUT l'AV mail/yara existant) et `fw-denied-portscan-any-vendor.json` (seuil a
-calibrer). Les activer (UI ou fichier) **apres** onboarding d'un appareil.
+A rule `search category=malware | stats count` therefore matches FortiGate **and** any future
+vendor that maps its threats onto `malware`: **zero Fortinet coupling**. Two shipped overlay rules,
+**both OPT-IN (`enabled:false`)** so as NOT to change the detection of a stack without FortiGate:
+`config.d/rules/fw-malware-blocked-any-vendor.json` (composes on `category=malware action=blocked` -> the
+perimeter block, EXCLUDES the existing mail AV/yara) and `fw-denied-portscan-any-vendor.json` (threshold to
+calibrate). Enable them (UI or file) **after** onboarding an appliance.
 
 ---
 
-## Deploiement A — host-natif (systemd), le cas courant (hote / VPS)  [PRIMAIRE]
+## Deployment A — host-native (systemd), the common case (host / VPS)  [PRIMARY]
 
-Comme les autres collecteurs hote (audit/falco/conntrack) : tourne **sur le node**, le FortiGate pointe
-sur le :514 du node, et le `ship.sh` deja en place (qui expedie deja conntrack & co) forwarde au daemon
-in-cluster. **Aucun pod, aucune image a builder pour ce cas.**
+Like the other host collectors (audit/falco/conntrack): runs **on the node**, the FortiGate points
+at the node's :514, and the `ship.sh` already in place (which already ships conntrack & co) forwards to the
+in-cluster daemon. **No pod, no image to build for this case.**
 
-### 1. Installer (OPT-IN — regle d'or : installe mais NON active)
+### 1. Install (OPT-IN — golden rule: installed but NOT enabled)
 ```sh
-# build du binaire sur une machine Rust si l'hote n'a pas cargo (cf. collector-mail) :
+# build the binary on a Rust machine if the host has no cargo (see collector-mail):
 ( cd plume/collector-syslog && cargo build --release )
-# puis, depuis la source plume, en tant qu'agent :
+# then, from the plume source, as an agent:
 sudo PLUME_WITH_SYSLOG=1 ./bootstrap-agent.sh
 ```
-Cela pose `/usr/local/lib/plume/collectors/plume-collector-syslog`, l'unit
-`plume-collector-syslog.service` et un `/etc/plume/syslog.conf` par defaut.
+This installs `/usr/local/lib/plume/collectors/plume-collector-syslog`, the unit
+`plume-collector-syslog.service` and a default `/etc/plume/syslog.conf`.
 
 ### 2. Config `/etc/plume/syslog.conf`
-Chaque commentaire sur **sa propre ligne** : systemd (`EnvironmentFile=`) garde un commentaire de fin
-de ligne **dans la valeur** (`PLUME_SYSLOG_ALLOW=   # ex` vaut `# ex`, que le recepteur refuse : il
-s'arrete au demarrage). Une ecoute **absente** vaut le defaut du recepteur, `0.0.0.0:514` ; posee
-**vide**, elle **coupe** son transport (`env_ecoute`, `collector-syslog/src/main.rs`). La conf posee
-par `bootstrap-agent.sh` n'ecoute que la boucle locale :
+Every comment on **its own line**: systemd (`EnvironmentFile=`) keeps an end-of-line comment
+**in the value** (`PLUME_SYSLOG_ALLOW=   # ex` means `# ex`, which the receiver refuses: it
+stops at startup). An **absent** listener takes the receiver's default, `0.0.0.0:514`; set
+**empty**, it **cuts** its transport (`env_ecoute`, `collector-syslog/src/main.rs`). The conf installed
+by `bootstrap-agent.sh` listens on the loopback only:
 ```sh
 PLUME_SPOOL=/var/lib/plume/spool
-# analyseur : fortigate | auto (sniff par message) | generic
+# parser: fortigate | auto (per-message sniff) | generic
 PLUME_SYSLOG_PARSER=fortigate
 PLUME_SYSLOG_SOURCE=fortigate
-# boucle locale par defaut ; 0.0.0.0:514 SEULEMENT apres la liste ET le pare-feu (section 3)
+# loopback by default; 0.0.0.0:514 ONLY after the list AND the firewall (section 3)
 PLUME_SYSLOG_UDP=127.0.0.1:514
 PLUME_SYSLOG_TCP=127.0.0.1:514
-# liste d'autorisation source-IP (CIDR/IP separes par des virgules).
-# VIDE = refus de demarrer des qu'une ecoute est hors boucle locale
+# source-IP allowlist (comma-separated CIDR/IP).
+# EMPTY = refuses to start as soon as a listener is off the loopback
 PLUME_SYSLOG_ALLOW=
-# events par enveloppe (<= PLUME_INGEST_MAX_EVENTS du daemon)
+# events per envelope (<= the daemon's PLUME_INGEST_MAX_EVENTS)
 PLUME_SYSLOG_BATCH_MAX=500
-# cadence de flush du spool (borne la latence et le nombre de fichiers)
+# spool flush cadence (bounds latency and the number of files)
 PLUME_SYSLOG_FLUSH_MS=2000
-# tz par defaut si le device n'emet PAS de champ tz (sinon UTC)
+# default tz if the device does NOT emit a tz field (otherwise UTC)
 # PLUME_SYSLOG_TZ=+0100
-# cap dur trame TCP / datagramme UDP (anti-DoS)
+# hard cap on TCP frame / UDP datagram (anti-DoS)
 # PLUME_SYSLOG_MAX_FRAME=65536
-# connexions TCP concurrentes max (global), puis PAR IP (anti-slowloris)
+# max concurrent TCP connections (global), then PER IP (anti-slowloris)
 # PLUME_SYSLOG_MAX_CONNS=128
 # PLUME_SYSLOG_MAX_CONNS_PER_IP=16
-# timeout d'inactivite TCP (s) ; TCP_MAXLIFE=3600 = vie max d'une connexion
+# TCP idle timeout (s); TCP_MAXLIFE=3600 = max lifetime of a connection
 # PLUME_SYSLOG_TCP_IDLE=60
-# budget disque du spool : au-dela -> shed (backpressure)
+# spool disk budget: beyond it -> shed (backpressure)
 # PLUME_SYSLOG_SPOOL_MAX_BYTES=536870912
-# cap du tampon memoire (au-dela -> drop compte : evite l'OOM)
+# memory buffer cap (beyond it -> counted drop: avoids OOM)
 # PLUME_SYSLOG_QUEUE_MAX=20000
 ```
-Une conf **deja posee** est conservee telle quelle a la relance de `bootstrap-agent.sh`, qui NOMME
-toutefois chaque cle dont la valeur porte un commentaire, et chaque ecoute hors boucle locale (absente
-comprise) avec une liste vide : le recepteur refusera de demarrer, et le message dit quoi poser.
+A conf **already in place** is kept as is when `bootstrap-agent.sh` is rerun, which nevertheless NAMES
+each key whose value carries a comment, and each listener off the loopback (absent
+included) with an empty list: the receiver will refuse to start, and the message says what to set.
 
-### 3. Durcir la source (OBLIGATOIRE — syslog n'est PAS authentifie)
+### 3. Harden the source (MANDATORY — syslog is NOT authenticated)
 
-`:514` accepte n'importe quel emetteur : sans restriction, quiconque route vers le node peut **injecter
-de faux events** (spoof d'un FortiGate). AVANT d'activer, applique **deux couches** :
+`:514` accepts any sender: without restriction, anyone who routes to the node can **inject
+fake events** (spoofing a FortiGate). BEFORE enabling, apply **two layers**:
 
-1. **Allowlist applicative** (`PLUME_SYSLOG_ALLOW` dans `/etc/plume/syslog.conf`) = CIDR/IP de tes
-   appareils. Vide -> le service REFUSE de demarrer si une ecoute sort de la boucle locale (code 2,
-   le message dit quoi poser) ; en boucle locale seule, toute source de cet hote est acceptee (avertissement
-   au boot). Accepter deliberement toute source s'ecrit : `PLUME_SYSLOG_ALLOW=0.0.0.0/0,::/0`.
-2. **Pare-feu hote default-deny** vers `:514` (le seul rempart si l'IP source est SNAT) :
+1. **Application allowlist** (`PLUME_SYSLOG_ALLOW` in `/etc/plume/syslog.conf`) = CIDR/IP of your
+   appliances. Empty -> the service REFUSES to start if a listener leaves the loopback (code 2,
+   the message says what to set); on loopback only, any source on this host is accepted (warning
+   at boot). Deliberately accepting any source is written: `PLUME_SYSLOG_ALLOW=0.0.0.0/0,::/0`.
+2. **Default-deny host firewall** towards `:514` (the only line of defense if the source IP is SNATed):
    ```sh
    sudo ufw allow from <CIDR-FortiGate> to any port 514
-   sudo ufw deny 514                     # tout le reste est refuse
-   # (ou en nft : une regle `tcp/udp dport 514 ip saddr != <cidr-appareils> drop`)
+   sudo ufw deny 514                     # everything else is refused
+   # (or in nft: a rule `tcp/udp dport 514 ip saddr != <cidr-appareils> drop`)
    ```
 
-Provenance : chaque event porte `fields.receiver_peer` (l'IP TRANSPORT reelle, non falsifiable en TCP) —
-utile en forensic meme si un emetteur ment sur son `srcip=`.
+Provenance: each event carries `fields.receiver_peer` (the real TRANSPORT IP, unforgeable over TCP) —
+useful in forensics even if a sender lies about its `srcip=`.
 
-### 4. Activer
+### 4. Enable
 ```sh
 sudo systemctl enable --now plume-collector-syslog.service
 ```
-> **Bind :514 sans root** : l'unit porte `AmbientCapabilities=CAP_NET_BIND_SERVICE` (User=soc). Le
-> sandbox du **daemon** reste byte-identique — cette capability est portee UNIQUEMENT par ce collecteur.
+> **Bind :514 without root**: the unit carries `AmbientCapabilities=CAP_NET_BIND_SERVICE` (User=soc). The
+> **daemon**'s sandbox stays byte-identical — this capability is carried ONLY by this collector.
 
-### 5. Cote FortiGate (exemple CLI FortiOS)
+### 5. FortiGate side (FortiOS CLI example)
 ```
 config log syslogd setting
     set status enable
     set server "<IP-du-node-plume>"
     set port 514
-    set mode reliable        # = TCP (recommande : pas de troncature UDP au MTU sur les gros logs)
-    set format default       # key=value (ce que ce parser attend)
+    set mode reliable        # = TCP (recommended: no UDP truncation at the MTU on large logs)
+    set format default       # key=value (what this parser expects)
     set facility local7
 end
 ```
-UDP marche aussi (`set mode udp`) mais peut **tronquer** les lignes UTM longues > MTU. Pour un feed
-volumineux : **TCP**.
+UDP works too (`set mode udp`) but can **truncate** long UTM lines > MTU. For a high-volume
+feed: **TCP**.
 
-### 6. Verifier
+### 6. Verify
 ```sh
 journalctl -u plume-collector-syslog -f          # "parser=fortigate source=fortigate udp=... tcp=..."
-ls -l /var/lib/plume/spool/syslog-*.json          # enveloppes en attente d'expedition
-# cote SOC : la barre de recherche
+ls -l /var/lib/plume/spool/syslog-*.json          # envelopes waiting to be shipped
+# on the SOC side: the search bar
 search source=fortigate | stats count by category
 ```
 
 ---
 
-## Deploiement B — pod k3s (client 100 % in-cluster, sans acces hote)  [OPTIONNEL]
+## Deployment B — k3s pod (100 % in-cluster customer, no host access)  [OPTIONAL]
 
-**Meme binaire, autre packaging** (cf. design "one artifact, two packagings"). Ce depot ne livre pas de
-manifeste tout fait pour ce cas : ecris-le dans **ton depot GitOps**, avec la forme suivante.
+**Same binary, different packaging** (see the "one artifact, two packagings" design). This repository does not ship a
+ready-made manifest for this case: write it in **your GitOps repository**, with the following shape.
 
-- un **`Deployment`** a 2 conteneurs, **meme image** : le `receiver` (ce binaire) + un `shipper`
-  (sidecar `curl`) qui POST le spool partage (`emptyDir`) vers le Service du daemon
-  (`<svc>.<ns>.svc:7000/api/ingest`), avec l'en-tete `Host` attendu par `PLUME_HOST` et un **Bearer
-  token** monte depuis un `Secret` ;
-- un **`Service`** exposant `514/udp` + `514/tcp` vers l'appareil emetteur (type `LoadBalancer` ou
-  `NodePort` selon ton cluster) ;
-- une **`ConfigMap`** portant les variables `PLUME_SYSLOG_*` de la section 2.
+- a **`Deployment`** with 2 containers, **same image**: the `receiver` (this binary) + a `shipper`
+  (`curl` sidecar) that POSTs the shared spool (`emptyDir`) to the daemon's Service
+  (`<svc>.<ns>.svc:7000/api/ingest`), with the `Host` header expected by `PLUME_HOST` and a **Bearer
+  token** mounted from a `Secret`;
+- a **`Service`** exposing `514/udp` + `514/tcp` to the sending appliance (type `LoadBalancer` or
+  `NodePort` depending on your cluster);
+- a **`ConfigMap`** carrying the `PLUME_SYSLOG_*` variables from section 2.
 
-A appliquer **deliberement**, lors d'un onboarding in-cluster — pas en always-on.
+To be applied **deliberately**, during an in-cluster onboarding — not as always-on.
 
-> **Durcissement (OBLIGATOIRE)** : ce manifeste ne doit PAS exposer `:514` a l'Internet. Prevois les
-> **trois** couches :
-> 1. `loadBalancerSourceRanges` (ou l'equivalent de ton LB / cloud firewall) sur le `Service` ;
-> 2. une `NetworkPolicy` d'ingress en **default-deny** (`ingress: []`) que tu ouvres au seul CIDR de
->    tes appareils. **Verifie que ton CNI applique bien les NetworkPolicy** — certains CNI par defaut
->    (dont le flannel de k3s) ne les appliquent pas, la regle serait alors decorative ;
-> 3. `PLUME_SYSLOG_ALLOW` (allowlist applicative) — la seule couche portable si ton LB SNAT l'IP source.
+> **Hardening (MANDATORY)**: this manifest must NOT expose `:514` to the Internet. Plan for the
+> **three** layers:
+> 1. `loadBalancerSourceRanges` (or the equivalent of your LB / cloud firewall) on the `Service`;
+> 2. an ingress `NetworkPolicy` in **default-deny** (`ingress: []`) that you open to the sole CIDR of
+>    your appliances. **Check that your CNI actually enforces NetworkPolicy** — some default CNIs
+>    (including k3s's flannel) do not enforce them, and the rule would then be decorative;
+> 3. `PLUME_SYSLOG_ALLOW` (application allowlist) — the only portable layer if your LB SNATs the source IP.
 >
-> Borne aussi le spool cote pod (`emptyDir sizeLimit` + `ephemeral-storage` + le shed applicatif
-> `PLUME_SYSLOG_SPOOL_MAX_BYTES`) : une eviction reste alors LOCALE au pod, sans disk-pressure du node.
+> Also bound the spool on the pod side (`emptyDir sizeLimit` + `ephemeral-storage` + the application shed
+> `PLUME_SYSLOG_SPOOL_MAX_BYTES`): an eviction then stays LOCAL to the pod, without disk pressure on the node.
 
 ---
 
-## Conteneur (Docker, et le `receiver` du deploiement B) — l'image demarre REFUSEE
+## Container (Docker, and the `receiver` of deployment B) — the image starts REFUSED
 
-Dans un conteneur, la boucle locale est celle du CONTENEUR : aucun emetteur ne la joint, l'ecoute est
-donc forcement hors boucle locale (`0.0.0.0:514`, le defaut de l'image `runtime`). Avec
-`PLUME_SYSLOG_ALLOW` vide, le recepteur **refuse de demarrer** (code 2) et son message dit quoi poser.
-C'est voulu : l'image n'ouvre rien en silence, et aucune variable ne leve cette porte sans liste ECRITE.
-Pas a pas :
+In a container, the loopback is the CONTAINER's: no sender reaches it, so the listener is
+necessarily off the loopback (`0.0.0.0:514`, the default of the `runtime` image). With
+`PLUME_SYSLOG_ALLOW` empty, the receiver **refuses to start** (code 2) and its message says what to set.
+This is intended: the image opens nothing silently, and no variable lifts this gate without a WRITTEN list.
+Step by step:
 
-1. **Lister les emetteurs TELS QUE LE CONTENEUR LES VOIT.** En reseau pont, Docker garde l'IP source
-   reelle d'un emetteur distant (DNAT). Un emetteur de l'HOTE lui-meme qui vise un port publie sur
-   `127.0.0.1` arrive par `docker-proxy`, donc depuis la passerelle du pont (`docker network inspect
-   bridge`, champ `Gateway`, souvent `172.17.0.1`). En k3s, un `Service` en
-   `externalTrafficPolicy: Cluster` remplace l'IP source par celle d'un noeud ; `Local` la garde.
-2. **Poser la liste** dans l'environnement du conteneur (`-e`, ou la `ConfigMap` du deploiement B) :
-   `PLUME_SYSLOG_ALLOW=<CIDR ou IP, separes par des virgules>`. Accepter toute source reste possible,
-   ECRIT (`0.0.0.0/0,::/0`), et seulement derriere le filtrage de l'etape 3.
-3. **Restreindre la publication cote hote.** Seul l'hote relaie (rsyslog local -> conteneur) :
-   `-p 127.0.0.1:514:514/udp -p 127.0.0.1:514:514/tcp`. Des appareils distants : publier sur l'IP de
-   l'interface qui les recoit, ET poser le pare-feu de la section 3 du deploiement A — dans la chaine
-   `DOCKER-USER`, car les regles de publication de Docker passent avant `ufw`.
-4. **Verifier** : `docker logs <conteneur>` montre `collector-syslog: parser=... allow=N cidr`. Sans liste,
-   il montre `ARRET. PLUME_SYSLOG_ALLOW est vide ...` et le conteneur sort en code 2.
+1. **List the senders AS THE CONTAINER SEES THEM.** In bridge networking, Docker keeps the real source IP
+   of a remote sender (DNAT). A sender on the HOST itself that targets a port published on
+   `127.0.0.1` arrives through `docker-proxy`, hence from the bridge gateway (`docker network inspect
+   bridge`, `Gateway` field, often `172.17.0.1`). In k3s, a `Service` with
+   `externalTrafficPolicy: Cluster` replaces the source IP with that of a node; `Local` keeps it.
+2. **Set the list** in the container's environment (`-e`, or the `ConfigMap` of deployment B):
+   `PLUME_SYSLOG_ALLOW=<CIDR ou IP, separes par des virgules>`. Accepting any source remains possible,
+   WRITTEN (`0.0.0.0/0,::/0`), and only behind the filtering of step 3.
+3. **Restrict publication on the host side.** Only the host relays (local rsyslog -> container):
+   `-p 127.0.0.1:514:514/udp -p 127.0.0.1:514:514/tcp`. Remote appliances: publish on the IP of
+   the interface that receives them, AND set up the firewall from section 3 of deployment A — in the
+   `DOCKER-USER` chain, because Docker's publication rules come before `ufw`.
+4. **Verify**: `docker logs <conteneur>` shows `collector-syslog: parser=... allow=N cidr`. Without a list,
+   it shows `ARRET. PLUME_SYSLOG_ALLOW est vide ...` and the container exits with code 2.
 
 ```sh
-# appareils distants (ici un FortiGate 203.0.113.10), publies sur l'interface 198.51.100.5 de l'hote
+# remote appliances (here a FortiGate 203.0.113.10), published on the host's 198.51.100.5 interface
 docker run -d --name plume-syslog -e PLUME_SYSLOG_ALLOW=203.0.113.10/32 \
   -p 198.51.100.5:514:514/udp -p 198.51.100.5:514:514/tcp \
   -v plume-spool:/var/lib/plume/spool <image-runtime>
-# relais de l'hote seul : la source vue est la passerelle du pont
+# host relay only: the source seen is the bridge gateway
 docker run -d --name plume-syslog -e PLUME_SYSLOG_ALLOW=172.17.0.1/32 \
   -p 127.0.0.1:514:514/udp -p 127.0.0.1:514:514/tcp \
   -v plume-spool:/var/lib/plume/spool <image-runtime>
@@ -200,39 +200,39 @@ docker run -d --name plume-syslog -e PLUME_SYSLOG_ALLOW=172.17.0.1/32 \
 
 ---
 
-## Formats syslog acceptes
+## Accepted syslog formats
 
-| Transport | Cadrage | Note |
+| Transport | Framing | Note |
 |:--|:--|:--|
-| UDP :514 | 1 datagramme = 1 message | truncation possible cote emetteur (MTU) |
-| TCP :514 | **RFC6587 octet-counting** (`MSGLEN SP MSG`) | auto-detecte |
-| TCP :514 | **non-transparent** (LF, tolere CRLF) | auto-detecte |
+| UDP :514 | 1 datagram = 1 message | truncation possible on the sender side (MTU) |
+| TCP :514 | **RFC6587 octet-counting** (`MSGLEN SP MSG`) | auto-detected |
+| TCP :514 | **non-transparent** (LF, CRLF tolerated) | auto-detected |
 
-En-tete : `<PRI>` -> facility/severity (provenance) ; **RFC5424** (`1 TIMESTAMP HOST APP PROCID MSGID SD MSG`,
-SD replie en `fields.sd_*`) ; **RFC3164** (`Mmm dd hh:mm:ss HOST MSG`). FortiGate emet `<PRI>date=... time=...`
-directement (ni 5424 ni 3164) -> tout part **intact** au parser vendeur. Le parser **prefere toujours** les
-champs vendeur (`eventtime`, `level`) a l'en-tete syslog (lossy).
+Header: `<PRI>` -> facility/severity (provenance); **RFC5424** (`1 TIMESTAMP HOST APP PROCID MSGID SD MSG`,
+SD folded into `fields.sd_*`); **RFC3164** (`Mmm dd hh:mm:ss HOST MSG`). FortiGate emits `<PRI>date=... time=...`
+directly (neither 5424 nor 3164) -> everything goes **intact** to the vendor parser. The parser **always prefers** the
+vendor fields (`eventtime`, `level`) over the syslog header (lossy).
 
-## Robustesse
+## Robustness
 
-Le parser FortiGate **ne panique jamais** : champs manquants/en trop/quotes toleres ; une ligne
-illisible -> **event de repli** (`source=fortigate`, `category=network`, `fields.parse_status=unparsed`,
-message = brut tronque) — jamais un drop silencieux. Le decadrage syslog est **UTF-8-safe** (les octets
-sont decodes avec remplacement : une sequence invalide, dont un caractere coupe par la borne `MAX_FRAME`,
-devient U+FFFD ; l'en-tete et le message tronque ne sont jamais coupes au milieu d'un caractere) et chaque dispatch est isole sous `catch_unwind` : **un seul
-datagramme malforme ne peut pas tuer le thread de reception**. Bornes dures : `MAX_FRAME` (anti-DoS),
-`MAX_FIELDS=64` (cardinalite/RAM), `MAX_CONNS`/`MAX_CONNS_PER_IP` + timeout inactivite/vie-max
-(anti-slowloris), tampon memoire borne (`QUEUE_MAX` -> pas d'OOM), spool borne (`SPOOL_MAX_BYTES` ->
-**shed** plutot que disk-pressure), batch `<= PLUME_INGEST_MAX_EVENTS`. Toute perte est **comptee et
-journalisee** (jamais silencieuse). Provenance : `fields.receiver_peer` (IP transport reelle),
-`fields.observer` (identite de l'appareil emetteur : `devname`/`devid`/hostname syslog — pour
-`stats ... by observer` quand plusieurs appareils pointent le meme collecteur).
+The FortiGate parser **never panics**: missing/extra fields and quotes tolerated; an unreadable
+line -> **fallback event** (`source=fortigate`, `category=network`, `fields.parse_status=unparsed`,
+message = truncated raw) — never a silent drop. Syslog deframing is **UTF-8-safe** (the bytes
+are decoded with replacement: an invalid sequence, including a character cut by the `MAX_FRAME` bound,
+becomes U+FFFD; the header and the truncated message are never cut in the middle of a character) and each dispatch is isolated under `catch_unwind`: **a single
+malformed datagram cannot kill the receiving thread**. Hard bounds: `MAX_FRAME` (anti-DoS),
+`MAX_FIELDS=64` (cardinality/RAM), `MAX_CONNS`/`MAX_CONNS_PER_IP` + idle/max-lifetime timeout
+(anti-slowloris), bounded memory buffer (`QUEUE_MAX` -> no OOM), bounded spool (`SPOOL_MAX_BYTES` ->
+**shed** rather than disk pressure), batch `<= PLUME_INGEST_MAX_EVENTS`. Every loss is **counted and
+logged** (never silent). Provenance: `fields.receiver_peer` (real transport IP),
+`fields.observer` (identity of the sending appliance: `devname`/`devid`/syslog hostname — for
+`stats ... by observer` when several appliances point at the same collector).
 
-## Ajouter un vendeur (extensibilite)
+## Adding a vendor (extensibility)
 
-1. `plume/collector-syslog/src/<vendeur>.rs` : `struct X; impl VendorParser for X { ... }`.
-2. `parser.rs` : brancher dans `select()` + `default_source()`.
-3. `PLUME_SYSLOG_PARSER=<vendeur>` (ou `auto` + une signature dans `Auto::sniff_*`).
+1. `plume/collector-syslog/src/<vendeur>.rs`: `struct X; impl VendorParser for X { ... }`.
+2. `parser.rs`: wire it into `select()` + `default_source()`.
+3. `PLUME_SYSLOG_PARSER=<vendeur>` (or `auto` + a signature in `Auto::sniff_*`).
 
-Le contrat : `source` = vendeur, `category` = semantique neutre, `src_ip`/`dst_ip`/`url` top-level,
-`action` dans `fields.action`, **jamais de panic**. C'est tout — le daemon ingere sans changement.
+The contract: `source` = vendor, `category` = neutral semantics, `src_ip`/`dst_ip`/`url` top-level,
+`action` in `fields.action`, **never a panic**. That is all — the daemon ingests without change.

@@ -1,97 +1,97 @@
-# Plume — Importeur Sigma (Slice #7, pièce 3)
+# Plume — Sigma importer (Slice #7, part 3)
 
-[Français](SIGMA-IMPORTER.md) | [English](SIGMA-IMPORTER.en.md)
+[English](SIGMA-IMPORTER.md) | [Français](SIGMA-IMPORTER.fr.md)
 
-> **Statut : contrat opérateur.** Absorbe la bibliothèque de détection **open-source** :
-> [Sigma](https://github.com/SigmaHQ/sigma) est le standard YAML des règles de détection (logsource +
-> `detection{selection/condition}` + tags MITRE). Cet importeur **traduit une règle Sigma en une règle
-> de détection Plume** — une requête **GXQL** + les métadonnées (`title`, `level` → sévérité,
-> `tags: attack.Txxxx` → MITRE). C'est **ADDITIF** : une règle Sigma = des lignes `rule` en plus, **zéro
-> impact data-plane / mode 0**.
+> **Status: operator contract.** Absorbs the **open-source** detection library:
+> [Sigma](https://github.com/SigmaHQ/sigma) is the YAML standard for detection rules (logsource +
+> `detection{selection/condition}` + MITRE tags). This importer **translates a Sigma rule into a Plume
+> detection rule** — a **GXQL** query + the metadata (`title`, `level` → severity,
+> `tags: attack.Txxxx` → MITRE). It is **ADDITIVE**: a Sigma rule = extra `rule` rows, **zero
+> data-plane impact / mode 0**.
 
-- **Ancre code** : `sigma_translate` / `sigma_field_tokens` / `sigma_parse_condition` /
+- **Code anchor**: `sigma_translate` / `sigma_field_tokens` / `sigma_parse_condition` /
   `sigma_yaml_to_docs` (`daemon/src/sigma.rs`), loader `load_overlay_sigma`, handler `sigma_import`,
-  sous-commande CLI `sigma-import`.
-- **Le pivot, c'est le CIM** (`docs/CIM.md`) : le mapping `logsource → category` et les champs cœur
-  (`src_ip`/`dst_ip`/`url`/…) viennent de ce contrat. Une règle Sigma compose sur la `category` NEUTRE,
-  donc elle est **vendor-agnostique** (le même « firewall deny » fire sur FortiGate, ufw, nft…).
+  CLI subcommand `sigma-import`.
+- **The pivot is the CIM** (`docs/CIM.md`): the `logsource → category` mapping and the core fields
+  (`src_ip`/`dst_ip`/`url`/…) come from that contract. A Sigma rule composes on the NEUTRAL `category`,
+  so it is **vendor-agnostic** (the same "firewall deny" fires on FortiGate, ufw, nft…).
 
 ---
 
-## 0. Principes directeurs
+## 0. Guiding principles
 
-1. **JAMAIS une règle silencieusement fausse.** Un construit non exprimable **fidèlement** en GXQL est
-   **signalé + ignoré** avec une raison claire (`skipped: [{title, reason}]`), **jamais** émis comme une
-   règle qui **sous-matche** (= angle mort) ou sur-matche en silence. Une règle Sigma mal traduite qui ne
-   fire pas serait pire que pas de règle. La couverture ci-dessous est le **sous-ensemble commun** ;
-   l'inexprimable est rejeté (voir §4).
-2. **Injection impossible.** Aucune valeur Sigma n'est interpolée « à cru » dans du SQL. Chaque valeur
-   string devient un **motif REGEXP** construit par un encodeur qui n'émet **que des caractères inertes**
-   pour le tokenizer GXQL (les caractères STRUCTURELS — espace, `|`, `"`, `()`, `[]`, `,`, `'`, backtick —
-   sont hex-échappés `\xNN` ; le moteur regex les décode, le découpage GXQL/pipe/`in` ne les voit pas). La
-   requête finale est **recompilée par le compilo GXQL du cœur** (`soql_to_sql_x`) avant tout stockage : un
-   GXQL qui ne compile pas est **rejeté** (garde-fou ultime).
-3. **ENRICH / ADD, jamais réduire.** Importer une règle **ajoute** une détection ; ça n'en supprime ni
-   n'en filtre aucune. Un `logsource` non mappé n'est **pas un drop** : la règle est importée (appliquée à
-   toutes les sources) avec un **avertissement** de sur-match potentiel.
-
----
-
-## 1. Comment importer — trois voies
-
-| voie | usage | `managed` | commande |
-|------|-------|:---------:|----------|
-| **`config.d/sigma/`** | **GitOps** (durable, reviewé, baked dans l'image) | `1` | déposer `*.yml`/`*.yaml`/`*.json`, chargé au boot |
-| **CLI** | import ponctuel / **pré-vol** (`--dry-run`) | `2` | `plume-daemon sigma-import <fichier\|dossier> [--dry-run]` |
-| **API admin** | UI / automatisation | `2` | `POST /api/sigma/import` (**admin**) |
-
-- **CLI** — `plume-daemon sigma-import ./rules/ --dry-run` affiche un **rapport JSON**
-  (`imported[]` / `skipped[{title,reason}]` / `summary`) **sans écrire** ; sans `--dry-run`, UPSERT par
-  nom dans `PLUME_DB` (`managed=2`). Cette écriture **crée** la base si elle manque : sur un central
-  neuf, démarrez le démon avant, sans quoi la base naît en clair ([`INSTALLER-SANS-OUVRIR-DE-BRECHE.md`
-  §1.1](INSTALLER-SANS-OUVRIR-DE-BRECHE.md#11-démarrer-le-démon-une-fois-avant-toute-sous-commande-qui-écrit-dans-la-base)). `--dry-run` n'ouvre aucune base.
-- **API** — corps `{"content":"<yaml|json>","dry_run":false}` (texte Sigma, multi-docs `---` OK) **ou**
-  `{"rules":[<sigma json>…]}`. Réponse `{imported:[…], skipped:[…]}`. Gate RBAC : la route `/api/sigma/*`
-  tombe en **DEFAULT-DENY = admin** (l'import en masse de détections externes est privilégié).
-- **UPSERT par `title`.** Ré-importer est idempotent. L'import **ne remplace jamais** une règle overlay
-  git (`managed=1`) — elle est `skipped` (retirez-la côté git pour la remplacer).
-
-Un fichier Sigma multi-documents (`---`) est supporté (un fichier peut porter N règles).
+1. **NEVER a silently wrong rule.** A construct that cannot be expressed **faithfully** in GXQL is
+   **flagged + skipped** with a clear reason (`skipped: [{title, reason}]`), **never** emitted as a
+   rule that silently **under-matches** (= blind spot) or over-matches. A mistranslated Sigma rule that
+   never fires would be worse than no rule. The coverage below is the **common subset**; the
+   inexpressible is rejected (see §4).
+2. **Injection impossible.** No Sigma value is interpolated "raw" into SQL. Every string value
+   becomes a **REGEXP pattern** built by an encoder that emits **only characters that are inert**
+   for the GXQL tokenizer (STRUCTURAL characters — space, `|`, `"`, `()`, `[]`, `,`, `'`, backtick —
+   are hex-escaped `\xNN`; the regex engine decodes them, the GXQL/pipe/`in` splitting never sees them). The
+   final query is **recompiled by the core GXQL compiler** (`soql_to_sql_x`) before anything is stored: a
+   GXQL query that does not compile is **rejected** (the last line of defense).
+3. **ENRICH / ADD, never reduce.** Importing a rule **adds** a detection; it neither removes nor
+   filters any. An unmapped `logsource` is **not a drop**: the rule is imported (applied to
+   all sources) with a **warning** about potential over-matching.
 
 ---
 
-## 2. Le modèle de sortie — une règle Plume
+## 1. How to import — three paths
 
-Une règle Sigma « match » (fire dès qu'un event correspond) devient :
+| path | use | `managed` | command |
+|------|-----|:---------:|---------|
+| **`config.d/sigma/`** | **GitOps** (durable, reviewed, baked into the image) | `1` | drop `*.yml`/`*.yaml`/`*.json`, loaded at boot |
+| **CLI** | one-off import / **pre-flight** (`--dry-run`) | `2` | `plume-daemon sigma-import <fichier\|dossier> [--dry-run]` |
+| **Admin API** | UI / automation | `2` | `POST /api/sigma/import` (**admin**) |
+
+- **CLI** — `plume-daemon sigma-import ./rules/ --dry-run` prints a **JSON report**
+  (`imported[]` / `skipped[{title,reason}]` / `summary`) **without writing**; without `--dry-run`, UPSERT by
+  name into `PLUME_DB` (`managed=2`). That write **creates** the database if it is missing: on a fresh
+  central, start the daemon first, otherwise the database is born in plaintext ([`INSTALLER-SANS-OUVRIR-DE-BRECHE.md`
+  §1.1](INSTALLER-SANS-OUVRIR-DE-BRECHE.md#11-start-the-daemon-once-before-any-subcommand-that-writes-to-the-database)). `--dry-run` opens no database.
+- **API** — body `{"content":"<yaml|json>","dry_run":false}` (Sigma text, multi-doc `---` OK) **or**
+  `{"rules":[<sigma json>…]}`. Response `{imported:[…], skipped:[…]}`. RBAC gate: the `/api/sigma/*` route
+  falls under **DEFAULT-DENY = admin** (bulk import of external detections is privileged).
+- **UPSERT by `title`.** Re-importing is idempotent. The import **never replaces** a git overlay
+  rule (`managed=1`) — that rule is `skipped` (remove it on the git side to replace it).
+
+A multi-document Sigma file (`---`) is supported (one file can carry N rules).
+
+---
+
+## 2. The output model — a Plume rule
+
+A "match" Sigma rule (fires as soon as an event matches) becomes:
 
 ```
 query      = search <category?> <champs…> | stats count
 is_soql    = 1
-op / seuil = ">" / 0        # fire s'il existe ≥ 1 event matchant dans la fenêtre
-window_s   = 3600           # fenêtre glissante
-interval_s = 300            # cadence d'évaluation
-severity   = level → 0..4   # cf. §3
+op / seuil = ">" / 0        # fires if at least 1 matching event exists in the window
+window_s   = 3600           # sliding window
+interval_s = 300            # evaluation cadence
+severity   = level → 0..4   # see §3
 mitre      = 1re tag attack.Txxxx[.yyy] → Txxxx[.yyy] (norm_mitre)
 name       = title
 ```
 
-`| stats count` renvoie **un** nombre (le compte des events matchants) ; `run_due_rules` compare `count
-> 0` → alerte, qui **hérite** de `severity` et `mitre` (mesure de couverture MITRE, purple-team).
+`| stats count` returns **one** number (the count of matching events); `run_due_rules` compares `count
+> 0` → alert, which **inherits** `severity` and `mitre` (MITRE coverage measurement, purple team).
 
-### 3. `level` → sévérité (0..4, cf. `docs/CIM.md` §3)
+### 3. `level` → severity (0..4, see `docs/CIM.md` §3)
 
-| Sigma `level` | `informational` | `low` | `medium` (défaut) | `high` | `critical` |
-|---------------|:---------------:|:-----:|:-----------------:|:------:|:----------:|
+| Sigma `level` | `informational` | `low` | `medium` (default) | `high` | `critical` |
+|---------------|:---------------:|:-----:|:------------------:|:------:|:----------:|
 | Plume `severity` | 0 | 1 | 2 | 3 | 4 |
 
 ---
 
-## 4. Matrice de couverture
+## 4. Coverage matrix
 
 ### 4a. logsource → `category` (CIM)
 
-Priorité `category` > `service` > `product`. Table `SIGMA_LOGSOURCE_CATEGORY` — **40 entrées, 16
-catégories cibles distinctes** (compté dans `daemon/src/sigma.rs`).
+Priority `category` > `service` > `product`. Table `SIGMA_LOGSOURCE_CATEGORY` — **40 entries, 16
+distinct target categories** (counted in `daemon/src/sigma.rs`).
 
 | Sigma logsource | CIM `category` | | Sigma logsource | CIM `category` |
 |-----------------|:--------------:|-|-----------------|:--------------:|
@@ -103,251 +103,251 @@ catégories cibles distinctes** (compté dans `daemon/src/sigma.rs`).
 | `email`, `smtp` | `mail`         | | `container` | `container` |
 | `vpn`, `dlp` | `vpn`, `dlp` | | `syslog`, `system` | `syslog`, `system` |
 
-**logsource non mappé** → règle importée **sans** filtre `category=` (s'applique à toutes les sources),
-avec un **avertissement** (sur-match possible). Jamais un drop.
+**Unmapped logsource** → rule imported **without** a `category=` filter (applies to all sources),
+with a **warning** (possible over-matching). Never a drop.
 
-#### La règle qui gouverne cette table : *une cible sans émetteur est pire qu'une absence de mapping*
+#### The rule that governs this table: *a target with no emitter is worse than no mapping at all*
 
-Un mapping vers une catégorie que **rien ne produit** fabrique une couverture **apparente** : la règle
-s'importe, se catégorise, apparaît « couverte », et ne peut **jamais** fire. Non mappée, elle est
-**visiblement** non catégorisée. Toute cible de la table est donc adossée à une **citation vérifiée
-mécaniquement** — `(catégorie, fichier livré, fragment émetteur)` dans `SIGMA_TARGET_CATEGORY_EMITTERS`,
-gardée dans les deux sens par `sigma_logsource_targets_are_emitted_by_a_shipped_collector` : pas de
-citation fantôme (le fragment doit être présent dans le fichier cité), pas de cible sans citation
-(mapper vers une catégorie non mesurée fait **rougir** la CI). Même contrat que
-`collected::COLLECTED_EXTENDED_FIELDS` pour les champs, appliqué ici à l'axe `category`.
+A mapping to a category that **nothing produces** manufactures **apparent** coverage: the rule
+imports, gets categorized, shows up as "covered", and can **never** fire. Left unmapped, it is
+**visibly** uncategorized. Every target in the table is therefore backed by a **mechanically verified
+citation** — `(catégorie, fichier livré, fragment émetteur)` in `SIGMA_TARGET_CATEGORY_EMITTERS`,
+guarded in both directions by `sigma_logsource_targets_are_emitted_by_a_shipped_collector`: no
+phantom citation (the fragment must be present in the cited file), no target without a citation
+(mapping to an unmeasured category turns CI **red**). Same contract as
+`collected::COLLECTED_EXTENDED_FIELDS` for fields, applied here to the `category` axis.
 
-Deux entrées ont été corrigées sur ce critère :
+Two entries were corrected against this criterion:
 
-- **`process_creation` → `exec`** (et non plus `endpoint`). La création de processus Windows
-  (**EventID 4688**) est émise en `exec` — le nom canonique CIM v1.3 — par les **deux** collecteurs
-  Windows livrés (`agent/src/source/windows.rs` : `4688 => ("exec"…)` ; `plume-collector.ps1` :
-  `-Ids @(4688) … -Category 'exec'`) **et** par le flux Linux `collectors/auditd.sh` (`execve`). Tant
-  que la table visait `endpoint`, **toute règle Sigma `process_creation` importée était aveugle à la
-  télémétrie qu'elle vise** — la famille de règles la plus nombreuse de SigmaHQ.
-- **`ps_script` : retiré** (donc non mappé). PowerShell Script Block Logging (EventID 4104, canal
-  `Microsoft-Windows-PowerShell/Operational`) n'a **aucun** émetteur livré : le canal n'est ni dans les
-  canaux par défaut de l'agent (`d_win_channels`) ni dans les `-LogName` du collecteur PowerShell, et
-  `classer` rendrait de toute façon une catégorie **vide** pour lui. Pour brancher cette famille il faut
-  d'abord **produire** la télémétrie (parseur/source déclarative), puis mapper.
+- **`process_creation` → `exec`** (no longer `endpoint`). Windows process creation
+  (**EventID 4688**) is emitted as `exec` — the canonical CIM v1.3 name — by **both** shipped
+  Windows collectors (`agent/src/source/windows.rs`: `4688 => ("exec"…)`; `plume-collector.ps1`:
+  `-Ids @(4688) … -Category 'exec'`) **and** by the Linux stream `collectors/auditd.sh` (`execve`). As
+  long as the table targeted `endpoint`, **every imported Sigma `process_creation` rule was blind to the
+  telemetry it targets** — the largest rule family in SigmaHQ.
+- **`ps_script`: removed** (hence unmapped). PowerShell Script Block Logging (EventID 4104, channel
+  `Microsoft-Windows-PowerShell/Operational`) has **no** shipped emitter: the channel is neither among the
+  agent's default channels (`d_win_channels`) nor among the PowerShell collector's `-LogName`, and
+  `classer` would return an **empty** category for it anyway. To wire up this family, the telemetry must
+  first be **produced** (declarative parser/source), then mapped.
 
-#### Ce que chaque catégorie exige RÉELLEMENT de l'exploitant
+#### What each category ACTUALLY requires from the operator
 
-Mesuré en lisant les émetteurs livrés (`collectors/`, `collectors/windows/`, `agent/src/`,
-`collector-syslog/`, `collector-mail/`, `config.d/parsers/`, presets d'ingest du daemon).
+Measured by reading the shipped emitters (`collectors/`, `collectors/windows/`, `agent/src/`,
+`collector-syslog/`, `collector-mail/`, `config.d/parsers/`, the daemon's ingest presets).
 
-> **Cadrage indispensable, mesuré dans `bootstrap.sh` : plume n'installe AUCUN paquet.** Il déploie les
-> collecteurs + leurs timers systemd, et *arme* les règles auditd **si `augenrules` et `auditctl` sont
-> déjà présents** (sinon il le dit : « auditd ABSENT (augenrules ou auditctl introuvable) : règles NON
-> chargées »). Chaque ligne ci-dessous nomme donc
-> ce que **l'exploitant** doit avoir sur l'hôte. Sans lui la catégorie reste **vide** et les règles Sigma
-> qui la visent sont **inertes** — c'est signalé à l'import, jamais silencieux.
+> **Essential framing, measured in `bootstrap.sh`: plume installs NO package.** It deploys the
+> collectors + their systemd timers, and *arms* the auditd rules **if `augenrules` and `auditctl` are
+> already present** (otherwise it says so: « auditd ABSENT (augenrules ou auditctl introuvable) : règles
+> NON chargées », auditd absent, rules not loaded). Each row below therefore names
+> what **the operator** must have on the host. Without it the category stays **empty** and the Sigma rules
+> that target it are **inert** — this is flagged at import, never silent.
 
-| CIM `category` | émetteur livré (exemple) | prérequis sur l'hôte |
-|----------------|--------------------------|----------------------|
-| `auth` | agent `source/linux.rs` (journald : sshd/sudo/su) | **journald** — présent sur toute distro systemd, donc le cas le plus courant |
-| `firewall` | `collectors/ufw.sh`, `nft.sh`, `origin-drop.sh`, `portscan.sh`, `portprobe.sh` | **ufw** et/ou **nftables** (collecteurs en lecture, rien n'est installé) |
-| `exec` | `collectors/auditd.sh` (`execve`) ; EventID 4688 côté Windows | **auditd installé** (les règles sont armées par `bootstrap.sh`) ; côté Windows, la politique d'audit « Audit Process Creation » |
-| `network` | `collectors/conntrack.sh`, `crowdsec.sh` | **conntrack** (paquet `conntrack-tools`) |
-| `web` | `collectors/web.sh`, `cloudflare.sh`, `cloudflare-http.sh` | un front web dont les logs d'accès sont lisibles (Traefik/nginx) ou le feed Cloudflare |
-| `syslog` | `collector-syslog/src/parser.rs` (parser Generic) | le récepteur syslog `collector-syslog` déployé et des équipements qui y envoient |
-| `malware` | `clamav.sh`, `yara.sh`, `plume-collector.ps1` (Defender) | un scanner : **ClamAV** / **YARA** / **Defender** |
-| `k8s` | `kube-audit.sh`, `kube-state.sh`, `pod-logs.sh` | un **cluster Kubernetes** (+ audit log activé) |
+| CIM `category` | shipped emitter (example) | prerequisite on the host |
+|----------------|---------------------------|--------------------------|
+| `auth` | agent `source/linux.rs` (journald: sshd/sudo/su) | **journald** — present on every systemd distro, so the most common case |
+| `firewall` | `collectors/ufw.sh`, `nft.sh`, `origin-drop.sh`, `portscan.sh`, `portprobe.sh` | **ufw** and/or **nftables** (read-only collectors, nothing is installed) |
+| `exec` | `collectors/auditd.sh` (`execve`); EventID 4688 on the Windows side | **auditd installed** (the rules are armed by `bootstrap.sh`); on the Windows side, the "Audit Process Creation" audit policy |
+| `network` | `collectors/conntrack.sh`, `crowdsec.sh` | **conntrack** (package `conntrack-tools`) |
+| `web` | `collectors/web.sh`, `cloudflare.sh`, `cloudflare-http.sh` | a web front end whose access logs are readable (Traefik/nginx), or the Cloudflare feed |
+| `syslog` | `collector-syslog/src/parser.rs` (Generic parser) | the `collector-syslog` syslog receiver deployed, and devices sending to it |
+| `malware` | `clamav.sh`, `yara.sh`, `plume-collector.ps1` (Defender) | a scanner: **ClamAV** / **YARA** / **Defender** |
+| `k8s` | `kube-audit.sh`, `kube-state.sh`, `pod-logs.sh` | a **Kubernetes cluster** (+ audit log enabled) |
 | `container` | `collectors/containerd.sh` | **containerd** |
 | `ebpf` | `collectors/falco.sh` | **Falco** |
-| `mail` | `collector-mail/src/main.rs` | le service `collector-mail` branché sur une pile mail |
-| `dns` | agent Sysmon ID 22, `suricata.sh`, FortiGate `utm/dns` | **Sysmon** ou **Suricata** ou **FortiGate** |
-| `endpoint` | agent `classer` (Sysmon hors ID 1/3/22 ; Security 4697/1102 ; System 7045/7036/7040), FortiGate `event/endpoint`/`ems`/`connector` | **Sysmon** (+ agent plume sur l'hôte Windows) ou **FortiGate EMS** |
-| `system` | `plume-collector.ps1`, FortiGate `event/system` | le **collecteur Windows** ou **FortiGate** |
+| `mail` | `collector-mail/src/main.rs` | the `collector-mail` service wired to a mail stack |
+| `dns` | agent Sysmon ID 22, `suricata.sh`, FortiGate `utm/dns` | **Sysmon** or **Suricata** or **FortiGate** |
+| `endpoint` | agent `classer` (Sysmon except ID 1/3/22; Security 4697/1102; System 7045/7036/7040), FortiGate `event/endpoint`/`ems`/`connector` | **Sysmon** (+ plume agent on the Windows host) or **FortiGate EMS** |
+| `system` | `plume-collector.ps1`, FortiGate `event/system` | the **Windows collector** or **FortiGate** |
 | `vpn` | `collector-syslog/src/fortigate.rs` (`event/vpn`) | **FortiGate** |
 | `dlp` | `collector-syslog/src/fortigate.rs` (`utm/dlp`) | **FortiGate** |
 
-**Lecture pratique.** Sur un hôte Linux systemd sans composant tiers ajouté, les familles Sigma qui
-peuvent réellement fire sont celles adossées à `auth` (`authentication`, `auth`, `sshd`, `sudo`) ; en
-ajoutant les paquets `auditd`, `ufw`/`nftables` et `conntrack-tools` — que plume n'installe pas — s'y
-joignent `process_creation` (via l'`execve` auditd), `firewall` / `firewall_traffic` et
-`network_connection` / `netflow`, plus la famille web dès qu'un front est collecté. **Toutes les familles
-Sysmon** (`process_access`, `image_load`, `driver_load`, `create_remote_thread`, `file_*`, `registry_*`)
-exigent que **Sysmon** tourne sur les hôtes Windows *et* que l'agent plume y soit déployé : sans Sysmon,
-elles s'importent et restent **inertes**.
+**In practice.** On a systemd Linux host with no third-party component added, the Sigma families that
+can actually fire are those backed by `auth` (`authentication`, `auth`, `sshd`, `sudo`); adding the
+`auditd`, `ufw`/`nftables` and `conntrack-tools` packages — which plume does not install — brings in
+`process_creation` (via the auditd `execve`), `firewall` / `firewall_traffic` and
+`network_connection` / `netflow`, plus the web family as soon as a front end is collected. **All Sysmon
+families** (`process_access`, `image_load`, `driver_load`, `create_remote_thread`, `file_*`, `registry_*`)
+require **Sysmon** running on the Windows hosts *and* the plume agent deployed there: without Sysmon,
+they import and stay **inert**.
 
-#### Deux angles morts MESURÉS, écrits plutôt que masqués
+#### Two MEASURED blind spots, written down rather than hidden
 
-1. **La création de processus est scindée entre deux catégories émises.** 4688 (agent + collecteur
-   PowerShell) et l'`execve` auditd donnent `exec` ; **Sysmon ID 1** (création de processus) est rangé en
-   `endpoint` par `classer` (branche par défaut « Sysmon hors 3/22 »). Une règle `process_creation`
-   importée voit donc 4688 et auditd, **mais pas Sysmon ID 1**. Signalé par un **avertissement à
-   l'import** et épinglé par un test. Refermer cela demande de changer la catégorie **émise** par
-   l'agent (data-plane) et rouvre la même dette d'historique que `process` → `exec` (`docs/CIM.md` §5.2).
-2. **`CommandLine` n'existe pas dans un 4688 par défaut.** Le champ n'apparaît que si la GPO *« Include
-   command line in process creation events »* est activée. La règle vitrine livrée
-   `config.d/sigma/process-whoami-discovery.yml` filtre `CommandLine` : elle **reste inerte sur un
-   Windows par défaut, même après cette réconciliation** (l'importeur le signale — champ étendu inerte).
-   Une règle qui filtre `NewProcessName` (toujours présent) fire, elle : c'est ce que prouve
-   `sigma_process_creation_rule_fires_on_real_4688_event` sur une fixture 4688 réelle.
+1. **Process creation is split between two emitted categories.** 4688 (agent + PowerShell
+   collector) and the auditd `execve` give `exec`; **Sysmon ID 1** (process creation) is filed under
+   `endpoint` by `classer` (default branch "Sysmon except 3/22"). An imported `process_creation` rule
+   therefore sees 4688 and auditd, **but not Sysmon ID 1**. Flagged by an **import
+   warning** and pinned by a test. Closing this requires changing the category **emitted** by
+   the agent (data plane) and reopens the same history debt as `process` → `exec` (`docs/CIM.md` §5.2).
+2. **`CommandLine` does not exist in a default 4688.** The field only appears if the GPO *"Include
+   command line in process creation events"* is enabled. The shipped showcase rule
+   `config.d/sigma/process-whoami-discovery.yml` filters on `CommandLine`: it **stays inert on a
+   default Windows, even after this reconciliation** (the importer flags it — inert extended field).
+   A rule that filters on `NewProcessName` (always present) does fire: that is what
+   `sigma_process_creation_rule_fires_on_real_4688_event` proves on a real 4688 fixture.
 
-   **Les DEUX états ont maintenant été mesurés sur un vrai Windows** *(2026‑08‑02, Windows 11
-   Enterprise 24H2 build 26100, `Audit Process Creation` activé, collecteur PowerShell livré,
-   règle importée telle quelle par `plume-daemon sigma-import`)* :
+   **BOTH states have now been measured on a real Windows** *(2026‑08‑02, Windows 11
+   Enterprise 24H2 build 26100, `Audit Process Creation` enabled, shipped PowerShell collector,
+   rule imported as-is by `plume-daemon sigma-import`)*:
 
-   | état de la GPO | `4688` portant un `CommandLine` non vide | `search category=exec CommandLine=~(?i)whoami \| stats count` |
+   | GPO state | `4688` carrying a non-empty `CommandLine` | `search category=exec CommandLine=~(?i)whoami \| stats count` |
    |---|---|---|
-   | **désactivée** (défaut) | **0 / 40** | **0** — inerte |
-   | **activée** (`ProcessCreationIncludeCmdLine_Enabled=1`) | **12 / 25** | **15** — la règle **FIRE** |
+   | **disabled** (default) | **0 / 40** | **0** — inert |
+   | **enabled** (`ProcessCreationIncludeCmdLine_Enabled=1`) | **12 / 25** | **15** — the rule **FIRES** |
 
-   Détail utile au diagnostic : sans la GPO, l'élément `<Data Name='CommandLine'>` **est présent mais
-   VIDE** dans le XML. Le collecteur ne pose donc pas la clé (`if ($d[$k])` écarte la chaîne vide) et
-   `fields.CommandLine` est absent — la règle ne matche pas, sans laisser de champ vide trompeur.
-   *Mesuré côté SOC : 25 événements `category=exec` porteurs de `fields.CommandLine` après activation,
-   0 avant.*
+   A useful diagnostic detail: without the GPO, the `<Data Name='CommandLine'>` element **is present but
+   EMPTY** in the XML. The collector therefore does not set the key (`if ($d[$k])` discards the empty string) and
+   `fields.CommandLine` is absent — the rule does not match, without leaving a misleading empty field behind.
+   *Measured on the SOC side: 25 `category=exec` events carrying `fields.CommandLine` after enabling,
+   0 before.*
 
-   **Conclusion, et c'est la différence qui compte** : sur Windows la règle est inerte **par
-   configuration** — un réglage la réveille, et il tient en une valeur de registre. Sur Linux elle est
-   inerte **par nature** (ci-dessous). Le remède n'est donc pas le même, et le message à l'opérateur non
-   plus : sur Windows « activez la GPO », sur Linux « prenez la règle jumelle qui filtre `exe` ».
+   **Conclusion, and this is the difference that matters**: on Windows the rule is inert **by
+   configuration** — one setting wakes it up, and it fits in a single registry value. On Linux it is
+   inert **by nature** (below). The remedy is therefore not the same, and neither is the message to the operator:
+   on Windows "enable the GPO", on Linux "take the twin rule that filters on `exe`".
 
-   **Sur Linux, la même règle est inerte pour une raison PLUS FORTE — structurelle, pas un réglage.**
-   *Mesuré le 2026-08-01 (VM Ubuntu 24.04 Server amd64, 2 vCPU/2 Gio, règles auditd chargées, charge =
-   build de 100 unités de compilation → 533 événements `category=exec` réels) :*
+   **On Linux, the same rule is inert for a STRONGER reason — structural, not a setting.**
+   *Measured on 2026-08-01 (Ubuntu 24.04 Server amd64 VM, 2 vCPU/2 GiB, auditd rules loaded, load =
+   build of 100 compilation units → 533 real `category=exec` events):*
 
-   | champ filtré   | événements `exec` correspondants | verdict |
-   |----------------|----------------------------------|---------|
-   | `CommandLine`  | **0 / 533**                      | ne peut pas matcher |
-   | `exe`          | 407 / 533                        | matche |
-   | `comm`         | 305 / 533                        | matche |
+   | filtered field | matching `exec` events | verdict |
+   |----------------|------------------------|---------|
+   | `CommandLine`  | **0 / 533**            | cannot match |
+   | `exe`          | 407 / 533              | matches |
+   | `comm`         | 305 / 533              | matches |
 
-   Le chemin `execve` d'auditd émet exactement `action · auid · cim · comm · exe · key · success ·
-   syscall · uid`. `CommandLine` n'en fait pas partie et **aucune option ne le fera apparaître** :
-   sur Windows une GPO suffit, sur Linux il n'y a rien à activer. Les deux inerties ont donc des
-   remèdes différents, et les confondre ferait croire qu'un réglage suffit.
-   La **jumelle Linux qui fire** est livrée à côté :
-   `config.d/sigma/process-whoami-discovery-linux.yml` (`exe|contains`). Le couple est délibéré — il
-   enseigne la différence entre *champ traduit* (§4b, table de traduction) et *champ peuplé*.
-   Une règle qui filtre un champ jamais peuplé n'est pas une couverture : c'est une couverture
-   **apparente**, plus dangereuse que pas de règle du tout.
+   The auditd `execve` path emits exactly `action · auid · cim · comm · exe · key · success ·
+   syscall · uid`. `CommandLine` is not among them and **no option will make it appear**:
+   on Windows a GPO is enough, on Linux there is nothing to enable. The two kinds of inertness therefore have
+   different remedies, and confusing them would suggest that a setting is enough.
+   The **Linux twin that fires** ships alongside:
+   `config.d/sigma/process-whoami-discovery-linux.yml` (`exe|contains`). The pair is deliberate — it
+   teaches the difference between a *translated field* (§4b, translation table) and a *populated field*.
+   A rule that filters on a field that is never populated is not coverage: it is **apparent**
+   coverage, more dangerous than no rule at all.
 
-> **Quelle part d'un ruleset survit à la traduction ? NON MESURÉ ICI** — aucun corpus SigmaHQ n'est
-> embarqué dans le dépôt, donc aucun taux n'est publié. Mesurez-le **sur votre propre ruleset** :
-> `plume-daemon sigma-import <dossier> --dry-run` rend `imported[]` (avec leurs `warnings`) et
-> `skipped[{title,reason}]`. C'est le seul chiffre qui vous concerne.
+> **How much of a ruleset survives translation? NOT MEASURED HERE** — no SigmaHQ corpus is
+> embedded in the repository, so no rate is published. Measure it **on your own ruleset**:
+> `plume-daemon sigma-import <dossier> --dry-run` returns `imported[]` (with their `warnings`) and
+> `skipped[{title,reason}]`. That is the only figure that concerns you.
 
-### 4b. Champs Sigma → champs Plume
+### 4b. Sigma fields → Plume fields
 
-**Deux questions distinctes, deux tables distinctes.** *Traduire* un nom (« ce champ Sigma s'écrit comment
-chez Plume ? ») et *savoir s'il est peuplé* (« Plume collecte-t-il cette donnée ? ») sont des questions
-différentes. Les confondre ferait qu'**ajouter un alias éteindrait l'avertissement d'inertie** sans qu'une
-seule donnée nouvelle soit collectée — du silence pris pour de la couverture.
+**Two distinct questions, two distinct tables.** *Translating* a name ("how is this Sigma field written
+in Plume?") and *knowing whether it is populated* ("does Plume collect this data?") are different
+questions. Confusing them would mean that **adding an alias silences the inertness warning** without a
+single new piece of data being collected — silence mistaken for coverage.
 
-**Traduction** (`SIGMA_FIELD_ALIAS`, `daemon/src/sigma.rs`) :
+**Translation** (`SIGMA_FIELD_ALIAS`, `daemon/src/sigma.rs`):
 
-- **Alias connus** → colonnes cœur : `SourceIp`/`src_ip`/`SourceAddress` → `src_ip` ;
-  `DestinationIp`/`dst_ip` → `dst_ip` ; `DestinationPort`/`dst_port` → `dport` ; `Url`/`Uri` → `url` ;
-  `User`/`TargetUserName`/`Account` → `user` ; `Hostname`/`ComputerName` → `host`.
-- **Sinon** : le nom Sigma est utilisé **tel quel** comme champ étendu → `fields.<Nom>` (via `json_extract`,
-  **casse préservée**).
-- **Nom imbriqué / à points / tiret** (`winlog.event_data.X`) → **non mappable** (`json_extract` 1 niveau) →
-  la règle est **flaggée** (skip).
+- **Known aliases** → core columns: `SourceIp`/`src_ip`/`SourceAddress` → `src_ip`;
+  `DestinationIp`/`dst_ip` → `dst_ip`; `DestinationPort`/`dst_port` → `dport`; `Url`/`Uri` → `url`;
+  `User`/`TargetUserName`/`Account` → `user`; `Hostname`/`ComputerName` → `host`.
+- **Otherwise**: the Sigma name is used **as-is** as an extended field → `fields.<Nom>` (via `json_extract`,
+  **case preserved**).
+- **Nested / dotted / hyphenated name** (`winlog.event_data.X`) → **not mappable** (`json_extract` 1 level) →
+  the rule is **flagged** (skip).
 
-**Inertie** (`COLLECTED_EXTENDED_FIELDS`, `daemon/src/collected.rs`) : une fois le champ traduit, l'importeur
-**avertit** si *aucun collecteur, parseur ou agent livré n'écrit ce champ*. L'inventaire est une table
-`(champ, fichier livré qui l'émet)` dont chaque entrée est **citée**. Une garde de test
-(`collected_inventory_is_backed_by_shipped_collectors`) vérifie les deux sens **avec le même extracteur** :
+**Inertness** (`COLLECTED_EXTENDED_FIELDS`, `daemon/src/collected.rs`): once the field is translated, the importer
+**warns** if *no shipped collector, parser or agent writes that field*. The inventory is a table of
+`(champ, fichier livré qui l'émet)` in which every entry is **cited**. A test guard
+(`collected_inventory_is_backed_by_shipped_collectors`) checks both directions **with the same extractor**:
 
-- **(A) pas d'entrée que personne n'émet** — le champ doit être **extrait** du fichier cité, donc y figurer
-  en **position de producteur** (objet `fields` littéral, insertion par clé littérale, `af(…)` awk, fragment
-  JSON échappé, overlay de parseur). Une occurrence quelconque du nom **ne suffit pas** : `web.sh` *lit* la
-  clé Traefik `RequestPath` sans jamais l'émettre, l'entrée `("RequestPath","web.sh")` est **rejetée** ;
-- **(B) pas de champ émis qui manque à l'inventaire** — l'extraction couvre les formes réellement livrées :
-  JSON échappé shell/awk, `jq` (clés non quotées), `serde_json::json!` de l'agent, dictionnaire Python,
-  hashtable PowerShell, overlays `config.d/parsers/*.json` ;
-- **(C) anti-rot par famille** — chaque famille de collecteurs a un **plancher d'extractions** : en perdre une
-  entière (chemin déplacé, syntaxe d'émission changée) fait rougir la garde au lieu de passer inaperçu.
+- **(A) no entry that nobody emits** — the field must be **extracted** from the cited file, hence appear there
+  in **producer position** (literal `fields` object, insertion by literal key, awk `af(…)`, escaped JSON
+  fragment, parser overlay). Any occurrence of the name **is not enough**: `web.sh` *reads* the
+  Traefik key `RequestPath` without ever emitting it, so the entry `("RequestPath","web.sh")` is **rejected**;
+- **(B) no emitted field missing from the inventory** — extraction covers the forms actually shipped:
+  shell/awk escaped JSON, `jq` (unquoted keys), the agent's `serde_json::json!`, Python dictionary,
+  PowerShell hashtable, `config.d/parsers/*.json` overlays;
+- **(C) anti-rot per family** — each collector family has an **extraction floor**: losing an entire
+  one (path moved, emission syntax changed) turns the guard red instead of going unnoticed.
 
-Conséquences :
+Consequences:
 
-- un **alias vers une cible non collectée** reste **signalé inerte** — l'alias traduit, il ne collecte pas ;
-- l'avertissement **ne rejette jamais** la règle (la donnée peut arriver plus tard) ;
-- **mise à jour** : un collecteur qui se met à émettre `fields.<X>` (ou qui cesse) fait **rougir la garde**
-  tant que l'inventaire n'est pas ajusté.
+- an **alias to an uncollected target** stays **flagged inert** — the alias translates, it does not collect;
+- the warning **never rejects** the rule (the data may arrive later);
+- **updates**: a collector that starts emitting `fields.<X>` (or stops) turns **the guard red**
+  until the inventory is adjusted.
 
-**Ce que l'inventaire ne couvre pas** (surfaces **ouvertes**, définies au déploiement — donc non
-inventoriables statiquement ; leurs champs restent **signalés inertes**, c'est-à-dire *sur*-avertis) : la
-recopie verbatim des clés `EventData` du log Windows, les champs des sources déclaratives `[[source]]`, et
-les overlays de parseurs ajoutés par l'exploitant après déploiement. `collected.rs` en donne la liste exacte,
-ainsi que la **limite** du contrôle de citation : il exige une position de producteur, il n'est pas
-infalsifiable.
+**What the inventory does not cover** (**open** surfaces, defined at deployment — hence not statically
+inventoriable; their fields stay **flagged inert**, that is *over*-warned): the
+verbatim copy of the Windows log's `EventData` keys, the fields of declarative `[[source]]` sources, and
+the parser overlays the operator adds after deployment. `collected.rs` gives the exact list,
+along with the **limit** of the citation check: it requires a producer position, it is not
+tamper-proof.
 
-### 4c. Modificateurs de champ
+### 4c. Field modifiers
 
 | Sigma | → GXQL | note |
 |-------|--------|------|
-| *(aucun)* | `field=~(?i)^…$` (ou `field=n` si entier) | **égalité** ; jokers Sigma `*`/`?` **actifs** (→ `.*`/`.`) |
-| `\|contains` | `field=~(?i)…` | sous-chaîne (non ancré) |
-| `\|startswith` | `field=~(?i)^…` | ancré début |
-| `\|endswith` | `field=~(?i)…$` | ancré fin |
-| `\|re` (`\|re\|i`) | `field=~…` (`(?i)…`) | regex brut, **si** embarquable (pas de `\|`/`()`/`[]`/espace → sinon flag) |
-| `\|all` (+ liste) | plusieurs tokens en **ET** | ex. `contains\|all` |
-| `\|lt \|lte \|gt \|gte` | `field< <= > >= n` | numérique |
+| *(none)* | `field=~(?i)^…$` (or `field=n` if integer) | **equality**; Sigma wildcards `*`/`?` **active** (→ `.*`/`.`) |
+| `\|contains` | `field=~(?i)…` | substring (unanchored) |
+| `\|startswith` | `field=~(?i)^…` | anchored at start |
+| `\|endswith` | `field=~(?i)…$` | anchored at end |
+| `\|re` (`\|re\|i`) | `field=~…` (`(?i)…`) | raw regex, **if** embeddable (no `\|`/`()`/`[]`/space → otherwise flag) |
+| `\|all` (+ list) | several tokens **ANDed** | e.g. `contains\|all` |
+| `\|lt \|lte \|gt \|gte` | `field< <= > >= n` | numeric |
 
-> **Casse.** Les comparaisons string sont **casse-insensibles** (`(?i)`, conforme au défaut Sigma — et
-> sûr : sur-match plutôt que sous-match). La liste OU en `in(...)` **ne fait pas exception** : le compilo
-> du cœur (v0.2.2) émet ce filtre `COLLATE NOCASE` dès lors qu'il est **positif**, posé dans le **filtre
-> de base** du `search` (pas dans une étape `| where`) et que sa liste n'est **pas entièrement numérique**
-> — critère porté par les **valeurs**, jamais par le type déclaré du champ. Les tokens de l'importeur
-> atterrissant tous dans ce filtre de base (§4e), c'est bien cette forme qui s'applique : **pas** de
-> sous-match silencieux sur des membres à casse variable (`cmd.exe` vs `CMD.EXE`). La **négation**
-> `not in (…)`, elle, reste **BINARY** (casse-sensible) : elle **sur-inclut**, jamais un angle mort.
+> **Case.** String comparisons are **case-insensitive** (`(?i)`, matching the Sigma default — and
+> safe: over-match rather than under-match). The OR list in `in(...)` **is no exception**: the core
+> compiler (v0.2.2) emits this filter `COLLATE NOCASE` as long as it is **positive**, placed in the **base
+> filter** of the `search` (not in a `| where` stage) and its list is **not entirely numeric**
+> — a criterion carried by the **values**, never by the field's declared type. Since the importer's tokens
+> all land in that base filter (§4e), this is indeed the form that applies: **no**
+> silent under-match on members with varying case (`cmd.exe` vs `CMD.EXE`). The **negation**
+> `not in (…)`, however, stays **BINARY** (case-sensitive): it **over-includes**, never a blind spot.
 
-### 4d. Valeurs
+### 4d. Values
 
-- **string** → motif regex hex/backslash-échappé (injection-safe, cf. §0.2).
-- **jokers Sigma** `*` (→ `.*`), `?` (→ `.`), `\*`/`\?`/`\\` littéraux (égalité uniquement).
-- **entier** en égalité → comparaison numérique exacte `field=n`.
-- **liste** (OU d'égalités, sans joker) → `field in (a,b,c)` ; **liste + `\|all`** → **ET** de matchs.
-- **`null`** (existence de champ) → **non exprimable** → flag.
+- **string** → hex/backslash-escaped regex pattern (injection-safe, see §0.2).
+- **Sigma wildcards** `*` (→ `.*`), `?` (→ `.`), literal `\*`/`\?`/`\\` (equality only).
+- **integer** in equality → exact numeric comparison `field=n`.
+- **list** (OR of equalities, no wildcard) → `field in (a,b,c)`; **list + `\|all`** → **AND** of matches.
+- **`null`** (field existence) → **not expressible** → flag.
 
 ### 4e. Condition
 
-| supporté | ex. |
-|----------|-----|
-| sélection simple | `selection` |
-| conjonction | `sel1 and sel2` |
-| exclusion (négation d'une **égalité simple / liste d'égalités**) | `selection and not filter` → `field!=v` / `field not in (…)` |
-| quantificateurs `all of` | `all of them`, `all of selection*` |
-| parenthèses (autour d'une conjonction) | `(sel1 and sel2) and not filter` |
+| supported | e.g. |
+|-----------|------|
+| single selection | `selection` |
+| conjunction | `sel1 and sel2` |
+| exclusion (negation of a **single equality / list of equalities**) | `selection and not filter` → `field!=v` / `field not in (…)` |
+| `all of` quantifiers | `all of them`, `all of selection*` |
+| parentheses (around a conjunction) | `(sel1 and sel2) and not filter` |
 
-**Non supporté (flag) :** `or` / OU inter-champs ; `1 of them` / `any of` (OU) ; agrégations
-`… | count() by X > N` ; négation d'une sélection **multi-champs** ou **avec modificateur** (pas de
-`NOT REGEXP` en GXQL) ; liste OU de **sous-chaînes** (`contains` + liste sans `|all`) ; **modificateurs**
+**Not supported (flag):** `or` / cross-field OR; `1 of them` / `any of` (OR); aggregations
+`… | count() by X > N`; negation of a **multi-field** selection or one **with a modifier** (no
+`NOT REGEXP` in GXQL); OR list of **substrings** (`contains` + list without `|all`); **modifiers**
 `base64`/`base64offset`/`utf16`/`wide`/`cidr`/`windash`.
 
-> **Pourquoi rejeter l'OU ?** Le `search` GXQL conjugue ses filtres en **ET** ; le seul OU disponible est
-> `field in (…)` (OU d'égalités sur **un** champ). Un OU inter-champs (`a or b`, `1 of them`) n'a pas de
-> forme GXQL fidèle → le traduire approximativement **sous-matcherait** (angle mort). On préfère
-> **flagger** honnêtement. (Le champ reste importable manuellement, ou via plusieurs règles.)
+> **Why reject OR?** The GXQL `search` combines its filters with **AND**; the only OR available is
+> `field in (…)` (OR of equalities on **one** field). A cross-field OR (`a or b`, `1 of them`) has no
+> faithful GXQL form → translating it approximately would **under-match** (blind spot). We prefer to
+> **flag** it honestly. (The field can still be imported manually, or through several rules.)
 
 ---
 
-## 5. Exemples livrés (`config.d/sigma/`)
+## 5. Shipped examples (`config.d/sigma/`)
 
-| fichier | démontre | GXQL produit |
-|---------|----------|--------------|
-| `firewall-denied-nonstandard-port.yml` | `logsource.category`→`firewall`, égalité, **négation de liste** | `search category=firewall action=~(?i)^deny$ dport not in (80,443) \| stats count` |
-| `web-admin-path-blocked.yml` | `\|startswith` + égalité en **ET** | `search category=web action=~(?i)^blocked$ url=~(?i)^\/admin \| stats count` |
-| `process-whoami-discovery.yml` | `process_creation`→`exec`, champ étendu `\|contains` | `search category=exec CommandLine=~(?i)whoami \| stats count` |
+| file | demonstrates | GXQL produced |
+|------|--------------|---------------|
+| `firewall-denied-nonstandard-port.yml` | `logsource.category`→`firewall`, equality, **list negation** | `search category=firewall action=~(?i)^deny$ dport not in (80,443) \| stats count` |
+| `web-admin-path-blocked.yml` | `\|startswith` + equality **ANDed** | `search category=web action=~(?i)^blocked$ url=~(?i)^\/admin \| stats count` |
+| `process-whoami-discovery.yml` | `process_creation`→`exec`, extended field `\|contains` | `search category=exec CommandLine=~(?i)whoami \| stats count` |
 
-> ⚠️ **`process-whoami-discovery.yml` reste INERTE sur un Windows par défaut** : elle filtre
-> `CommandLine`, champ **absent** d'un EventID 4688 tant que la GPO *« Include command line in process
-> creation events »* n'est pas activée (cf. §4a, angle mort #2). Elle démontre la **traduction** d'un
-> champ étendu, pas une détection active out-of-the-box. Traduire n'est pas détecter.
+> ⚠️ **`process-whoami-discovery.yml` stays INERT on a default Windows**: it filters on
+> `CommandLine`, a field **absent** from an EventID 4688 as long as the GPO *"Include command line in process
+> creation events"* is not enabled (see §4a, blind spot #2). It demonstrates the **translation** of an
+> extended field, not a detection that is active out of the box. Translating is not detecting.
 
-Pré-vol : `plume-daemon sigma-import config.d/sigma --dry-run`.
+Pre-flight: `plume-daemon sigma-import config.d/sigma --dry-run`.
 
 ---
 
-## 6. Ce que l'importeur n'est PAS
+## 6. What the importer is NOT
 
-- Pas un moteur Sigma complet : il cible le **sous-ensemble exprimable en GXQL** (§4). Le reste est
-  **flaggé**, jamais deviné.
-- Pas un chemin de **filtre/suppression** : une règle importée **ajoute** une détection (cf. principe #3).
-- Pas un backend de **corrélation temporelle** (`timeframe`/agrégation Sigma) : hors périmètre → flag.
+- Not a complete Sigma engine: it targets the **subset expressible in GXQL** (§4). The rest is
+  **flagged**, never guessed.
+- Not a **filter/suppression** path: an imported rule **adds** a detection (see principle #3).
+- Not a **temporal correlation** backend (Sigma `timeframe`/aggregation): out of scope → flag.

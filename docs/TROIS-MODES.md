@@ -1,441 +1,441 @@
-# Le même geste dans les trois modes — hôte natif · Docker · k3s
+# The same operation in all three modes — native host · Docker · k3s
 
-[Français](TROIS-MODES.md) | [English](TROIS-MODES.en.md)
+[English](TROIS-MODES.md) | [Français](TROIS-MODES.fr.md)
 
-Plume revendique **trois** modes de déploiement de première classe. Un document qui écrit un geste
-sans dire à quel mode il s'applique n'en couvre qu'un — et laisse le lecteur des deux autres croire
-qu'il a mal compris. Ce document existe pour cela : **chaque geste d'exploitation y porte sa forme
-dans les trois modes, et là où il n'existe pas dans un mode, c'est ÉCRIT.**
+Plume claims **three** first-class deployment modes. A document that describes an operation
+without saying which mode it applies to only covers one — and leaves the reader of the other two believing
+they have misunderstood. This document exists for that reason: **every operational task here carries its form
+in all three modes, and where it does not exist in a mode, that is WRITTEN DOWN.**
 
-Il complète, sans les répéter, l'installation ([`../README.md`](../README.md#installation)) et la
-désinstallation ([`../README.md`](../README.md#désinstallation--les-trois-modes)).
+It complements, without repeating them, installation ([`../README.md`](../README.md#installation)) and
+uninstallation ([`../README.md`](../README.md#uninstallation--all-three-modes)).
 
-> **Ce que ce document n'est pas.** Ce n'est pas un guide de dimensionnement, ni une procédure de
-> reprise après sinistre — celle-ci est dans [`DR-plume-restore.md`](DR-plume-restore.md) — ni un
-> tutoriel Kubernetes. Il répond à une seule question : *« j'ai lu un geste ; à quoi ressemble-t-il
-> chez moi ? »*
+> **What this document is not.** It is not a sizing guide, nor a disaster
+> recovery procedure — that one is in [`DR-plume-restore.md`](DR-plume-restore.md) — nor a
+> Kubernetes tutorial. It answers a single question: *"I have read about an operation; what does it look like
+> on my setup?"*
 
 ---
 
-## 1. Les trois modes, et d'où ce chiffre vient
+## 1. The three modes, and where that figure comes from
 
-Les trois modes ne sont pas une promesse marketing : ils sont **énumérés par le code qui les
-retire**. `uninstall.sh` n'accepte que trois valeurs de `--mode`, et refuse tout le reste :
+The three modes are not a marketing promise: they are **enumerated by the code that
+removes them**. `uninstall.sh` only accepts three values for `--mode`, and refuses everything else:
 
 ```sh
-grep -nF 'case "${MODE}" in' uninstall.sh     # -F : le motif contient ${…}, à prendre littéralement
+grep -nF 'case "${MODE}" in' uninstall.sh     # -F: the pattern contains ${…}, to be taken literally
 ```
 
-Le mode est aussi ce qui décide de la **forme** de chaque geste ci-dessous. Il n'y a pas de
-quatrième mode caché : une installation montée à la main n'est décrite par aucun installateur du
-dépôt, et aucun outil du dépôt ne prétend la connaître.
+The mode is also what decides the **form** of each operation below. There is no
+hidden fourth mode: an installation assembled by hand is described by no installer in the
+repository, and no tool in the repository claims to know it.
 
-| Mode | Ce qui exécute le démon | Ce qui le redémarre | Immuable ? |
+| Mode | What runs the daemon | What restarts it | Immutable? |
 |---|---|---|---|
-| `host` | une unité systemd (`systemd/plume-daemon.service`) | `systemctl` | non — le disque de l'hôte est modifiable |
-| `docker` | un conteneur du service `soc` de `docker-compose.yml` | `docker compose` | **oui** — l'image est reconstruite, jamais éditée |
-| `k3s` | un pod du `Deployment` de `deploy/k3s.yaml` | `kubectl` | **oui** — et le pod est remplacé à chaque déploiement |
+| `host` | a systemd unit (`systemd/plume-daemon.service`) | `systemctl` | no — the host's disk is writable |
+| `docker` | a container of the `soc` service in `docker-compose.yml` | `docker compose` | **yes** — the image is rebuilt, never edited |
+| `k3s` | a pod of the `Deployment` in `deploy/k3s.yaml` | `kubectl` | **yes** — and the pod is replaced on every deployment |
 
-**C'est de cette colonne « immuable » que découle presque tout le reste.** Un geste qui écrit sur le
-disque de la machine a un sens sur un hôte ; sur un conteneur il est perdu au prochain déploiement,
-et sur un cluster il l'est au prochain redémarrage du pod.
+**Almost everything else follows from this "immutable" column.** An operation that writes to the
+machine's disk makes sense on a host; on a container it is lost at the next deployment,
+and on a cluster it is lost at the next pod restart.
 
 ---
 
-## 2. Où vivent les choses
+## 2. Where things live
 
-Relevé **sur l'arbre suivi** le 2026-08-25, en lisant les installateurs et les manifestes — pas une
+Read **from the tracked tree** on 2026-08-25, by reading the installers and the manifests — not an
 installation.
 
-| Ce qui vit | `host` | `docker` | `k3s` |
+| What lives there | `host` | `docker` | `k3s` |
 |---|---|---|---|
-| binaire | `/usr/local/bin/plume-daemon` (posé par `bootstrap.sh`) | image `soc:latest` | image `soc:latest`, importée dans `k3s ctr` |
-| base | `/var/lib/plume/db/soc.db` | `/data/soc.db` sur le volume `soc-data` | `/data/soc.db` sur le PVC `soc-data` |
+| binary | `/usr/local/bin/plume-daemon` (placed by `bootstrap.sh`) | image `soc:latest` | image `soc:latest`, imported into `k3s ctr` |
+| database | `/var/lib/plume/db/soc.db` | `/data/soc.db` on the `soc-data` volume | `/data/soc.db` on the `soc-data` PVC |
 | spool | `/var/lib/plume/spool` | `/data/spool` | `/data/spool` |
-| fichiers de la console | `/usr/local/share/plume/web` | dans l'image | dans l'image |
-| overlays `config.d` | `/usr/local/share/plume/config.d` | dans l'image, **rootfs en lecture seule** | dans l'image, **rootfs en lecture seule** |
-| fichier de configuration lu par le démon | `/etc/plume/soc.conf` | **aucun** | **aucun** |
-| sauvegardes | `<dir(PLUME_DB)>/backups` | `/data/backups` | `/data/backups` |
+| console files | `/usr/local/share/plume/web` | in the image | in the image |
+| `config.d` overlays | `/usr/local/share/plume/config.d` | in the image, **read-only rootfs** | in the image, **read-only rootfs** |
+| configuration file read by the daemon | `/etc/plume/soc.conf` | **none** | **none** |
+| backups | `<dir(PLUME_DB)>/backups` | `/data/backups` | `/data/backups` |
 
-Le **défaut compilé** diffère de ce que posent les installateurs, et il faut le savoir pour lire le
-code : le démon cherche sa base en `/var/lib/plume/db/plume.db` et son fichier de configuration en
-`/etc/plume/plume.conf` quand rien ne les surcharge (`daemon/src/main.rs`). Sur un hôte, c'est
-l'unité systemd qui pose `PLUME_CONFIG=/etc/plume/soc.conf`, et `bootstrap.sh` qui écrit
-`PLUME_DB=/var/lib/plume/db/soc.db` dans ce fichier. En conteneur, ce sont les `ENV` du `Dockerfile`.
+The **compiled default** differs from what the installers set, and you need to know this to read the
+code: the daemon looks for its database at `/var/lib/plume/db/plume.db` and its configuration file at
+`/etc/plume/plume.conf` when nothing overrides them (`daemon/src/main.rs`). On a host, it is
+the systemd unit that sets `PLUME_CONFIG=/etc/plume/soc.conf`, and `bootstrap.sh` that writes
+`PLUME_DB=/var/lib/plume/db/soc.db` into that file. In a container, it is the `ENV` lines of the `Dockerfile`.
 
-### Le niveau « fichier de configuration » est VIDE en conteneur, et c'est délibéré
+### The "configuration file" level is EMPTY in a container, and that is deliberate
 
-La précédence est la même partout — **`environnement` > fichier de configuration > défaut compilé**
-(`cfg()`, `daemon/src/main.rs`) — mais en mode `docker` **et** en mode `k3s`, le chemin du fichier
-est posé à `/nonexistent` (`docker-compose.yml`, `deploy/k3s.yaml`, `Dockerfile`). La lecture échoue,
-la table est vide, et **le niveau du milieu n'existe pas** : tout arrive par l'environnement.
+The precedence is the same everywhere — **`environnement` > configuration file > compiled default**
+(`cfg()`, `daemon/src/main.rs`) — but in `docker` mode **and** in `k3s` mode, the file path
+is set to `/nonexistent` (`docker-compose.yml`, `deploy/k3s.yaml`, `Dockerfile`). The read fails,
+the table is empty, and **the middle level does not exist**: everything arrives through the environment.
 
-Corollaire à ne pas manquer : `.env` **n'est pas** ce fichier de configuration. C'est
-`docker compose` qui le lit, pour interpoler des valeurs dans le bloc `environment:` du service —
-donc **une variable de `.env` que le bloc `environment:` n'énumère pas n'atteint jamais le
-conteneur**. Le réglage semble posé et ne mord pas.
+Corollary not to be missed: `.env` **is not** that configuration file. It is
+`docker compose` that reads it, to interpolate values into the service's `environment:` block —
+so **a `.env` variable that the `environment:` block does not list never reaches the
+container**. The setting looks set and has no effect.
 
 ---
 
-## 3. Le même geste, dans les trois modes
+## 3. The same operation, in all three modes
 
-### 3.1 Atteindre la console
+### 3.1 Reaching the console
 
-| | commande | remarque |
+| | command | note |
 |---|---|---|
-| `host` | `http://soc.localhost:7000` | `bootstrap.sh` ajoute `127.0.0.1 soc.localhost` à `/etc/hosts`, et l'écoute est sur `127.0.0.1` |
-| `docker` | `http://soc.localhost:7000` | le port n'est publié que sur `127.0.0.1` de l'hôte |
-| `k3s` | l'hôte de l'`Ingress` | il **doit** être identique à `PLUME_HOST`, sinon la garde anti-DNS-rebinding rend `421` |
+| `host` | `http://soc.localhost:7000` | `bootstrap.sh` adds `127.0.0.1 soc.localhost` to `/etc/hosts`, and the listener is on `127.0.0.1` |
+| `docker` | `http://soc.localhost:7000` | the port is only published on the host's `127.0.0.1` |
+| `k3s` | the host of the `Ingress` | it **must** be identical to `PLUME_HOST`, otherwise the anti-DNS-rebinding guard returns `421` |
 
-Dans les trois cas, `PLUME_HOST` et le nom réellement demandé doivent coïncider. C'est la même
-garde, appliquée au même endroit ; seule la façon d'écrire le nom change.
+In all three cases, `PLUME_HOST` and the name actually requested must match. It is the same
+guard, applied in the same place; only the way of writing the name changes.
 
-### 3.2 Poser ou changer un réglage `PLUME_*`
+### 3.2 Setting or changing a `PLUME_*` setting
 
-**Aucun mode n'a de geste de rechargement.** L'unité du démon n'a pas d'`ExecReload=`, et le démon
-n'installe pas de gestionnaire de `SIGHUP` : il n'existe nulle part une commande qui dise au démon
-« relis ta configuration ». Les deux vérifications :
+**No mode has a reload operation.** The daemon's unit has no `ExecReload=`, and the daemon
+installs no `SIGHUP` handler: nowhere is there a command that tells the daemon
+"reread your configuration". The two checks:
 
 ```sh
-grep -c ExecReload systemd/plume-daemon.service          # 0 — l'unité du démon n'en a pas
-grep -rn 'SIGHUP' daemon/src --include='*.rs'            # rien
+grep -c ExecReload systemd/plume-daemon.service          # 0 — the daemon's unit has none
+grep -rn 'SIGHUP' daemon/src --include='*.rs'            # nothing
 ```
 
-*(Une autre unité livrée, `plume-portscan-nft.service`, porte bien un `ExecReload=` : il recharge
-une table nftables, pas la configuration de plume.)*
+*(Another shipped unit, `plume-portscan-nft.service`, does carry an `ExecReload=`: it reloads
+an nftables table, not plume's configuration.)*
 
-#### Ce qui décide vraiment : le SUPPORT, pas le geste
+#### What really decides: the MEDIUM, not the operation
 
-Le geste de rechargement manque partout, mais ce n'est pas ce qui borne le sujet. Ce qui le borne,
-c'est **le support depuis lequel une nouvelle valeur pourrait être lue**. La précédence est
-`environnement > fichier de configuration > défaut compilé` (`cfg()`, `daemon/src/main.rs`), et
-l'environnement d'un processus **déjà lancé ne change plus** : seul le niveau « fichier » peut porter
-une valeur neuve pendant la vie du démon. Or ce niveau est coupé en conteneur (§2).
+The reload operation is missing everywhere, but that is not what limits the matter. What limits it
+is **the medium from which a new value could be read**. The precedence is
+`environnement > fichier de configuration > défaut compilé` (`cfg()`, `daemon/src/main.rs`), and
+the environment of a process **that is already running no longer changes**: only the "file" level can carry
+a new value during the daemon's lifetime. And that level is cut off in a container (§2).
 
-| | support d'une valeur neuve, démon en marche | conséquence |
+| | medium for a new value, daemon running | consequence |
 |---|---|---|
-| `host` | `/etc/plume/soc.conf`, relu à chaque lecture qui passe par `load_config()` | un rechargement à chaud est **possible**, et une partie existe déjà (voir §3.7) |
-| `docker` | **aucun** — `PLUME_CONFIG=/nonexistent` (`docker-compose.yml`, `Dockerfile`) | rien à relire : le rechargement à chaud est **impossible par construction**, pas seulement non implémenté |
-| `k3s` | **aucun** — `PLUME_CONFIG=/nonexistent` (`deploy/k3s.yaml`) | idem ; et le pod est de toute façon **remplacé** pour appliquer un `env:` modifié |
+| `host` | `/etc/plume/soc.conf`, reread on every read that goes through `load_config()` | a hot reload is **possible**, and part of it already exists (see §3.7) |
+| `docker` | **none** — `PLUME_CONFIG=/nonexistent` (`docker-compose.yml`, `Dockerfile`) | nothing to reread: hot reload is **impossible by construction**, not merely unimplemented |
+| `k3s` | **none** — `PLUME_CONFIG=/nonexistent` (`deploy/k3s.yaml`) | likewise; and the pod is **replaced** anyway to apply a modified `env:` |
 
-Autrement dit : **un rechargement à chaud ne pourrait servir qu'au mode `host`.** Dans les deux
-autres, changer un réglage veut dire remplacer le conteneur — le redémarrage n'est pas le prix de la
-reconfiguration, il *est* le mécanisme de déploiement. C'est une limite connue et portée par une clé
-ouverte — voir `P9.4-a` et `P9.6-b` dans [`ROADMAP.md`](ROADMAP.md).
+In other words: **a hot reload could only serve the `host` mode.** In the other
+two, changing a setting means replacing the container — the restart is not the price of
+reconfiguration, it *is* the deployment mechanism. This is a known limitation carried by an open
+key — see `P9.4-a` and `P9.6-b` in [`ROADMAP.md`](ROADMAP.md).
 
-| | où on écrit | ce qui applique |
+| | where to write | what applies it |
 |---|---|---|
-| `host` | `/etc/plume/soc.conf` (`0640`, `root:soc`) — ou l'environnement de l'unité | `sudo systemctl restart plume-daemon` |
-| `docker` | `.env` **et** le bloc `environment:` du service `soc` (les deux, cf. §2) | `docker compose up -d` |
-| `k3s` | le bloc `env:` du `Deployment`, ou le `Secret` `soc-auth` pour un secret | `kubectl apply -f deploy/k3s.yaml` puis `kubectl -n soc rollout restart deploy/soc` |
+| `host` | `/etc/plume/soc.conf` (`0640`, `root:soc`) — or the unit's environment | `sudo systemctl restart plume-daemon` |
+| `docker` | `.env` **and** the `environment:` block of the `soc` service (both, see §2) | `docker compose up -d` |
+| `k3s` | the `env:` block of the `Deployment`, or the `Secret` `soc-auth` for a secret | `kubectl apply -f deploy/k3s.yaml` then `kubectl -n soc rollout restart deploy/soc` |
 
-Un **secret** se pose de préférence par fichier plutôt que par variable : sur un hôte, le fichier de
-configuration `0640` n'est pas lisible via `/proc/<pid>/environ`, contrairement à l'environnement ;
-en k3s, `PLUME_DB_KEY_FILE` pointe un `Secret` monté en lecture seule (les lignes sont livrées
-commentées dans `deploy/k3s.yaml`).
+A **secret** is preferably set through a file rather than a variable: on a host, the
+`0640` configuration file is not readable through `/proc/<pid>/environ`, unlike the environment;
+on k3s, `PLUME_DB_KEY_FILE` points to a `Secret` mounted read-only (the lines ship
+commented out in `deploy/k3s.yaml`).
 
-### 3.3 Ajouter une source de collecte
+### 3.3 Adding a collection source
 
-C'est ici que les modes divergent le plus, et le document doit le dire au lieu de le lisser.
+This is where the modes diverge the most, and the document must say so instead of smoothing it over.
 
-| | geste | réalité |
+| | operation | reality |
 |---|---|---|
-| `host` | `PLUME_EXTRA_COLLECTORS="…"` puis `bootstrap-agent.sh`, puis `systemctl enable --now plume-<x>.timer` | le geste NATIF ; c'est la procédure du [`README`](../README.md#ajouter-vos-sources-et-collecteurs) |
-| `docker` | **ce geste n'existe pas** | *(voir ci-dessous)* |
-| `k3s` | **ce geste n'existe pas** | *(voir ci-dessous)* |
+| `host` | `PLUME_EXTRA_COLLECTORS="…"` then `bootstrap-agent.sh`, then `systemctl enable --now plume-<x>.timer` | the NATIVE operation; it is the procedure in the [`README`](../README.md#adding-your-sources-and-collectors) |
+| `docker` | **this operation does not exist** | *(see below)* |
+| `k3s` | **this operation does not exist** | *(see below)* |
 
-**Mesuré sur l'arbre suivi le 2026-08-25** : le `Dockerfile` ne copie **aucun** fichier de
-`collectors/` dans l'image (`grep -n collectors Dockerfile` ne rend rien), et
-`PLUME_EXTRA_COLLECTORS` n'est lu que par `bootstrap-agent.sh` — nulle part dans le démon :
+**Measured on the tracked tree on 2026-08-25**: the `Dockerfile` copies **no** file from
+`collectors/` into the image (`grep -n collectors Dockerfile` returns nothing), and
+`PLUME_EXTRA_COLLECTORS` is only read by `bootstrap-agent.sh` — nowhere in the daemon:
 
 ```sh
 grep -rn 'PLUME_EXTRA_COLLECTORS' daemon/src collectors bootstrap.sh bootstrap-agent.sh Dockerfile
 ```
 
-Autrement dit : **le central en conteneur n'est pas son propre agent.** Les collecteurs shell sont
-un artefact d'hôte. Ce que vous faites à la place, en conteneur et en cluster :
+In other words: **the containerised central is not its own agent.** The shell collectors are
+a host artefact. What you do instead, in a container and in a cluster:
 
-1. **Un agent sur une machine d'à côté** qui pousse vers le central (`POST /api/ingest`, jeton
-   *Bearer*) — hôte Linux avec `bootstrap-agent.sh`, agent d'endpoint de [`../agent/`](../agent/README.md),
-   ou collecteur Windows de [`../collectors/windows/`](../collectors/windows/README.md) ;
-2. **une source en PULL** déclarée dans la console (espace *Données* → onglet *Connecteurs de sources*, admin) — le démon va
-   chercher, rien n'est installé nulle part ;
-3. **un récepteur** que le central expose déjà : Splunk HEC, OTLP, syslog
+1. **An agent on a neighbouring machine** that pushes to the central (`POST /api/ingest`, *Bearer*
+   token) — a Linux host with `bootstrap-agent.sh`, the endpoint agent from [`../agent/`](../agent/README.md),
+   or the Windows collector from [`../collectors/windows/`](../collectors/windows/README.md);
+2. **a PULL source** declared in the console (*Données* space → *Connecteurs de sources* tab, admin) — the daemon
+   fetches, nothing is installed anywhere;
+3. **a receiver** that the central already exposes: Splunk HEC, OTLP, syslog
    ([`../deploy/SYSLOG.md`](../deploy/SYSLOG.md)).
 
-Ces trois chemins existent dans les trois modes. C'est le **quatrième** — installer un script sur la
-machine du central — qui n'existe qu'en mode hôte.
+These three paths exist in all three modes. It is the **fourth** — installing a script on the
+central's machine — that only exists in host mode.
 
-### 3.4 Ajouter un parseur, une règle, un playbook
+### 3.4 Adding a parser, a rule, a playbook
 
-| | par fichier | par la console |
+| | through a file | through the console |
 |---|---|---|
-| `host` | déposer sous `PLUME_CONFIG_DIR` (`/usr/local/share/plume/config.d`) puis redémarrer | oui, rôle admin ; la ligne est marquée « perso » |
-| `docker` | **impossible sans reconstruire l'image ou monter un volume** — la racine du conteneur est en lecture seule | oui, même geste |
-| `k3s` | par une `ConfigMap` montée sur `PLUME_CONFIG_DIR`, sinon impossible | oui, même geste |
+| `host` | drop it under `PLUME_CONFIG_DIR` (`/usr/local/share/plume/config.d`) then restart | yes, admin role; the row is marked "custom" |
+| `docker` | **impossible without rebuilding the image or mounting a volume** — the container's root is read-only | yes, same operation |
+| `k3s` | through a `ConfigMap` mounted on `PLUME_CONFIG_DIR`, otherwise impossible | yes, same operation |
 
-Les deux chemins ne produisent pas la même chose, et c'est délibéré : un overlay de fichier est
-marqué `managed=1` (source = le dépôt versionné), une création par la console est marquée
-`managed=2` (perso). **Un homonyme perso fait IGNORER l'overlay de fichier**, avec un avertissement
-au démarrage, plutôt que d'écraser silencieusement le travail de l'opérateur
-(`daemon/src/overlays.rs`). En conteneur et en cluster, où le fichier est difficile, **la console
-est le chemin normal** — et le fichier reste la source durable là où il est praticable.
+The two paths do not produce the same thing, and that is deliberate: a file overlay is
+marked `managed=1` (source = the versioned repository), a creation through the console is marked
+`managed=2` (custom). **A custom item with the same name causes the file overlay to be IGNORED**, with a warning
+at startup, rather than silently overwriting the operator's work
+(`daemon/src/overlays.rs`). In a container and in a cluster, where the file is awkward, **the console
+is the normal path** — and the file remains the durable source where it is practical.
 
-### 3.5 Créer un jeton d'agent
+### 3.5 Creating an agent token
 
-La même sous-commande, atteinte de trois façons.
+The same subcommand, reached in three ways.
 
-| | commande |
+| | command |
 |---|---|
-| `host` | `sudo env PLUME_CONFIG=/etc/plume/soc.conf /usr/local/bin/plume-daemon token <nom> <hôte-lié>` (`sudo` ne transmet pas le `PLUME_CONFIG` de l'unité : sans lui, le jeton s'écrit dans `/var/lib/plume/db/plume.db`, une autre base que celle du démon) |
+| `host` | `sudo env PLUME_CONFIG=/etc/plume/soc.conf /usr/local/bin/plume-daemon token <nom> <hôte-lié>` (`sudo` does not pass on the unit's `PLUME_CONFIG`: without it, the token is written into `/var/lib/plume/db/plume.db`, a different database from the daemon's) |
 | `docker` | `docker compose exec soc plume-daemon token <nom> <hôte-lié>` |
 | `k3s` | `kubectl -n soc exec deploy/soc -- plume-daemon token <nom> <hôte-lié>` |
 
-*Non exécutées sur une installation réelle dans ce lot* — la forme à deux arguments et le drapeau
-`--relais` sont ceux décrits dans le [`README`](../README.md#b-hôte-nu-systemd--mode-de-première-classe-sans-docker).
-Le jeton s'affiche une fois ; il ne se relit pas.
-Sur un central neuf, le démon démarre **avant** la première sous-commande : en `docker` et `k3s`,
-`exec` l'impose (le conteneur du démon doit tourner) ; en `host`, une sous-commande lancée avant le
-premier démarrage fait naître la base en clair
-([`INSTALLER-SANS-OUVRIR-DE-BRECHE.md` §1.1](INSTALLER-SANS-OUVRIR-DE-BRECHE.md#11-démarrer-le-démon-une-fois-avant-toute-sous-commande-qui-écrit-dans-la-base)).
+*Not run on a real installation in this batch* — the two-argument form and the
+`--relais` flag are those described in the [`README`](../README.md#b-bare-host-systemd--a-first-class-mode-without-docker).
+The token is displayed once; it cannot be read again.
+On a new central, the daemon starts **before** the first subcommand: in `docker` and `k3s`,
+`exec` enforces this (the daemon's container must be running); in `host`, a subcommand run before the
+first start causes the database to be born in plaintext
+([`INSTALLER-SANS-OUVRIR-DE-BRECHE.md` §1.1](INSTALLER-SANS-OUVRIR-DE-BRECHE.md#11-start-the-daemon-once-before-any-subcommand-that-writes-to-the-database)).
 
-> ⚠️ **Le jeton ne passe JAMAIS par la ligne de commande côté agent**, dans aucun mode : `sudo`
-> journalise sa ligne complète et le collecteur `journal` la renvoie au SOC, qui la stocke en clair.
-> La forme sûre — écriture par `tee` — est dans le [`README`](../README.md#-ne-passez-jamais-le-token-sur-la-ligne-de-commande).
+> ⚠️ **The token NEVER goes through the command line on the agent side**, in any mode: `sudo`
+> logs its full command line and the `journal` collector sends it back to the SOC, which stores it in plaintext.
+> The safe form — writing through `tee` — is in the [`README`](../README.md#-never-pass-the-token-on-the-command-line).
 
-### 3.6 Lire les journaux du démon
+### 3.6 Reading the daemon's logs
 
-| | commande |
+| | command |
 |---|---|
 | `host` | `journalctl -u plume-daemon -f` |
 | `docker` | `docker compose logs -f soc` |
 | `k3s` | `kubectl -n soc logs -f deploy/soc` |
 
-C'est là que se lit le **token d'installation** du mode SETUP quand aucun `PLUME_PASS_HASH` n'est
-posé. En mode hôte il est aussi écrit à côté de la base
-(`/var/lib/plume/db/setup-token.txt`, cf. `bootstrap.sh`).
+This is where the SETUP mode **installation token** is read when no `PLUME_PASS_HASH` is
+set. In host mode it is also written next to the database
+(`/var/lib/plume/db/setup-token.txt`, see `bootstrap.sh`).
 
-### 3.7 Sauvegarder
+### 3.7 Backing up
 
-**Les deux orchestrateurs de sauvegarde n'ont pas la même sortie**, et c'est le piège de ce
-chapitre. Le détail — enveloppe, ordre des opérations, ce qui est chiffré et ce qui ne l'est pas —
-est dans [`CHIFFREMENT-COMPRESSION.md`](CHIFFREMENT-COMPRESSION.md) ; la restauration est dans
+**The two backup orchestrators do not have the same output**, and that is the trap of this
+chapter. The details — envelope, order of operations, what is encrypted and what is not —
+are in [`CHIFFREMENT-COMPRESSION.md`](CHIFFREMENT-COMPRESSION.md); restoration is in
 [`DR-plume-restore.md`](DR-plume-restore.md).
 
-| | ce qui déclenche | ce qui sort |
+| | what triggers it | what comes out |
 |---|---|---|
-| `host` | `plume-backup.timer` (quotidien) → `plume-daemon backup` | une copie compacte, **non compressée**, rotation à 7 |
-| `docker` | le planificateur interne au démon, si `PLUME_BACKUP_INTERVAL > 0` | l'enveloppe du planificateur |
-| `k3s` | idem, `PLUME_BACKUP_INTERVAL` posé dans le manifeste livré | idem |
+| `host` | `plume-backup.timer` (daily) → `plume-daemon backup` | a compact copy, **uncompressed**, rotation of 7 |
+| `docker` | the daemon's internal scheduler, if `PLUME_BACKUP_INTERVAL > 0` | the scheduler's envelope |
+| `k3s` | likewise, `PLUME_BACKUP_INTERVAL` set in the shipped manifest | likewise |
 
-Pour **aligner un hôte sur le planificateur interne** : posez `PLUME_BACKUP_INTERVAL` dans
-`/etc/plume/soc.conf` et coupez le timer (`systemctl disable --now plume-backup.timer`). Laisser les
-deux en marche produit deux familles de sauvegardes dans le même répertoire, avec deux rotations
-indépendantes.
+To **align a host with the internal scheduler**: set `PLUME_BACKUP_INTERVAL` in
+`/etc/plume/soc.conf` and turn off the timer (`systemctl disable --now plume-backup.timer`). Leaving both
+running produces two families of backups in the same directory, with two independent
+rotations.
 
-#### Changer un réglage de sauvegarde : deux groupes, pas un
+#### Changing a backup setting: two groups, not one
 
-Les réglages `PLUME_BACKUP_*` **ne se rechargent pas tous de la même façon**, et la différence est
-invisible depuis leur nom. Relevé sur l'arbre suivi le 2026-08-27 :
+The `PLUME_BACKUP_*` settings **are not all reloaded the same way**, and the difference is
+invisible from their names. Read from the tracked tree on 2026-08-27:
 
-| Groupe | Clés | Quand la valeur est lue |
+| Group | Keys | When the value is read |
 |---|---|---|
-| chiffrement et séquestre | `AGE_RECIPIENT` · `REQUIRE_ASYMMETRIC` · `FORCE_PLAINTEXT_EXPORT` · `SCRYPT_LOG_N` · `STAGING_DIR` · `AGE_IDENTITY[_FILE]` | **à chaque cycle** (`reglage_sauvegarde`, `daemon/src/backup/mod.rs`) |
-| activation, cadence, cible, rétention | `INTERVAL` · `DEST` · `KEEP` · `ON_START` | **une seule fois**, au lancement du fil (`spawn_backup_scheduler`, `daemon/src/server/sauvegarde_planifiee.rs`) |
+| encryption and escrow | `AGE_RECIPIENT` · `REQUIRE_ASYMMETRIC` · `FORCE_PLAINTEXT_EXPORT` · `SCRYPT_LOG_N` · `STAGING_DIR` · `AGE_IDENTITY[_FILE]` | **on every cycle** (`reglage_sauvegarde`, `daemon/src/backup/mod.rs`) |
+| activation, cadence, target, retention | `INTERVAL` · `DEST` · `KEEP` · `ON_START` | **only once**, when the thread is started (`spawn_backup_scheduler`, `daemon/src/server/sauvegarde_planifiee.rs`) |
 
-Conséquence, **en mode `host` uniquement** (c'est le seul mode où le niveau « fichier » existe, §3.2) :
-corriger un destinataire d'escrow dans `/etc/plume/soc.conf` mord **dès le cycle suivant, sans
-redémarrage**. Corriger l'intervalle, la destination ou la rétention **exige** de redémarrer. En
-`docker` et en `k3s`, les deux groupes exigent de remplacer le conteneur, faute de support à relire.
+Consequence, **in `host` mode only** (it is the only mode where the "file" level exists, §3.2):
+correcting an escrow recipient in `/etc/plume/soc.conf` takes effect **from the next cycle, without a
+restart**. Correcting the interval, the destination or the retention **requires** a restart. In
+`docker` and in `k3s`, both groups require replacing the container, for lack of a medium to reread.
 
-#### Ce que le redémarrage coûte, et qui n'est écrit nulle part ailleurs
+#### What a restart costs, written down nowhere else
 
-> **Jusqu'au 2026-09-08, redémarrer le démon remettait la cadence de sauvegarde à zéro.** Le
-> planificateur ne gardait aucune trace de sa dernière exécution : 90 s d'attente (bind et *liveness*),
-> puis un intervalle **entier** de sommeil avant son premier cycle. Avec l'intervalle livré (`21600` s,
-> soit 6 h), chaque redémarrage repoussait la sauvegarde de 6 h 1 min 30 s, et un pod qui redémarre plus
-> souvent que son intervalle — déploiement, `rollout restart`, éviction, `OOMKill` — **ne produisait
-> jamais aucune archive**, pendant que la console annonçait « 24 × 6 h » à côté d'un répertoire vide.
-> Le signal SOC d'un cycle stérile (`P9.4-b`) ne couvrait pas ce cas : il n'est émis que par un cycle
-> qui s'exécute.
+> **Until 2026-09-08, restarting the daemon reset the backup cadence to zero.** The
+> scheduler kept no record of its last run: a 90 s wait (bind and *liveness*),
+> then a **full** interval of sleep before its first cycle. With the shipped interval (`21600` s,
+> i.e. 6 h), each restart pushed the backup back by 6 h 1 min 30 s, and a pod that restarts more
+> often than its interval — deployment, `rollout restart`, eviction, `OOMKill` — **never produced
+> a single archive**, while the console announced "24 × 6 h" next to an empty directory.
+> The SOC signal for a barren cycle (`P9.4-b`) did not cover this case: it is only emitted by a cycle
+> that runs.
 >
-> **Depuis `P9.4-a` (2026-09-08), la première attente est DÉRIVÉE de la plus récente archive régulière
-> de la destination** (`premiere_attente_derivee`, `daemon/src/server/sauvegarde_planifiee.rs`) : aucune
-> archive, ou une archive plus vieille que l'intervalle → sauvegarde **tout de suite** après les 90 s ;
-> une archive fraîche → le **reste** de l'intervalle. Un redémarrage ne repousse donc plus la cadence, un
-> processus qui boucle ne produit pas non plus de tempête (dès qu'une archive existe, il attend le
-> reste), et le démon **le dit** au démarrage (« première sauvegarde dans N s »). Le planificateur lit ce
-> qu'il écrit lui-même — aucun état nouveau, aucun secret. `PLUME_BACKUP_ON_START=1` reste le geste qui
-> **force** une sauvegarde même devant une archive fraîche. Ce qui reste vrai : **vérifier le répertoire
-> plutôt que le réglage**, dans les trois modes :
+> **Since `P9.4-a` (2026-09-08), the first wait is DERIVED from the most recent regular archive
+> in the destination** (`premiere_attente_derivee`, `daemon/src/server/sauvegarde_planifiee.rs`): no
+> archive, or an archive older than the interval → backup **immediately** after the 90 s;
+> a fresh archive → the **remainder** of the interval. A restart therefore no longer pushes the cadence back, a
+> looping process does not produce a storm either (as soon as an archive exists, it waits for the
+> remainder), and the daemon **says so** at startup ("première sauvegarde dans N s"). The scheduler reads what
+> it writes itself — no new state, no secret. `PLUME_BACKUP_ON_START=1` remains the operation that
+> **forces** a backup even when a fresh archive exists. What remains true: **check the directory
+> rather than the setting**, in all three modes:
 > ```sh
-> ls -la "$PLUME_BACKUP_DEST"     # host ; docker/k3s : la même commande via `exec` (§3.5)
+> ls -la "$PLUME_BACKUP_DEST"     # host; docker/k3s: the same command through `exec` (§3.5)
 > ```
-> Un `PLUME_BACKUP_DEST` sans `plume-<TS>.db.age` est un déploiement **sans sauvegarde**, quelle que
-> soit la rétention annoncée à côté.
+> A `PLUME_BACKUP_DEST` without any `plume-<TS>.db.age` is a deployment **without backups**, whatever
+> the retention announced next to it.
 
-### 3.8 Chiffrer la base au repos
+### 3.8 Encrypting the database at rest
 
-Dans les trois modes, **une base NEUVE naît chiffrée** : sans clé fournie, le démon engendre la sienne
-au premier démarrage (`0600`, à `PLUME_DB_KEY_AUTO_PATH`, sinon `<PLUME_DB>.key`) — à copier hors de la
-machine, puis `PLUME_DB_KEY_ESCROWED=1`. **Une base EXISTANTE restée en clair n'est jamais convertie par
-un démarrage** : une clé posée dessus fait refuser le démarrage, qui nomme le geste explicite
-`plume-daemon chiffrer-au-repos` ([`CHIFFREMENT-COMPRESSION.md`](CHIFFREMENT-COMPRESSION.md)). Apporter
-**sa propre** clé se fait donc **avant le premier démarrage**, et le support diffère selon le mode :
+In all three modes, **a NEW database is born encrypted**: without a provided key, the daemon generates its own
+on first start (`0600`, at `PLUME_DB_KEY_AUTO_PATH`, otherwise `<PLUME_DB>.key`) — to be copied off the
+machine, then `PLUME_DB_KEY_ESCROWED=1`. **An EXISTING database that is still in plaintext is never converted by
+a start**: a key set on it makes the start refuse, naming the explicit operation
+`plume-daemon chiffrer-au-repos` ([`CHIFFREMENT-COMPRESSION.md`](CHIFFREMENT-COMPRESSION.md)). Bringing
+**your own** key is therefore done **before the first start**, and the medium differs by mode:
 
-| | comment |
+| | how |
 |---|---|
-| `host` | `PLUME_DB_KEY_FILE=/chemin/vers/la/cle` dans `/etc/plume/soc.conf` |
-| `docker` | `PLUME_DB_KEY` via `.env` (déjà énuméré dans `environment:`), ou un fichier monté et `PLUME_DB_KEY_FILE` |
-| `k3s` | le `Secret` `soc-auth`, monté en lecture seule ; les lignes sont livrées **commentées** dans `deploy/k3s.yaml` |
+| `host` | `PLUME_DB_KEY_FILE=/chemin/vers/la/cle` in `/etc/plume/soc.conf` |
+| `docker` | `PLUME_DB_KEY` through `.env` (already listed in `environment:`), or a mounted file and `PLUME_DB_KEY_FILE` |
+| `k3s` | the `Secret` `soc-auth`, mounted read-only; the lines ship **commented out** in `deploy/k3s.yaml` |
 
-Le fichier est préférable à la variable dans les trois modes : l'environnement d'un processus est
-lisible via `/proc/<pid>/environ`. **Perte de la clé = perte de la base.**
+The file is preferable to the variable in all three modes: a process's environment is
+readable through `/proc/<pid>/environ`. **Losing the key = losing the database.**
 
-### 3.9 Mettre à jour
+### 3.9 Updating
 
-| | geste |
+| | operation |
 |---|---|
-| `host` | recompiler (`cargo build --release` — **build nu : deux capacités en moins**, cf. sous la table), rejouer `bootstrap.sh` (idempotent) |
+| `host` | recompile (`cargo build --release` — **bare build: two capabilities fewer**, see below the table), rerun `bootstrap.sh` (idempotent) |
 | `docker` | `docker compose up -d --build` |
-| `k3s` | reconstruire l'image, la réimporter dans `k3s ctr`, puis `kubectl -n soc rollout restart deploy/soc` |
+| `k3s` | rebuild the image, reimport it into `k3s ctr`, then `kubectl -n soc rollout restart deploy/soc` |
 
-**Ces trois lignes ne reconstruisent pas le même binaire, et la table seule ne le montre pas.** Les deux
-lignes qui passent par l'image héritent d'un jeu de features déclaré une fois pour
-toutes — `ARG PLUME_FEATURES=ldap,cold_tier` dans le [`Dockerfile`](../Dockerfile), depuis `971de7a`
-(2026‑08‑08). La ligne `host` est **nue** et n'en prend **aucune**. Un binaire hôte bâti ainsi n'a **ni le
-tier froid colonnaire** — `PLUME_COLD_TIER` y est sans effet, et les fichiers‑jour Parquet écrits par un
-autre binaire lui sont invisibles — **ni le bind LDAP/AD natif** : `POST /api/auth/ldap` répond **501**.
-Les prendre : `cargo build --release --features cold_tier,ldap`. Le défaut nu est **assumé, pas
-accidentel** (le coût de construction de `cold_tier` n'est borné par aucun chiffre mesuré ; l'en‑tête de
-`bootstrap.sh` le dit), mais il ne doit pas être **subi** : c'est pourquoi `bootstrap.sh` **mesure** en fin
-d'installation ce que le binaire posé porte — verdict `>> Capacités optionnelles`, obtenu en interrogeant
-`plume-daemon --help` — et **refuse de conclure** plutôt que d'annoncer une capacité non prouvée. Ce
-constat automatique ne couvre que le tier froid ; pour l'annuaire, la preuve est la réponse **501** de la
-route de login.
+**These three rows do not rebuild the same binary, and the table alone does not show it.** The two
+rows that go through the image inherit a feature set declared once and for
+all — `ARG PLUME_FEATURES=ldap,cold_tier` in the [`Dockerfile`](../Dockerfile), since `971de7a`
+(2026‑08‑08). The `host` row is **bare** and takes **none**. A host binary built this way has **neither the
+columnar cold tier** — `PLUME_COLD_TIER` has no effect on it, and Parquet day files written by
+another binary are invisible to it — **nor native LDAP/AD bind**: `POST /api/auth/ldap` answers **501**.
+To get them: `cargo build --release --features cold_tier,ldap`. The bare default is **intended, not
+accidental** (the build cost of `cold_tier` is not bounded by any measured figure; the header of
+`bootstrap.sh` says so), but it must not be **suffered unknowingly**: this is why `bootstrap.sh` **measures**, at the end
+of installation, what the installed binary carries — verdict `>> Capacités optionnelles`, obtained by querying
+`plume-daemon --help` — and **refuses to conclude** rather than announce an unproven capability. This
+automatic check only covers the cold tier; for the directory, the proof is the **501** answer from the
+login route.
 
-**Aucune image et aucun binaire ne sont publiés à ce jour** : les trois chemins compilent depuis les
-sources. C'est un manque assumé, écrit dans le [`README`](../README.md#installation).
+**No image and no binary are published to date**: all three paths compile from
+source. It is an acknowledged gap, written in the [`README`](../README.md#installation).
 
-Une mise à jour qui change le schéma de la base est une **porte à sens unique** : elle demande une
-sauvegarde vérifiée avant, et un acquittement explicite. Voir [`DR-plume-restore.md`](DR-plume-restore.md).
+An update that changes the database schema is a **one-way door**: it requires a
+verified backup beforehand, and an explicit acknowledgement. See [`DR-plume-restore.md`](DR-plume-restore.md).
 
-### 3.10 Désinstaller
+### 3.10 Uninstalling
 
-Un seul outil, trois modes, le mode se **désigne** :
+A single tool, three modes, the mode is **named explicitly**:
 
 ```sh
-bash uninstall.sh --dry-run                  # inventaire des trois modes, sans root, sans rien modifier
+bash uninstall.sh --dry-run                  # inventory of the three modes, no root, nothing modified
 sudo bash uninstall.sh --mode host
 sudo bash uninstall.sh --mode docker
 bash uninstall.sh --mode k3s --apply
 ```
 
-**La première ligne a été exécutée telle quelle sur cet arbre** : elle sonde les trois modes, ne
-modifie rien, et sort en `0`. Sur une machine sans cluster joignable, elle ne conclut PAS « il n'y a
-rien » — elle range k3s parmi les *sondages impossibles* et le dit. Les trois autres, qui écrivent,
-**n'ont pas été jouées dans ce lot**.
+**The first line was run as-is on this tree**: it probes the three modes, modifies
+nothing, and exits with `0`. On a machine with no reachable cluster, it does NOT conclude "there is
+nothing" — it files k3s under *impossible probes* and says so. The other three, which write,
+**were not run in this batch**.
 
-La sémantique complète — ce que `--purge` détruit, les codes de sortie, ce qui résiste et pourquoi —
-est dans le [`README`](../README.md#désinstallation--les-trois-modes). Le mode `k3s` **imprime** son
-plan et n'exécute qu'avec `--apply`, parce qu'il touche un cluster partagé.
+The complete semantics — what `--purge` destroys, the exit codes, what resists and why —
+are in the [`README`](../README.md#uninstallation--all-three-modes). The `k3s` mode **prints** its
+plan and only executes with `--apply`, because it touches a shared cluster.
 
-### 3.11 Poser le secret des gestes
+### 3.11 Setting the gesture secret
 
-Créer un compte, promouvoir un administrateur, réinitialiser le mot de passe d'un **autre** compte,
-frapper un jeton (agent, HEC, source de données, client) ou une clé de livraison (source push), poser
-ou reconfigurer un fournisseur d'identité, ouvrir un engagement (mode Engagement, toutes boîtes : greybox
-et whitebox frappent un compte, blackbox suspend l'auto-ban sur son scope), et — en mode multi-tenant — poser un droit de tenant ou le
-premier administrateur d'un tenant exigent, **en plus du droit**, le secret des gestes dans l'en-tête
-`x-plume-secret-des-gestes`. C'est vrai pour tout administrateur, quel que soit son mode
-d'authentification (session locale, SSO d'en-têtes, fédération, Basic). **Sans secret posé, ces
-gestes sont refusés** (403, `cause: secret_des_gestes_non_configure`), et le refus dit comment le poser.
+Creating an account, promoting an administrator, resetting the password of **another** account,
+minting a token (agent, HEC, data source, client) or a delivery key (push source), setting
+or reconfiguring an identity provider, opening an engagement (Engagement mode, all boxes: greybox
+and whitebox mint an account, blackbox suspends auto-ban on its scope), and — in multi-tenant mode — setting a tenant permission or the
+first administrator of a tenant require, **on top of the permission**, the gesture secret in the
+`x-plume-secret-des-gestes` header. This holds for every administrator, whatever their
+authentication mode (local session, header SSO, federation, Basic). **Without a secret set, these
+operations are refused** (403, `cause: secret_des_gestes_non_configure`), and the refusal says how to set it.
 
-Le démon ne connaît que l'**empreinte** du secret (argon2id, format PHC), lue dans le fichier que nomme
-`PLUME_GESTURE_SECRET_FILE`. Jamais le secret en clair, ni en base, ni dans l'environnement. La même
-sous-commande engendre l'empreinte dans les trois modes :
+The daemon only knows the **hash** of the secret (argon2id, PHC format), read from the file named by
+`PLUME_GESTURE_SECRET_FILE`. Never the plaintext secret, neither in the database nor in the environment. The same
+subcommand generates the hash in all three modes:
 
 ```sh
-# le secret s'affiche UNE fois sur la sortie d'erreur ; l'empreinte seule part dans le fichier
+# the secret is displayed ONCE on standard error; only the hash goes into the file
 plume-daemon secret-des-gestes --generer > secret-des-gestes.phc
-# ou, avec un secret choisi (≥ 16 caractères), lu sur l'entrée standard — jamais en argument
+# or, with a chosen secret (≥ 16 characters), read from standard input — never as an argument
 plume-daemon secret-des-gestes < fichier-qui-porte-le-secret > secret-des-gestes.phc
 ```
 
-| | où vit le fichier | ce qui le pointe |
+| | where the file lives | what points to it |
 |---|---|---|
-| `host` | `/etc/plume/secret-des-gestes.phc`, `0640`, `root:soc` (`sudo /usr/local/bin/plume-daemon secret-des-gestes --generer \| sudo tee /etc/plume/secret-des-gestes.phc >/dev/null`) | `PLUME_GESTURE_SECRET_FILE=/etc/plume/secret-des-gestes.phc` dans `/etc/plume/soc.conf`, puis `sudo systemctl restart plume-daemon` |
-| `docker` | un secret compose monté en fichier (`secrets:` → `/run/secrets/secret-des-gestes`) ; l'empreinte s'engendre par `docker compose run --rm -T soc secret-des-gestes --generer > secret-des-gestes.phc` | `PLUME_GESTURE_SECRET_FILE=/run/secrets/secret-des-gestes` dans le bloc `environment:` du service `soc` (lignes livrées commentées dans `docker-compose.yml`), puis `docker compose up -d` |
-| `k3s` | une clé du `Secret` `soc-auth`, montée en lecture seule (volume `secret`, **sans** `subPath`) | la variable dans le bloc `env:` du `Deployment` (lignes livrées commentées dans `deploy/k3s.yaml`), puis `kubectl -n soc rollout restart deploy/soc` |
+| `host` | `/etc/plume/secret-des-gestes.phc`, `0640`, `root:soc` (`sudo /usr/local/bin/plume-daemon secret-des-gestes --generer \| sudo tee /etc/plume/secret-des-gestes.phc >/dev/null`) | `PLUME_GESTURE_SECRET_FILE=/etc/plume/secret-des-gestes.phc` in `/etc/plume/soc.conf`, then `sudo systemctl restart plume-daemon` |
+| `docker` | a compose secret mounted as a file (`secrets:` → `/run/secrets/secret-des-gestes`); the hash is generated with `docker compose run --rm -T soc secret-des-gestes --generer > secret-des-gestes.phc` | `PLUME_GESTURE_SECRET_FILE=/run/secrets/secret-des-gestes` in the `environment:` block of the `soc` service (lines shipped commented out in `docker-compose.yml`), then `docker compose up -d` |
+| `k3s` | a key of the `Secret` `soc-auth`, mounted read-only (volume `secret`, **without** `subPath`) | the variable in the `env:` block of the `Deployment` (lines shipped commented out in `deploy/k3s.yaml`), then `kubectl -n soc rollout restart deploy/soc` |
 
-**La variable est lue au démarrage ; le fichier, à chaque geste.** La rotation est donc un
-remplacement du fichier, sans redémarrage — un secret Kubernetes monté sans `subPath` se met à jour
-sous le pod ; en Docker, un fichier réécrit en place (même inode) est vu, un fichier remplacé par un
-éditeur qui change d'inode ne l'est qu'au prochain `docker compose up -d`. Un fichier retiré, vide,
-illisible ou qui porte autre chose qu'une empreinte `$argon2id$…` referme les gestes au geste suivant.
+**The variable is read at startup; the file, at every operation.** Rotation is therefore a
+replacement of the file, without a restart — a Kubernetes secret mounted without `subPath` is updated
+under the pod; on Docker, a file rewritten in place (same inode) is seen, a file replaced by an
+editor that changes the inode is only seen at the next `docker compose up -d`. A file that is removed, empty,
+unreadable or that carries anything other than an `$argon2id$…` hash closes the operations at the next operation.
 
-Un secret **faux** compte au même frein que les échecs de connexion (couple compte, adresse ;
-backoff ; `429` au-delà du seuil `PLUME_AUTH_LOCK_THRESHOLD`) et s'inscrit au registre avec l'auteur
-— jamais le secret. Un en-tête absent n'est pas un essai.
+A **wrong** secret counts towards the same throttle as login failures (account, address pair;
+backoff; `429` beyond the `PLUME_AUTH_LOCK_THRESHOLD` threshold) and is recorded in the register with the author
+— never the secret. A missing header is not an attempt.
 
-*Non exécutées sur une installation réelle dans ce lot* : les trois lignes du tableau. La sous-commande
-et le jugement du fichier (rotation, retrait, clair refusé) sont joués par les témoins `sdg_`
+*Not run on a real installation in this batch*: the three rows of the table. The subcommand
+and the judgement of the file (rotation, removal, plaintext refused) are exercised by the `sdg_` witnesses
 (`daemon/src/tests/secret_des_gestes_demonstration_freinee_et_pose_de_l_administrateur.rs`).
 
 ---
 
-## 4. Les gestes qui n'existent pas, nommés
+## 4. The operations that do not exist, named
 
-Un tableau d'équivalences est malhonnête s'il remplit toutes ses cases. Voici celles qui restent
-vides, et pourquoi.
+A table of equivalences is dishonest if it fills every cell. Here are the ones that remain
+empty, and why.
 
-| Geste | Absent en | Raison mesurée |
+| Operation | Absent in | Measured reason |
 |---|---|---|
-| installer un collecteur shell sur la machine du central | `docker`, `k3s` | `collectors/` n'est pas copié dans l'image (`Dockerfile`) |
-| déposer un overlay `config.d` par le système de fichiers | `docker` | racine du conteneur en lecture seule (`read_only: true`) |
-| lire un réglage depuis un fichier de configuration | `docker`, `k3s` | `PLUME_CONFIG=/nonexistent` — délibéré, cf. §2 |
-| éditer `/etc/hosts` pour la résolution locale | `k3s` | la résolution passe par l'`Ingress` et le DNS du cluster |
-| appliquer une `NetworkPolicy` d'egress | `host`, `docker` | c'est un objet Kubernetes ; l'équivalent hôte est le pare-feu de la machine |
-| recharger l'activation, la cadence, la cible ou la rétention de sauvegarde sans redémarrer | **les trois** | lues une seule fois au lancement du fil (`spawn_backup_scheduler`) — cf. §3.7 |
-| recharger **quoi que ce soit** sans redémarrer | `docker`, `k3s` | aucun support à relire : environnement figé + `PLUME_CONFIG=/nonexistent` — cf. §3.2. Seule exception : le **fichier** du secret des gestes, relu à chaque geste (§3.11) |
-| demander un rechargement par un signal ou une commande | **les trois** | pas d'`ExecReload=`, pas de `SIGHUP` — cf. §3.2 |
+| installing a shell collector on the central's machine | `docker`, `k3s` | `collectors/` is not copied into the image (`Dockerfile`) |
+| dropping a `config.d` overlay through the file system | `docker` | container root is read-only (`read_only: true`) |
+| reading a setting from a configuration file | `docker`, `k3s` | `PLUME_CONFIG=/nonexistent` — deliberate, see §2 |
+| editing `/etc/hosts` for local resolution | `k3s` | resolution goes through the `Ingress` and the cluster DNS |
+| applying an egress `NetworkPolicy` | `host`, `docker` | it is a Kubernetes object; the host equivalent is the machine's firewall |
+| reloading the backup activation, cadence, target or retention without a restart | **all three** | read only once when the thread is started (`spawn_backup_scheduler`) — see §3.7 |
+| reloading **anything at all** without a restart | `docker`, `k3s` | no medium to reread: frozen environment + `PLUME_CONFIG=/nonexistent` — see §3.2. Only exception: the gesture secret **file**, reread at every gesture (§3.11) |
+| requesting a reload through a signal or a command | **all three** | no `ExecReload=`, no `SIGHUP` — see §3.2 |
 
 ---
 
-## 5. Pourquoi c'est ainsi
+## 5. Why it is this way
 
-**Un seul binaire, trois enveloppes.** Un seul *programme* — mais pas forcément le même jeu de capacités
-**compilées** : le build de l'image en prend deux que la recette hôte laisse (cf. §3.9). Le démon, lui, ne
-sait pas dans quel mode il tourne, et c'est voulu : il lit des variables et des chemins, rien d'autre.
-Tout ce qui distingue les *modes* vit **hors** du binaire — dans une unité systemd, dans un
-`docker-compose.yml`, dans un manifeste. Le prix de ce choix est exactement ce document : les gestes
-d'exploitation, eux, diffèrent.
+**A single binary, three wrappers.** A single *program* — but not necessarily the same set of
+**compiled** capabilities: the image build takes two that the host recipe leaves out (see §3.9). The daemon itself does not
+know which mode it is running in, and that is intended: it reads variables and paths, nothing else.
+Everything that distinguishes the *modes* lives **outside** the binary — in a systemd unit, in a
+`docker-compose.yml`, in a manifest. The price of this choice is exactly this document: the operational
+tasks, for their part, differ.
 
-**Le niveau « fichier » est coupé en conteneur pour une raison.** Laisser le démon lire
-`/etc/plume/plume.conf` dans une image où ce fichier n'existe pas ferait dépendre le comportement
-d'un fichier que personne ne versionne, et qu'un `docker cp` malheureux pourrait créer. `/nonexistent`
-rend le niveau **explicitement** vide plutôt qu'accidentellement vide.
+**The "file" level is cut off in a container for a reason.** Letting the daemon read
+`/etc/plume/plume.conf` in an image where that file does not exist would make its behaviour depend
+on a file that nobody versions, and that an unfortunate `docker cp` could create. `/nonexistent`
+makes the level **explicitly** empty rather than accidentally empty.
 
-**On installe sans activer.** C'est la règle d'or du mode hôte : `bootstrap-agent.sh` pose les
-capteurs demandés sans armer leurs timers, et c'est l'opérateur qui décide. Trois unités font exception
-et sont armées d'office — `resources`, `integrity` et `ship` (`systemctl enable --now` en fin de
-script) — et `bootstrap.sh`, sur le central, en arme sept (le README les dénombre). En conteneur, la règle prend une
-autre forme — les récepteurs existent mais n'ingèrent que ce qu'on leur envoie, et les connecteurs
-en PULL sont créés un par un dans la console.
+**Install without enabling.** This is the golden rule of host mode: `bootstrap-agent.sh` installs the
+requested sensors without arming their timers, and the operator decides. Three units are exceptions
+and are armed automatically — `resources`, `integrity` and `ship` (`systemctl enable --now` at the end of the
+script) — and `bootstrap.sh`, on the central, arms seven (the README counts them). In a container, the rule takes another
+form — the receivers exist but only ingest what is sent to them, and the PULL
+connectors are created one by one in the console.
 
-**Le mode cluster dit quoi faire plutôt que de le faire.** Un cluster est partagé ; un outil qui y
-applique un plan sans le montrer engage des ressources qui ne lui appartiennent pas. C'est pourquoi
-`uninstall.sh --mode k3s` imprime et n'exécute que sur demande — et c'est le même principe qui fait
-qu'aucun geste de ce document ne modifie un manifeste à votre place.
+**Cluster mode says what to do rather than doing it.** A cluster is shared; a tool that
+applies a plan to it without showing it commits resources that do not belong to it. This is why
+`uninstall.sh --mode k3s` prints and only executes on request — and it is the same principle that means
+no operation in this document modifies a manifest on your behalf.
 
 ---
 
-## 6. Ce qui n'a pas été exécuté
+## 6. What was not run
 
-Honnêteté d'instrument : les faits de structure de ce document (chemins, variables, absence de
-`collectors/` dans l'image, absence d'`ExecReload=`, valeur de `PLUME_CONFIG`) sont **lus dans
-l'arbre suivi** et chacun porte la commande qui le redonne. En revanche, **aucune des séquences de
-déploiement n'a été jouée sur une machine dans ce lot** : les commandes `docker compose`, `kubectl`
-et `systemctl` sont reprises des manifestes et des installateurs livrés, pas d'un déploiement
-observé. Un geste qui échouerait chez vous est un défaut à signaler, pas une faute de lecture de
-votre part.
+Instrument honesty: the structural facts of this document (paths, variables, absence of
+`collectors/` in the image, absence of `ExecReload=`, value of `PLUME_CONFIG`) are **read from
+the tracked tree** and each carries the command that reproduces it. On the other hand, **none of the
+deployment sequences was run on a machine in this batch**: the `docker compose`, `kubectl`
+and `systemctl` commands are taken from the shipped manifests and installers, not from an observed
+deployment. An operation that fails on your setup is a defect to report, not a misreading on
+your part.

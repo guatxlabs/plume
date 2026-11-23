@@ -16,8 +16,8 @@ certification tient ; seul le trailer est abandonné. Voir *Comment un changemen
 plus bas.
 
 Pour le *quoi* et le *pourquoi* de l'architecture, lisez d'abord ceux-ci — ce guide ne les répète
-**pas** : [`ARCHITECTURE.md`](ARCHITECTURE.md), [`docs/MODULE-MAP.md`](docs/MODULE-MAP.fr.md)
-(carte des sous-systèmes + invariants de sécurité), [`docs/CIM.md`](docs/CIM.md) (taxonomie des
+**pas** : [`ARCHITECTURE.md`](ARCHITECTURE.fr.md), [`docs/MODULE-MAP.md`](docs/MODULE-MAP.fr.md)
+(carte des sous-systèmes + invariants de sécurité), [`docs/CIM.md`](docs/CIM.fr.md) (taxonomie des
 événements).
 
 ## Non négociable : les invariants
@@ -356,29 +356,31 @@ sans témoin n'est pas faux ; il est invérifiable, et il vieillit sans que rien
 
 Un document traduit garde les faits de son original : mêmes titres (nombre et niveaux), mêmes blocs
 de code et mêmes commandes hors commentaires, mêmes tableaux, mêmes cibles de liens — un lien vers
-`Y.md` vise `Y.en.md` côté anglais quand ce fichier existe —, mêmes nombres et mêmes identifiants
+`Y.md` vise `Y.fr.md` côté français quand ce fichier existe —, mêmes nombres et mêmes identifiants
 entre accents graves (un segment de code replié sur deux lignes reste un seul segment, la fin de
 ligne y valant une espace). Les deux fichiers portent le sélecteur de langue sur la première ligne
 non vide sous leur titre de niveau 1, la même ligne des deux côtés, qui nomme l'original puis la
-traduction : `[Français](X.md) | [English](X.en.md)`, ou `[English](X.md) | [Français](X.fr.md)`
-pour un original anglais ; absent, inversé ou visant un autre fichier, c'est un écart. Dans la
-traduction, une ancre `#…` vers un document Markdown de l'arbre désigne un titre qui existe dans le
-fichier visé, par son slug GitHub (minuscules, ponctuation retirée, espaces en tirets, accents
-conservés, `-1`, `-2` pour un titre en double) : une ancre restée sur le titre de l'original est
-nommée comme telle ; les ancres de l'original ne sont pas jugées. `.github/scripts/parite_des_langues.py`
-le compare et nomme chaque écart par `fichier:ligne` :
+traduction : `[English](X.md) | [Français](X.fr.md)` ; absent, inversé ou visant un autre fichier,
+c'est un écart. Dans la traduction, une ancre `#…` vers un document Markdown de l'arbre désigne un
+titre qui existe dans le fichier visé, par son slug GitHub (minuscules, ponctuation retirée, espaces
+en tirets, accents conservés, `-1`, `-2` pour un titre en double) : une ancre restée sur le titre de
+l'original est nommée comme telle ; les ancres de l'original ne sont pas jugées.
+`.github/scripts/parite_des_langues.py` compare le tout et nomme chaque écart par fichier et ligne :
 
 ```sh
 python3 .github/scripts/parite_des_langues.py                      # toutes les paires suivies
-python3 .github/scripts/parite_des_langues.py --paire X.md X.en.md # une seule paire
-python3 .github/scripts/parite_des_langues.py --inventaire         # documents sans traduction
+python3 .github/scripts/parite_des_langues.py --paire X.md X.fr.md # une seule paire
+python3 .github/scripts/parite_des_langues.py --inventaire         # documents sans leur paire
 python3 .github/scripts/test_parite_des_langues.py                 # épreuves de l'outil
 ```
 
 La convention de suffixe est un paramètre (`--suffixe-original`, `--suffixe-traduction`, par défaut
-`X.md` / `X.en.md`), pour basculer plus tard en `X.fr.md` / `X.md`. L'inventaire rend vert tant que
-`--strict` n'est pas passé. En comparaison, l'outil rend 1 dès qu'un écart est nommé, même si une
-autre paire n'a pas pu être lue (elle est nommée) ; il rend 2 quand il n'y a aucun écart et que
-quelque chose n'a pas été lu (zéro document suivi, zéro paire, fichier illisible, y compris un
-fichier visé par une ancre de la traduction). L'outil n'est pas encore une porte de l'intégration continue : il se joue
-à la main, avant de proposer une traduction.
+`X.md` / `X.fr.md`). Les documents tenus en une seule langue sont un ensemble nommé,
+`UNE_SEULE_LANGUE`, chacun avec sa raison : `docs/ROADMAP.md`, le journal de travail tenu en
+français, et `docs/BENCHMARK.md`, rendu par `bench/report.py` pendant que sa version bilingue se
+prépare. L'inventaire nomme tout autre document suivi sans sa paire, et toute entrée de l'ensemble
+qui a retrouvé sa paire ou n'est plus suivie ; il rend vert tant que `--strict` n'est pas passé. En
+comparaison, l'outil rend 1 dès qu'un écart est nommé, même si une autre paire n'a pas pu être lue
+(elle est nommée) ; il rend 2 quand il n'y a aucun écart et que quelque chose n'a pas été lu (zéro
+document suivi, zéro paire, fichier illisible, y compris un fichier visé par une ancre de la
+traduction).

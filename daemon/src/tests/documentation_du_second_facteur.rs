@@ -25,6 +25,10 @@
 //       efface. Le témoin tient la phrase corrigée au comportement livré.
 // Contrôle positif : la section est trouvée et la règle (2) juge au moins autant d'identifiants que la table (1) en
 // exige — une section introuvable ou vide ne passe pas pour une section juste.
+// LES DEUX LANGUES : la doc existe en anglais (`docs/NATIVE-IDP.md`) et en français (`docs/NATIVE-IDP.fr.md`). Les
+// règles (1), (2) et (4) portent sur des symboles et sur la phrase SERVIE par le code, identiques dans les deux : elles
+// se jouent sur chacune. La règle (3) juge des phrases : chaque langue a les siennes (`PHRASES_EXIGEES`,
+// `PHRASES_EXIGEES_EN`).
 //
 // CE QU'IL NE TIENT PAS : il ne lit pas le SENS des phrases (un statut HTTP faux à côté d'un symbole juste passe) ;
 // c'est la relecture qui le tient. Un nom cité dans un commentaire de FIN de ligne de code compte encore.
@@ -75,6 +79,22 @@ mod documentation_du_second_facteur_tests {
         ),
     ];
 
+    /// Les mêmes phrases, dans la version anglaise de la doc.
+    const PHRASES_EXIGEES_EN: &[(&str, &str, &[&str])] = &[
+        ("### 4.2", "le 409 de réactivation", &["**409**", PHRASE_DU_409_DE_REACTIVATION, "`mfa_verify`", "**before**"]),
+        ("### 4.3", "l'arbitrage du frein", &["**Trade-off**", "`lock_max_s`", "ticket"]),
+        ("### 4.3", "la remise à zéro et son exception", &["**Reset**", "`remettre_a_zero`", "`mfa_disable`", "**pending**"]),
+        (
+            "### 4.3",
+            "le seuil et les délais, avec leurs variables",
+            &["**Threshold and delay**", "`PLUME_AUTH_LOCK_THRESHOLD`", "`PLUME_AUTH_LOCK_BASE_S`", "`PLUME_AUTH_LOCK_MAX_S`"],
+        ),
+    ];
+
+    /// Chaque langue de la doc : (chemin depuis la racine du dépôt, phrases exigées dans cette langue).
+    const LANGUES: &[(&str, &[(&str, &str, &[&str])])] =
+        &[("docs/NATIVE-IDP.fr.md", PHRASES_EXIGEES), ("docs/NATIVE-IDP.md", PHRASES_EXIGEES_EN)];
+
     /// Ce témoin se nomme dans la section (il vit sous `src/tests/`, que la règle (2) ne lit pas).
     const NOM_DU_TEMOIN: &str = "documentation_du_second_facteur";
 
@@ -82,9 +102,9 @@ mod documentation_du_second_facteur_tests {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
     }
 
-    /// La section `## 4.` jusqu'à la section `## ` suivante (les `### ` en font partie).
-    fn section_du_second_facteur() -> String {
-        let doc = std::fs::read_to_string(racine_du_crate().join("../docs/NATIVE-IDP.md")).expect("docs/NATIVE-IDP.md lisible");
+    /// La section `## 4.` de `chemin` jusqu'à la section `## ` suivante (les `### ` en font partie).
+    fn section_du_second_facteur(chemin: &str) -> String {
+        let doc = std::fs::read_to_string(racine_du_crate().join("..").join(chemin)).unwrap_or_else(|e| panic!("{chemin} lisible : {e}"));
         let mut dedans = false;
         let mut sortie = String::new();
         for ligne in doc.lines() {
@@ -179,15 +199,22 @@ mod documentation_du_second_facteur_tests {
 
     #[test]
     fn dsf_chaque_controle_exige_est_cite_par_le_symbole_qui_le_porte() {
-        let section = section_du_second_facteur();
-        assert!(!section.is_empty(), "section `## 4. TOTP MFA` introuvable dans docs/NATIVE-IDP.md");
-        let cites = identifiants_cites(&section);
         let src = racine_du_crate().join("src");
         let mut manquants = Vec::new();
-        for (symbole, fichier, forme) in SYMBOLES_EXIGES {
-            if !cites.iter().any(|c| c == symbole) {
-                manquants.push(format!("`{symbole}` non cité dans la section"));
+        for (doc, _) in LANGUES {
+            let section = section_du_second_facteur(doc);
+            assert!(!section.is_empty(), "section `## 4. TOTP MFA` introuvable dans {doc}");
+            let cites = identifiants_cites(&section);
+            for (symbole, _, _) in SYMBOLES_EXIGES {
+                if !cites.iter().any(|c| c == symbole) {
+                    manquants.push(format!("{doc} : `{symbole}` non cité dans la section"));
+                }
             }
+            if !section.contains(PHRASE_DU_409_DE_REACTIVATION) {
+                manquants.push(format!("{doc} : le 409 de réactivation « {PHRASE_DU_409_DE_REACTIVATION} » non cité"));
+            }
+        }
+        for (symbole, fichier, forme) in SYMBOLES_EXIGES {
             let code = std::fs::read_to_string(src.join(fichier)).unwrap_or_default();
             let definition = match *forme {
                 "const" => format!("const {symbole}:"),
@@ -196,9 +223,6 @@ mod documentation_du_second_facteur_tests {
             if !code.contains(&definition) {
                 manquants.push(format!("`{definition}` absent de daemon/src/{fichier}"));
             }
-        }
-        if !section.contains(PHRASE_DU_409_DE_REACTIVATION) {
-            manquants.push(format!("le 409 de réactivation « {PHRASE_DU_409_DE_REACTIVATION} » non cité"));
         }
         let idp = std::fs::read_to_string(src.join("handlers/idp.rs")).expect("handlers/idp.rs lisible");
         let verify = corps_de_la_fonction(&idp, "mfa_verify");
@@ -209,20 +233,22 @@ mod documentation_du_second_facteur_tests {
             (None, _) => manquants.push("le 409 de réactivation n'est plus servi par `mfa_verify` sous la phrase citée".to_owned()),
             _ => manquants.push("`mfa_verify` ne sert plus le 409 de réactivation AVANT `reserver_un_essai`".to_owned()),
         }
-        assert!(manquants.is_empty(), "docs/NATIVE-IDP.md §4 ne dit pas le comportement livré :\n  {}", manquants.join("\n  "));
+        assert!(manquants.is_empty(), "docs/NATIVE-IDP §4 ne dit pas le comportement livré :\n  {}", manquants.join("\n  "));
     }
 
     #[test]
     fn dsf_chaque_phrase_exigee_a_sa_puce_dans_sa_sous_section() {
-        let section = section_du_second_facteur();
         let mut manquantes = Vec::new();
-        for (titre, objet, fragments) in PHRASES_EXIGEES {
-            let puces = puces_de_la_sous_section(&section, titre);
-            if !puces.iter().any(|p| fragments.iter().all(|f| p.contains(f))) {
-                manquantes.push(format!("{titre} : aucune puce ne dit {objet} (fragments exigés ensemble : {fragments:?})"));
+        for (doc, phrases) in LANGUES {
+            let section = section_du_second_facteur(doc);
+            for (titre, objet, fragments) in *phrases {
+                let puces = puces_de_la_sous_section(&section, titre);
+                if !puces.iter().any(|p| fragments.iter().all(|f| p.contains(f))) {
+                    manquantes.push(format!("{doc} {titre} : aucune puce ne dit {objet} (fragments exigés ensemble : {fragments:?})"));
+                }
             }
         }
-        assert!(manquantes.is_empty(), "docs/NATIVE-IDP.md §4 :\n  {}", manquantes.join("\n  "));
+        assert!(manquantes.is_empty(), "docs/NATIVE-IDP §4 :\n  {}", manquantes.join("\n  "));
     }
 
     /// LA PHRASE CORRIGÉE, JOUÉE. Trois codes faux à l'activation d'un enrôlement EN ATTENTE comptent trois échecs au
@@ -259,17 +285,19 @@ mod documentation_du_second_facteur_tests {
 
     #[test]
     fn dsf_chaque_identifiant_cite_existe_dans_le_code() {
-        let section = section_du_second_facteur();
-        let cites = identifiants_cites(&section);
-        assert!(
-            cites.len() >= SYMBOLES_EXIGES.len(),
-            "contrôle positif : {} identifiant(s) cité(s), au moins {} attendus — section introuvable ou vide",
-            cites.len(),
-            SYMBOLES_EXIGES.len()
-        );
         let mut code = String::new();
         sources_hors_tests(&racine_du_crate().join("src"), &mut code);
-        let orphelins: Vec<&String> = cites.iter().filter(|c| c.as_str() != NOM_DU_TEMOIN && !contient_le_mot(&code, c)).collect();
-        assert!(orphelins.is_empty(), "docs/NATIVE-IDP.md §4 cite des noms absents du code (hors tests) : {orphelins:?}");
+        for (doc, _) in LANGUES {
+            let section = section_du_second_facteur(doc);
+            let cites = identifiants_cites(&section);
+            assert!(
+                cites.len() >= SYMBOLES_EXIGES.len(),
+                "contrôle positif ({doc}) : {} identifiant(s) cité(s), au moins {} attendus — section introuvable ou vide",
+                cites.len(),
+                SYMBOLES_EXIGES.len()
+            );
+            let orphelins: Vec<&String> = cites.iter().filter(|c| c.as_str() != NOM_DU_TEMOIN && !contient_le_mot(&code, c)).collect();
+            assert!(orphelins.is_empty(), "{doc} §4 cite des noms absents du code (hors tests) : {orphelins:?}");
+        }
     }
 }

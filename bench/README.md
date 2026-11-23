@@ -1,88 +1,88 @@
-# `bench/` — l'instrument de mesure
+# `bench/` — the measuring instrument
 
-[Français](README.md) | [English](README.en.md)
+[English](README.md) | [Français](README.fr.md)
 
-Ce répertoire n'optimise rien. Il rend les optimisations **prouvables**. « Mesurer d'abord,
-optimiser ensuite » : sans instrument publié, une amélioration annoncée n'est pas vérifiable et un
-chiffre annoncé n'est pas contestable.
+This directory optimizes nothing. It makes optimizations **provable**. "Measure first,
+optimize afterwards": without a published instrument, an announced improvement cannot be verified and an
+announced figure cannot be challenged.
 
-## Les pièces
+## The pieces
 
-| Fichier | Rôle |
+| File | Role |
 |---|---|
-| `prod-profile.sql` | Extraction **lecture seule** du profil de données d'une production. N'extrait que des agrégats : comptes, cardinalités, longueurs, noms de clés. **Jamais** une valeur de ligne. |
-| `distill_profile.py` | Transforme la sortie du SQL ci-dessus en `profile-prod.json`, en marquant chaque section `measured` ou `derived`. |
-| `profile-prod.json` | Le profil versionné. C'est la **seule** entrée du générateur. |
-| `make_fleet_profile.py` | **Dérive** un profil FLOTTE (`profile-fleet-N.json`) du profil mesuré : le nombre d'hôtes devient un paramètre explicite. Refuse de deviner quelles sources sont host-locales — voir ci-dessous. |
-| `fleet-per-host.txt` | La **déclaration d'opérateur** que le script exige : quelles sources tournent sur chaque machine. Une ligne, une raison. |
-| `make_axis_profile.py` | **DÉRIVE un profil qui ne diffère du mesuré que par UN axe** — cardinalité des clés étendues, taille d'événement, distribution de sévérité, nom des sources. Chaque axe vient d'une DÉCISION du chemin d'exécution (voir plus bas). Refuse d'en changer deux à la fois : un profil qui diffère sur deux paramètres ne mesure ni l'un ni l'autre. |
-| `campagne-generique.sh` | La campagne **multi-profils** : la même matrice sur chaque profil, à volume égal, **témoin mesuré deux fois** pour donner la bande de bruit. |
-| `probe_route_b.py` + `campagne-noms-sources.sh` | La sonde de la **ROUTE B** (`event_dim_rollup`), la seule forme que la matrice ne tire pas, et la seule dont la route dépend du **NOM** de la source. |
-| `campagne-10m.sh` | Le remplissage à **10 M par le vrai chemin**, avec **preuve de survie du jeu** (recompte après matrice). |
-| `gen_events.py` | Générateur **déterministe** (splitmix64, graine explicite, aucun appel à l'horloge) au profil ci-dessus. Zéro donnée réelle. |
-| `measure.py` | La matrice : latence p50/p95, **RSS crête mesurée** (échantillonnage /proc à 15 ms), lecture disque, pression machine. Les fenêtres y sont **dérivées**, pas énumérées. |
-| `probe.py` | L'échantillonneur d'ingest. Relève, à chaque tick, ce qui permet de dire POURQUOI le débit tombe : CPU du daemon, CPU du reste de la machine, octets lus/écrits au bloc, stall mémoire du cgroup. |
-| `parity.py` | **La réponse est-elle la MÊME ?** Interroge DEUX daemons (avec et sans tier froid) sur la MÊME matrice et compare **les valeurs**, pas les temps. Le jeu de contrôles n'est pas écrit : c'est `query_classes` × `windows` de `measure.py`. |
-| `concurrency.py` | **N analystes en même temps.** L'angle mort que `measure.py` déclare lui-même (une requête à la fois → personne n'attend son tour). Mesure, dans cet ordre : la JUSTESSE sous charge (chaque réponse concurrente comparée par sa VALEUR à la réponse obtenue seul), la RAM sous budget appliqué (RSS + cgroup + `memory.events`), la courbe de latence/débit, et le DÉCOUPAGE de l'attente (`sem_wait_ms` = le permit ; `db_lock_wait_ms` = le verrou de la connexion partagée ; `prepare_ms`/`exec_ms`). Le mélange de requêtes est **dérivé** de la passe solo qui le précède. |
-| `report.py` | Rend `docs/BENCHMARK.md`. Ne masque aucune cellule. |
-| `run.sh` | **La commande unique.** Enchaîne tout, budget de 2 Gio *appliqué* par cgroup. |
-| `fts-compaction/` | **L'arbitrage `optimize` contre `merge` borné** (P10.7-b) — le seul banc qui n'interroge pas le daemon. La question porte sur ce que FTS5 fait de ses SEGMENTS quand une purge lui laisse des postings de suppression : c'est une propriété du moteur de stockage, mesurée sur l'amalgamation SQLCipher que le daemon LIE (mêmes `-D` que le `build.rs` de `libsqlite3-sys`, mais `-O2` — le profil `dev` de cargo compile ce C à `-O0`, ce qui fausserait toute durée). `mesurer.sh` **valide l'instrument avant de s'en servir** (version SQLCipher, FTS5, dbstat) et refuse de publier un chiffre s'il n'est pas la SQLite du produit. |
-| `results/` | Les **données brutes** de la mesure publiée dans `docs/BENCHMARK.md`. Versionnées exprès — voir ci-dessous. |
+| `prod-profile.sql` | **Read-only** extraction of a production's data profile. Extracts only aggregates: counts, cardinalities, lengths, key names. **Never** a row value. |
+| `distill_profile.py` | Turns the output of the SQL above into `profile-prod.json`, marking each section `measured` or `derived`. |
+| `profile-prod.json` | The versioned profile. It is the **only** input of the generator. |
+| `make_fleet_profile.py` | **Derives** a FLEET profile (`profile-fleet-N.json`) from the measured profile: the number of hosts becomes an explicit parameter. Refuses to guess which sources are host-local — see below. |
+| `fleet-per-host.txt` | The **operator declaration** that the script requires: which sources run on each machine. One line, one reason. |
+| `make_axis_profile.py` | **DERIVES a profile that differs from the measured one along ONE axis only** — cardinality of extended keys, event size, severity distribution, source names. Each axis comes from a DECISION of the execution path (see below). Refuses to change two at once: a profile that differs on two parameters measures neither. |
+| `campagne-generique.sh` | The **multi-profile** campaign: the same matrix on each profile, at equal volume, **witness measured twice** to give the noise band. |
+| `probe_route_b.py` + `campagne-noms-sources.sh` | The probe for **ROUTE B** (`event_dim_rollup`), the only form that the matrix does not fire, and the only one whose route depends on the source's **NAME**. |
+| `campagne-10m.sh` | Filling to **10 M through the real path**, with **proof that the dataset survived** (recount after the matrix). |
+| `gen_events.py` | **Deterministic** generator (splitmix64, explicit seed, no call to the clock) with the profile above. Zero real data. |
+| `measure.py` | The matrix: p50/p95 latency, **measured peak RSS** (/proc sampling every 15 ms), disk reads, machine pressure. The windows there are **derived**, not enumerated. |
+| `probe.py` | The ingest sampler. Records, at each tick, what makes it possible to say WHY throughput drops: daemon CPU, CPU of the rest of the machine, bytes read/written at the block layer, cgroup memory stall. |
+| `parity.py` | **Is the answer the SAME?** Queries TWO daemons (with and without cold tier) on the SAME matrix and compares **the values**, not the times. The set of checks is not written: it is `query_classes` × `windows` from `measure.py`. |
+| `concurrency.py` | **N analysts at the same time.** The blind spot that `measure.py` declares itself (one query at a time → nobody waits their turn). Measures, in this order: CORRECTNESS under load (each concurrent answer compared by its VALUE with the answer obtained alone), RAM under an enforced budget (RSS + cgroup + `memory.events`), the latency/throughput curve, and the BREAKDOWN of waiting (`sem_wait_ms` = the permit; `db_lock_wait_ms` = the lock of the shared connection; `prepare_ms`/`exec_ms`). The query mix is **derived** from the solo pass that precedes it. |
+| `report.py` | Renders `docs/BENCHMARK.md`. Hides no cell. |
+| `run.sh` | **The single command.** Chains everything, 2 GiB budget *enforced* by cgroup. |
+| `fts-compaction/` | **The `optimize` versus bounded `merge` trade-off** (P10.7-b) — the only bench that does not query the daemon. The question concerns what FTS5 does with its SEGMENTS when a purge leaves it deletion postings: it is a property of the storage engine, measured on the SQLCipher amalgamation that the daemon LINKS (same `-D` as the `build.rs` of `libsqlite3-sys`, but `-O2` — cargo's `dev` profile compiles this C at `-O0`, which would distort any duration). `mesurer.sh` **validates the instrument before using it** (SQLCipher version, FTS5, dbstat) and refuses to publish a figure if it is not the product's SQLite. |
+| `results/` | The **raw data** of the measurement published in `docs/BENCHMARK.md`. Versioned on purpose — see below. |
 
-## Les fenêtres sont DÉRIVÉES, et une fenêtre non couverte n'est pas mesurée
+## The windows are DERIVED, and a window that is not covered is not measured
 
-`measure.py` ne porte pas une liste de fenêtres choisies. Chacune vient d'un paramètre du **produit**
-— ou de l'absence de bornes :
+`measure.py` does not carry a list of chosen windows. Each one comes from a parameter of the **product**
+— or from the absence of bounds:
 
-| Fenêtre | D'où elle vient |
+| Window | Where it comes from |
 |---|---|
-| `1h`, `24h` | l'usage interactif (triage, tableau de bord). |
-| `{N}d` | `PLUME_COLD_HOT_WINDOW_DAYS` (défaut **7**, `daemon/src/cold_store/aging.rs`) — **la frontière chaud/froid du produit**. Passer la fenêtre chaude à 14 j déplace la cellule mesurée : rien n'est à retoucher ici. |
-| `au-dela-{N}d` | la bande entièrement plus vieille que la fenêtre chaude : le régime **pur-froid** quand le tier froid est actif. |
-| `{R}d` | `PLUME_RETENTION_DAYS` — toute la rétention. |
-| `all` | sans borne : traverse la frontière. Le cas le plus coûteux. |
+| `1h`, `24h` | interactive use (triage, dashboard). |
+| `{N}d` | `PLUME_COLD_HOT_WINDOW_DAYS` (default **7**, `daemon/src/cold_store/aging.rs`) — **the product's hot/cold boundary**. Moving the hot window to 14 d moves the measured cell: nothing needs to be touched here. |
+| `au-dela-{N}d` | the band entirely older than the hot window: the **pure-cold** regime when the cold tier is active. |
+| `{R}d` | `PLUME_RETENTION_DAYS` — the whole retention. |
+| `all` | unbounded: crosses the boundary. The most expensive case. |
 
-**La garde** : une fenêtre bornée n'est tirée que si le jeu de données la **couvre**
-(`portée <= span_days`). Sur un jeu de 28 jours, la fenêtre « 30 j » n'est donc PAS mesurée — elle
-mesurerait `all` sous une étiquette qui ment. Elle est écrite dans le JSONL comme **non mesurée avec
-son motif**, et `docs/BENCHMARK.md` la publie comme telle. La garde compare une portée à une
-étendue : elle n'a aucune liste de fenêtres interdites, donc elle vaut aussi pour toute fenêtre
-ajoutée plus tard. Vérifier sans rien mesurer :
+**The guard**: a bounded window is fired only if the dataset **covers** it
+(`portée <= span_days`). On a 28-day dataset, the "30 d" window is therefore NOT measured — it
+would measure `all` under a label that lies. It is written in the JSONL as **not measured with
+its reason**, and `docs/BENCHMARK.md` publishes it as such. The guard compares a range with an
+extent: it has no list of forbidden windows, so it also holds for any window
+added later. To check without measuring anything:
 
 ```sh
 python3 bench/measure.py --list-windows --end-ts 0 --span-days 28 --hot-window-days 7 \
     --retention-days 30 --user x --password x --pid 1 --config-id x
 ```
 
-## La concurrence — les gardes sont DÉRIVÉES, y compris celle du balayage
+## Concurrency — the guards are DERIVED, including the one on the sweep
 
-`concurrency.py` n'a pas de liste de requêtes ni de liste de niveaux « autorisés ». Tout ce qui
-pourrait être écrit à la main y est dérivé d'une mesure ou d'une déclaration du daemon :
+`concurrency.py` has no list of queries and no list of "allowed" levels. Everything that
+could be written by hand is derived there from a measurement or from a declaration by the daemon:
 
-| Ce qui pourrait être écrit à la main | Ce dont c'est dérivé |
+| What could be written by hand | What it is derived from |
 |---|---|
-| la taille du sémaphore mesurée | **demandée au daemon** (`/api/system/diag` publie `PLUME_QUERY_CONCURRENCY`). `--expect-sem` compare l'étiquette de la passe à ce que le daemon applique VRAIMENT, et refuse si les deux divergent : une passe dont l'étiquette ment ne mesure rien. |
-| le mélange de requêtes | la passe SOLO qui le précède : chaque **famille** de la matrice (`C1`…`C6`) entre par son représentant le plus coûteux, s'il coûte au moins 10 × le **plancher mesuré** dans la même passe. La famille du plancher échoue à son propre test et s'exclut d'elle-même. Le plancher est ajouté à part — il mesure le clic de tableau de bord sous charge. |
-| la fenêtre | la seule fenêtre **sans borne** que `measure.windows` retient (le cas le plus coûteux). Reconnue à cette propriété, pas à son nom. |
-| « les deux passes sont comparables » | le mélange est **DÉRIVÉ par la première passe puis IMPOSÉ aux suivantes** (`--mix`, posé par `run.sh`). Deux passes qui dérivent chacune le leur peuvent différer — mesuré : `C5` 3,7 s contre `C5b` 6,0 s, deux classes de la même famille que la machine peut départager autrement d'une fois sur l'autre — et leur écart de débit ne serait alors plus attribuable au sémaphore. La dérivation propre de chaque passe reste calculée et publiée à côté du mélange imposé. `report.py` refuse en plus de publier la comparaison de deux passes dont le mélange diffère. |
-| les niveaux du balayage | libres, mais **gardés** : le balayage doit contenir un point strictement en dessous du sémaphore ET un point strictement au-dessus. En dessous, aucune requête ne peut attendre ; la file ne commence qu'au-delà. Un balayage qui ne franchit pas ce point mesure un seul régime et l'appelle « la capacité ». |
-| « la réponse a changé » | l'empreinte de `parity.py` (insensible à l'ordre) + le total de pagination, contre la référence SOLO de la MÊME passe. Une classe dont la réponse varie **déjà seule** est retirée du verdict, et le retrait est publié. |
-| « le champ `sem_wait_ms` est faux » | la sémantique d'un sémaphore : à *N* analystes pour *S* ≥ *N* permis, **aucune** requête ne peut attendre son tour. Toute attente publiée à ces niveaux est donc autre chose. Aucun seuil n'intervient — la garde compare un compte de permis à un compte de clients, elle vaut donc pour toute taille de sémaphore. Elle a mordu (10,2 s publiées sous ce nom, 16,5 s en solo) ; depuis le correctif elle **fait échouer le harnais** (`rc=5`) au lieu de publier un chiffre qui enverrait l'exploitant augmenter le sémaphore. |
-| « d'où vient l'attente, si ce n'est pas le sémaphore » | le daemon publie le découpage TOTAL (`prepare + sem_wait + exec == server`, `daemon/src/query_timing.rs`) et, à part, `db_lock_wait_ms` — le temps passé à OBTENIR le verrou de la connexion partagée. Le harnais ne le recalcule pas : il le relaie. |
-| « le daemon est prêt » | trois tirs consécutifs dont l'attente avant moteur est **sous la milliseconde**. Cette attente est DÉRIVÉE (`server_ms - exec_ms` : tout ce que la requête subit avant d'exécuter), jamais `sem_wait_ms` seul — depuis que ce champ ne mesure plus que le permit, il est nul par construction dès qu'un permit est libre, et une sonde qui ne regarderait que lui déclarerait « au repos » un daemon qui tient encore le verrou d'écriture. Le temps qu'il a fallu est publié — c'est lui-même une mesure. |
+| the size of the measured semaphore | **asked of the daemon** (`/api/system/diag` publishes `PLUME_QUERY_CONCURRENCY`). `--expect-sem` compares the pass's label with what the daemon REALLY applies, and refuses if the two diverge: a pass whose label lies measures nothing. |
+| the query mix | the SOLO pass that precedes it: each **family** of the matrix (`C1`…`C6`) enters through its most expensive representative, if it costs at least 10 × the **measured floor** in the same pass. The floor's family fails its own test and excludes itself. The floor is added separately — it measures the dashboard click under load. |
+| the window | the only **unbounded** window that `measure.windows` keeps (the most expensive case). Recognized by that property, not by its name. |
+| "the two passes are comparable" | the mix is **DERIVED by the first pass then IMPOSED on the following ones** (`--mix`, set by `run.sh`). Two passes that each derive their own can differ — measured: `C5` 3.7 s against `C5b` 6.0 s, two classes of the same family that the machine can rank differently from one time to the next — and their throughput gap would then no longer be attributable to the semaphore. Each pass's own derivation is still computed and published next to the imposed mix. `report.py` additionally refuses to publish the comparison of two passes whose mix differs. |
+| the levels of the sweep | free, but **guarded**: the sweep must contain a point strictly below the semaphore AND a point strictly above. Below, no query can wait; the queue only begins beyond. A sweep that does not cross that point measures a single regime and calls it "the capacity". |
+| "the answer has changed" | the fingerprint from `parity.py` (order-insensitive) + the pagination total, against the SOLO reference of the SAME pass. A class whose answer **already varies on its own** is withdrawn from the verdict, and the withdrawal is published. |
+| "the `sem_wait_ms` field is wrong" | the semantics of a semaphore: with *N* analysts for *S* ≥ *N* permits, **no** query can wait its turn. Any wait published at these levels is therefore something else. No threshold is involved — the guard compares a count of permits with a count of clients, so it holds for any semaphore size. It bit (10.2 s published under that name, 16.5 s solo); since the fix it **makes the harness fail** (`rc=5`) instead of publishing a figure that would send the operator off to enlarge the semaphore. |
+| "where does the wait come from, if not the semaphore" | the daemon publishes the TOTAL breakdown (`prepare + sem_wait + exec == server`, `daemon/src/query_timing.rs`) and, separately, `db_lock_wait_ms` — the time spent OBTAINING the lock of the shared connection. The harness does not recompute it: it relays it. |
+| "the daemon is ready" | three consecutive shots whose wait before the engine is **under a millisecond**. This wait is DERIVED (`server_ms - exec_ms`: everything the query goes through before executing), never `sem_wait_ms` alone — since that field now measures only the permit, it is zero by construction as soon as a permit is free, and a probe that looked only at it would declare "at rest" a daemon that still holds the write lock. The time it took is published — it is itself a measurement. |
 
 ```sh
 BENCH_PHASES=concurrency BENCH_DIR=<copie d une base remplie> bench/run.sh
-# variables : BENCH_SEM_SWEEP (défaut 3,8) · BENCH_CONC_LEVELS (défaut 1,2,3,4,6,8,10)
-#             BENCH_CONC_ROUNDS (passages par analyste) · BENCH_CONC_PROBE_REPS
+# variables: BENCH_SEM_SWEEP (default 3,8) · BENCH_CONC_LEVELS (default 1,2,3,4,6,8,10)
+#             BENCH_CONC_ROUNDS (passes per analyst) · BENCH_CONC_PROBE_REPS
 ```
 
-## Le profil FLOTTE — ce qui est mesuré, ce qui est dérivé
+## The FLEET profile — what is measured, what is derived
 
-La production profilée est **mono-nœud** : ses 32 sources ont toutes `distinct_hosts: 1`. Comme
-`host` est l'une des six colonnes indexées, tout chiffre publié sur un filtre ou un group-by par
-hôte y porte sur un cas **dégénéré de cardinalité 1**. `make_fleet_profile.py` produit donc des
-profils où la taille de flotte est un **paramètre explicite** :
+The profiled production is **single-node**: its 32 sources all have `distinct_hosts: 1`. As
+`host` is one of the six indexed columns, any figure published on a filter or a group-by by
+host there bears on a **degenerate cardinality-1** case. `make_fleet_profile.py` therefore produces
+profiles where the fleet size is an **explicit parameter**:
 
 ```sh
 python3 bench/make_fleet_profile.py --hosts 50 --per-host @bench/fleet-per-host.txt \
@@ -92,218 +92,218 @@ BENCH_PROFILE=$PWD/bench/profile-fleet-50.json BENCH_EVENTS=600000 bench/run.sh
 
 | | |
 |---|---|
-| **Mesuré**, repris tel quel | par source : severity, catégories, longueurs de message et de `fields`, clés étendues avec types/longueurs/cardinalités, taux de `src_ip` ; la courbe horaire ; les histogrammes. |
-| **Dérivé**, marqué `provenance: "derived"` | le poids `n` des sources host-locales (multiplié par le nombre d'hôtes) et la cardinalité de `host`. Chaque source garde son `n_measured_mono_host`. |
-| **Ni l'un ni l'autre — déclaré** | *quelles* sources sont host-locales. Le profil mono-nœud ne contient rien qui permette de le déduire : `--per-host` est **obligatoire**, et le script s'arrête plutôt que de deviner. La déclaration est versionnée dans `fleet-per-host.txt`, une ligne par source avec sa raison. |
-| **Non multiplié**, délibérément | la cardinalité des `src_ip` (une flotte plus grande ne crée pas plus de clients sur Internet), le vocabulaire des messages, la densité par hôte. |
+| **Measured**, taken as is | per source: severity, categories, message and `fields` lengths, extended keys with types/lengths/cardinalities, `src_ip` rate; the hourly curve; the histograms. |
+| **Derived**, marked `provenance: "derived"` | the weight `n` of host-local sources (multiplied by the number of hosts) and the cardinality of `host`. Each source keeps its `n_measured_mono_host`. |
+| **Neither — declared** | *which* sources are host-local. The single-node profile contains nothing that allows it to be inferred: `--per-host` is **mandatory**, and the script stops rather than guess. The declaration is versioned in `fleet-per-host.txt`, one line per source with its reason. |
+| **Not multiplied**, deliberately | the cardinality of `src_ip` (a larger fleet does not create more clients on the Internet), the message vocabulary, the per-host density. |
 
-La répartition des événements sur les hôtes est **uniforme** : c'est le cas le plus dur pour un
-group-by (tous les groupes sont peuplés) et le plus facile pour un filtre sur un hôte (sélectivité
-exactement 1/N). C'est une hypothèse de banc, pas une mesure — une vraie flotte est déséquilibrée.
+The distribution of events across hosts is **uniform**: it is the hardest case for a
+group-by (all groups are populated) and the easiest for a filter on one host (selectivity
+exactly 1/N). It is a bench assumption, not a measurement — a real fleet is unbalanced.
 
-## La généricité — les axes sont DÉRIVÉS du chemin d'exécution, et ceux qu'on écarte le sont AUSSI
+## Genericity — the axes are DERIVED from the execution path, and the ones set aside are TOO
 
-Un chiffre mesuré sur notre profil prouve NOTRE cas. Pour savoir s'il tient ailleurs, il faut le
-remesurer sur des jeux qui diffèrent, et publier l'écart. Encore faut-il ne pas choisir les axes au
-hasard : chacun de ceux ci-dessous correspond à une **décision** que le daemon prend en fonction de
-la DONNÉE, pas de la requête.
+A figure measured on our profile proves OUR case. To know whether it holds elsewhere, it has to be
+re-measured on datasets that differ, and the gap published. The axes still must not be chosen at
+random: each of the ones below corresponds to a **decision** that the daemon makes based on
+the DATA, not on the query.
 
-| Axe mesuré | La décision qu'il déplace | Ancre dans le code |
+| Measured axis | The decision it moves | Anchor in the code |
 |---|---|---|
-| cardinalité de `host` | sélectivité de `idx_event_host` (filtre) et nombre de groupes (group-by) | `migrate.rs` (`idx_event_host`) |
-| cardinalité des clés étendues | sélectivité du **seek d'index d'expression** sur les 10 clés de `HOT_FIELDS`, et nombre de groupes d'un `by <clé>` | `soql_glue.rs` (`HOT_FIELDS`), `maintenance.rs` (`idx_ev_f_*`) |
-| taille d'événement | **aucun index** ne porte sur `message` ni `fields` ; en GXQL un terme libre compile en `LIKE '%…%'`. Le coût est proportionnel aux OCTETS lus | `db/schema.sql`, compilateur GXQL (`freetext_col`) |
-| distribution de sévérité | `event_rollup.src_ip` n'est une DIMENSION que si `severity >= PLUME_ROLLUP_SRCIP_MIN_SEV` (défaut 3) — sinon la valeur est ramenée à `''` | `rollups.rs` |
-| **nom** des sources | la ROUTE B (`event_dim_rollup`) n'est prise que si le couple (nom de source, dimension) figure dans `DIM_ROLLUP_SPECS`, une table **écrite en dur** | `rollups.rs` (`DIM_ROLLUP_SPECS`), `rollup_route.rs` |
+| cardinality of `host` | selectivity of `idx_event_host` (filter) and number of groups (group-by) | `migrate.rs` (`idx_event_host`) |
+| cardinality of extended keys | selectivity of the **expression index seek** on the 10 keys of `HOT_FIELDS`, and number of groups of a `by <clé>` | `soql_glue.rs` (`HOT_FIELDS`), `maintenance.rs` (`idx_ev_f_*`) |
+| event size | **no index** covers `message` or `fields`; in GXQL a free term compiles to `LIKE '%…%'`. The cost is proportional to the BYTES read | `db/schema.sql`, GXQL compiler (`freetext_col`) |
+| severity distribution | `event_rollup.src_ip` is a DIMENSION only if `severity >= PLUME_ROLLUP_SRCIP_MIN_SEV` (default 3) — otherwise the value is brought back to `''` | `rollups.rs` |
+| source **name** | ROUTE B (`event_dim_rollup`) is taken only if the (source name, dimension) pair appears in `DIM_ROLLUP_SPECS`, a **hard-coded** table | `rollups.rs` (`DIM_ROLLUP_SPECS`), `rollup_route.rs` |
 
-**Et les axes ÉCARTÉS, avec leur raison** — un axe écarté sans motif est un angle mort déguisé :
+**And the axes SET ASIDE, with their reason** — an axis set aside without a reason is a disguised blind spot:
 
-| Axe écarté | Pourquoi |
+| Axis set aside | Why |
 |---|---|
-| mélange de sources (uniforme) | **MESURÉ, pas supposé** : rendre le mélange uniforme fait passer la part de `severity >= 3` de 0,064 à 0,219 et la taille moyenne de 252,8 à 237,4 octets — parce que la sévérité est une propriété DE chaque source. L'écart ne serait attribuable ni au mélange ni à la sévérité. Le profil `profile-axe-mix-uniforme.json` est conservé : sa section `axis` PORTE cette preuve. |
-| cardinalité de `src_ip` | déplacerait en même temps la colonne indexée (`idx_event_srcip`) ET le plafond top-N des rollups (`PLUME_ROLLUP_SRCIP_TOPN`). Même problème d'attribution. |
-| cardinalité de `category` | `category` est indexée, mais **aucune classe de la matrice ne la filtre ni ne la groupe** : l'axe ne serait exercé par aucune requête. Écarté faute de sonde, pas faute d'importance. |
-| `env_id`, `origin`, `engagement_id` | constants en mode 0 (multi-tenant off, hors engagement). |
-| `dst_ip`, `url`, `xff` | non indexées ET non interrogées par la matrice. |
-| profondeur de rétention | ce n'est pas une propriété du JEU mais un réglage du daemon ; les fenêtres en sont déjà dérivées, et la garde de couverture écarte déjà celles que le jeu ne porte pas. |
+| source mix (uniform) | **MEASURED, not assumed**: making the mix uniform moves the share of `severity >= 3` from 0.064 to 0.219 and the average size from 252.8 to 237.4 bytes — because severity is a property OF each source. The gap would be attributable neither to the mix nor to severity. The profile `profile-axe-mix-uniforme.json` is kept: its `axis` section CARRIES this proof. |
+| cardinality of `src_ip` | would move at the same time the indexed column (`idx_event_srcip`) AND the top-N ceiling of the rollups (`PLUME_ROLLUP_SRCIP_TOPN`). Same attribution problem. |
+| cardinality of `category` | `category` is indexed, but **no class of the matrix filters or groups on it**: the axis would be exercised by no query. Set aside for lack of a probe, not for lack of importance. |
+| `env_id`, `origin`, `engagement_id` | constant in mode 0 (multi-tenant off, outside an engagement). |
+| `dst_ip`, `url`, `xff` | not indexed AND not queried by the matrix. |
+| retention depth | it is not a property of the DATASET but a daemon setting; the windows are already derived from it, and the coverage guard already sets aside the ones the dataset does not carry. |
 
-**Ce que ces profils ne prétendent pas être** : ils sont SYNTHÉTIQUES et DÉRIVÉS. Ils ne sont la
-production de personne. Ils répondent à « le chiffre bouge-t-il quand ce paramètre bouge, et de
-combien », qui est la seule question à laquelle un banc puisse répondre sans les données du tiers.
-Ils ne répondent PAS à « voici ce que mesurera tel client » — cette phrase exigerait SON jeu.
+**What these profiles do not claim to be**: they are SYNTHETIC and DERIVED. They are nobody's
+production. They answer "does the figure move when this parameter moves, and by
+how much", which is the only question a bench can answer without the third party's data.
+They do NOT answer "here is what such-and-such a client will measure" — that sentence would require THEIR dataset.
 
-### Le bruit avant l'écart
+### Noise before the gap
 
-Un écart entre deux profils ne veut rien dire tant qu'on ne sait pas ce que la **même** mesure rend
-deux fois de suite sur le **même** jeu. La campagne mesure donc le témoin **deux fois**, en
-encadrant la campagne (une passe au début, une à la fin, donc dérive de la machine comprise), et la
-bande de bruit qui en sort devient le critère : un écart n'est déclaré attribuable au profil que
-s'il sort de l'**étendue complète** de cette bande. Aucun seuil n'est écrit — si la machine est plus
-bruyante, la bande s'élargit et le document **conclut moins**. C'est voulu : un banc doit perdre en
-conclusions quand il perd en conditions, jamais gagner en confiance.
+A gap between two profiles means nothing as long as we do not know what the **same** measurement returns
+twice in a row on the **same** dataset. The campaign therefore measures the witness **twice**,
+bracketing the campaign (one pass at the start, one at the end, so machine drift included), and the
+noise band that comes out of it becomes the criterion: a gap is declared attributable to the profile only
+if it falls outside the **full range** of this band. No threshold is written — if the machine is
+noisier, the band widens and the document **concludes less**. That is intended: a bench must lose
+conclusions when it loses conditions, never gain confidence.
 
-`measure.py` publie pour cela les **échantillons par tir** (`wall_samples_ms`, `sql_samples_ms`) et
-plus seulement leurs percentiles : une dispersion ne se recalcule pas depuis un p50.
+`measure.py` publishes for this the **per-shot samples** (`wall_samples_ms`, `sql_samples_ms`) and
+no longer only their percentiles: a dispersion cannot be recomputed from a p50.
 
-## La garde de rétention — le piège qui a mordu, fermé pour de bon
+## The retention guard — the trap that bit, closed for good
 
-Un jeu figé une fois pour toutes finit par sortir de la rétention du daemon : l'horloge avance, le
-bord de rétention rattrape la queue du jeu, et la purge SUPPRIME des événements **pendant** la
-campagne. Ce n'est pas théorique — mesuré le 2026-08-01 : 1 440 007 -> 1 436 516 événements en une
-demi-heure, avec à la clef un verdict de justesse FAUX imputé à la concurrence alors qu'il venait de
-l'horloge. Et la purge n'attend pas : `spawn_retention_loop` (`daemon/src/server/boucles_de_fond.rs`) passe une
-première fois **60 s après le démarrage**, puis toutes les heures.
+A dataset frozen once and for all ends up leaving the daemon's retention: the clock moves forward, the
+retention edge catches up with the tail of the dataset, and the purge DELETES events **during** the
+campaign. This is not theoretical — measured on 2026-08-01: 1 440 007 -> 1 436 516 events in half
+an hour, producing a FALSE correctness verdict blamed on concurrency when it came from
+the clock. And the purge does not wait: `spawn_retention_loop` (`daemon/src/server/boucles_de_fond.rs`) runs a
+first time **60 s after startup**, then every hour.
 
-`run.sh` REFUSE désormais de démarrer quand la marge est négative, et l'annonce quand elle ne l'est
-pas. La garde est DÉRIVÉE — elle compare deux instants, `end_ts - span_days` contre
-`now - retention_days`, et vaut donc pour toute rétention, toute étendue et tout `end_ts` :
+`run.sh` now REFUSES to start when the margin is negative, and announces it when it is
+not. The guard is DERIVED — it compares two instants, `end_ts - span_days` against
+`now - retention_days`, and so holds for any retention, any extent and any `end_ts`:
 
 ```
 marge de rétention : 48 h avant que la purge n'entame le jeu (échéance …)
 STOP: LE JEU EST DÉJÀ DANS LA ZONE DE PURGE — il a 42 h de retard.
 ```
 
-Une garde de DÉPART ne prouve toutefois rien sur ce qui s'est passé PENDANT : `campagne-10m.sh`
-recompte donc les événements **après** la matrice et publie le avant/après.
+A START guard proves nothing, however, about what happened DURING: `campagne-10m.sh`
+therefore recounts the events **after** the matrix and publishes the before/after.
 
-## Pourquoi les données brutes sont versionnées
+## Why the raw data are versioned
 
-Un tableau de mesures sans ses données brutes ne peut être que **cru ou ignoré** ; il ne peut pas
-être *contredit*. `results/` porte donc les fichiers dont `docs/BENCHMARK.md` est rendu :
+A table of measurements without its raw data can only be **believed or ignored**; it cannot
+be *contradicted*. `results/` therefore carries the files from which `docs/BENCHMARK.md` is rendered:
 
-| Fichier | Contenu |
+| File | Content |
 |---|---|
-| `results/results.jsonl` | Une ligne par cellule : p50/p95 mur et SQL, RSS crête, octets lus, pression mémoire avant/après, `swap_suspect`, la requête et son SQL compilé. |
-| `results/results-smoke-200k.jsonl` | La passe de rodage à 200 k événements. |
-| `results/results-2026-07-31.jsonl` | La passe du 31/07 : fenêtre chaude du produit, tier froid ACTIF (avec le bilan de columnarisation et la **parité de réponse** chaud/froid), et les trois profils de flotte. Porte aussi les fenêtres ÉCARTÉES par la garde de couverture — une absence y est une donnée. |
-| `results/ingest_rate.csv` | La courbe de débit d'ingest de la passe du 30/07 (machine chargée, sans colonnes CPU). |
-| `results/ingest_rate-quiet-2g.csv` | La courbe du 31/07, machine au repos et sonde complète : c'est elle qui permet d'ATTRIBUER l'effondrement du débit au lieu de le supposer. |
-| `results/results-2026-07-31-corrige.jsonl` | La passe du 31/07 REJOUÉE après le correctif de troncature froide (témoin chaud `chaud-seul-v2@1.4M` + `froid-actif-v2@1.4M`, même machine, mêmes copies de base, binaire post-correctif). C'est elle qui décrit le code actuel. |
-| `results/parity-avant-2026-07-31.jsonl` | La parité chaud/froid mesurée sur toute la matrice **AVANT** le correctif : 53 contrôles sur 105 divergent en silence. |
-| `results/parity-apres-2026-07-31.jsonl` | La MÊME mesure **APRÈS** : plus aucun agrégat scalaire ne diverge en silence. |
-| `results/parity-couverture-2026-07-31.jsonl` | La MÊME mesure, REJOUÉE avec le binaire post-correctifs de **couverture des rollups**, sur deux copies FRAÎCHES de la même base et avec une stabilisation VÉRIFIÉE (les deux daemons ont tické, leur couverture est publiée). C'est elle qui mesure que le sous-compte ×6,6 de la passe précédente est corrigé : le côté sans tier froid rend désormais EXACTEMENT le compte brut. Elle décrit le dépôt actuel ; les réserves des passes antérieures décrivent leurs binaires. |
-| `results/fill-progress-quiet-2g.txt` | Les lignes de progression du générateur pour cette passe. Extension `.txt` et non `.log` : `.gitignore` exclut `*.log`, et une donnée publiée ne doit pas dépendre d'une exception d'ignore. |
-| `results/concurrency-2026-08-01.jsonl` | **La CONCURRENCE** : une ligne par NIVEAU (N analystes simultanés), plus une ligne d'en-tête par valeur de sémaphore (référence solo classe par classe, dérivation du mélange, mise au repos, état du cgroup). C'est l'entrée de la section « La concurrence » du document. |
-| `results/concurrency-requests-2026-08-01.jsonl` | La MÊME passe, **une ligne par requête** (analyste, tour, classe, instant relatif, mur/serveur/attente, empreinte de réponse, verdict de justesse). Donnée brute : c'est elle qui permet de recalculer n'importe quel percentile publié, ou de contredire un verdict de justesse requête par requête. `report.py` l'accepte sans s'en servir (il la reconnaît à sa forme). |
-| `results/concurrency-reproduction-2026-08-01.jsonl` | **LA VALEUR IMPOSSIBLE, REPRODUITE** avant d'y toucher. Passe COURTE (niveaux 1 et 4, 1 tour) sur le binaire d'AVANT : `sem_wait_ms` y atteint **16 456 ms en passe SOLO** et 3 348 ms à 1 analyste pour 3 permis. Elle ne sert qu'à une chose, et c'est la plus importante : voir le défaut ROUGE sur cette machine-ci avant de le corriger. Son mélange est DÉRIVÉ (pas imposé) — elle n'entre donc dans aucune comparaison de débit, et `report.py` l'en écarte tout seul. |
-| `results/concurrency-attribution-2026-08-01.jsonl` | **CE QUE `sem_wait_ms` MESURAIT.** Passe COURTE (2 niveaux, 1 tour) tirée sur le binaire qui découpe l'attente mais garde la lecture de couverture sur le verrou d'écriture partagé. C'est elle qui ATTRIBUE : à 1 analyste pour 3 permis, l'attente du permit tombe à **0,000 ms** et 2 876 ms réapparaissent en `db_lock_wait_ms`. Sans elle, la correction serait une affirmation ; avec elle, c'est une mesure. |
-| `results/concurrency-corrige-2026-08-01.jsonl` | La campagne COMPLÈTE d'après correctif (mêmes niveaux, MÊME mélange imposé que la passe d'avant, deux sémaphores). C'est elle qui décrit le dépôt actuel. |
-| `results/concurrency-requests-corrige-2026-08-01.jsonl` | Le détail par requête de la passe ci-dessus. |
-| `results/generique-2026-08-03.jsonl` | **LA CAMPAGNE MULTI-PROFILS** : la même matrice sur 5 profils (témoin, flotte 1 et 50 hôtes, cardinalité x25, sévérité décalée, taille d'événement x3), à volume égal, **plus le témoin mesuré DEUX FOIS** — c'est cette répétition qui donne la bande de bruit sans laquelle aucun écart inter-profils n'est interprétable. Porte les **échantillons par tir** (`wall_samples_ms`), donc toute dispersion y est recalculable. Les étiquettes de flotte portent `-v2` : les passes du 31/07 s'appelaient pareil, et sans ce suffixe deux campagnes de binaires différents auraient fusionné en silence. |
-| `results/routeb-noms-sources-2026-08-03.jsonl` | **LE NOM DE LA SOURCE DÉCIDE DE LA ROUTE.** Deux jeux identiques à un détail près — le nom des sources. `served_from` passe de `rollup` à `raw` : preuve DIRECTE, pas une inférence sur des latences. |
-| `results/hotfields-2026-08-03.jsonl` | **CHAMP INDEXÉ CONTRE CHAMP NON INDEXÉ**, paire APPARIÉE dérivée du profil (même type, même cardinalité, même taux de présence). Porte le réglage EFFECTIF relu sur le daemon, pas celui supposé depuis le code. **PASSE HISTORIQUE, et c'est ce qui lui donne sa valeur** : ses trois lignes ont été prises sur un binaire qui portait encore l'indexation ADAPTATIVE — mécanisme à 0, puis à 1, puis à 1 après un tick complet. Le côté non indexé reste au même ordre de grandeur dans les trois cas : le mécanisme n'a promu aucun index, et il a été retiré pour cela (P6.8-b). Le réglage qu'elles nomment n'existe plus, et la sonde ne le relève plus ; ces lignes ne sont donc pas rejouables telles quelles. |
+| `results/results.jsonl` | One line per cell: wall and SQL p50/p95, peak RSS, bytes read, memory pressure before/after, `swap_suspect`, the query and its compiled SQL. |
+| `results/results-smoke-200k.jsonl` | The 200 k event shakedown pass. |
+| `results/results-2026-07-31.jsonl` | The 07/31 pass: the product's hot window, cold tier ACTIVE (with the columnarization summary and the hot/cold **answer parity**), and the three fleet profiles. Also carries the windows SET ASIDE by the coverage guard — an absence there is a data point. |
+| `results/ingest_rate.csv` | The ingest throughput curve of the 07/30 pass (loaded machine, without CPU columns). |
+| `results/ingest_rate-quiet-2g.csv` | The 07/31 curve, machine at rest and complete probe: it is what makes it possible to ATTRIBUTE the collapse in throughput instead of assuming it. |
+| `results/results-2026-07-31-corrige.jsonl` | The 07/31 pass RE-RUN after the cold truncation fix (hot witness `chaud-seul-v2@1.4M` + `froid-actif-v2@1.4M`, same machine, same database copies, post-fix binary). It is the one that describes the current code. |
+| `results/parity-avant-2026-07-31.jsonl` | Hot/cold parity measured over the whole matrix **BEFORE** the fix: 53 checks out of 105 silently diverge. |
+| `results/parity-apres-2026-07-31.jsonl` | The SAME measurement **AFTER**: no scalar aggregate silently diverges any more. |
+| `results/parity-couverture-2026-07-31.jsonl` | The SAME measurement, RE-RUN with the post-fix binary for **rollup coverage**, on two FRESH copies of the same database and with a VERIFIED stabilization (both daemons have ticked, their coverage is published). It is the one that measures that the x6.6 undercount of the previous pass is fixed: the side without cold tier now returns EXACTLY the raw count. It describes the current repository; the caveats of earlier passes describe their binaries. |
+| `results/fill-progress-quiet-2g.txt` | The generator's progress lines for this pass. `.txt` extension and not `.log`: `.gitignore` excludes `*.log`, and published data must not depend on an ignore exception. |
+| `results/concurrency-2026-08-01.jsonl` | **CONCURRENCY**: one line per LEVEL (N simultaneous analysts), plus one header line per semaphore value (solo reference class by class, mix derivation, settling, cgroup state). It is the input of the document's "La concurrence" section. |
+| `results/concurrency-requests-2026-08-01.jsonl` | The SAME pass, **one line per query** (analyst, round, class, relative instant, wall/server/wait, answer fingerprint, correctness verdict). Raw data: it is what makes it possible to recompute any published percentile, or to contradict a correctness verdict query by query. `report.py` accepts it without using it (it recognizes it by its shape). |
+| `results/concurrency-reproduction-2026-08-01.jsonl` | **THE IMPOSSIBLE VALUE, REPRODUCED** before touching it. SHORT pass (levels 1 and 4, 1 round) on the BEFORE binary: `sem_wait_ms` reaches **16 456 ms in a SOLO pass** there and 3 348 ms with 1 analyst for 3 permits. It serves only one purpose, and it is the most important one: seeing the defect RED on this very machine before fixing it. Its mix is DERIVED (not imposed) — so it enters no throughput comparison, and `report.py` sets it aside by itself. |
+| `results/concurrency-attribution-2026-08-01.jsonl` | **WHAT `sem_wait_ms` WAS MEASURING.** SHORT pass (2 levels, 1 round) fired on the binary that breaks down the wait but keeps the coverage read on the shared write lock. It is the one that ATTRIBUTES: with 1 analyst for 3 permits, the permit wait falls to **0.000 ms** and 2 876 ms reappear in `db_lock_wait_ms`. Without it, the fix would be a claim; with it, it is a measurement. |
+| `results/concurrency-corrige-2026-08-01.jsonl` | The COMPLETE post-fix campaign (same levels, SAME imposed mix as the pass before, two semaphores). It is the one that describes the current repository. |
+| `results/concurrency-requests-corrige-2026-08-01.jsonl` | The per-query detail of the pass above. |
+| `results/generique-2026-08-03.jsonl` | **THE MULTI-PROFILE CAMPAIGN**: the same matrix on 5 profiles (witness, fleet of 1 and 50 hosts, cardinality x25, shifted severity, event size x3), at equal volume, **plus the witness measured TWICE** — it is this repetition that gives the noise band without which no inter-profile gap can be interpreted. Carries the **per-shot samples** (`wall_samples_ms`), so any dispersion can be recomputed from it. The fleet labels carry `-v2`: the 07/31 passes had the same names, and without this suffix two campaigns from different binaries would have merged silently. |
+| `results/routeb-noms-sources-2026-08-03.jsonl` | **THE SOURCE NAME DECIDES THE ROUTE.** Two datasets identical but for one detail — the name of the sources. `served_from` goes from `rollup` to `raw`: DIRECT proof, not an inference from latencies. |
+| `results/hotfields-2026-08-03.jsonl` | **INDEXED FIELD VERSUS NON-INDEXED FIELD**, a MATCHED pair derived from the profile (same type, same cardinality, same presence rate). Carries the EFFECTIVE setting read back from the daemon, not the one assumed from the code. **HISTORICAL PASS, and that is what gives it its value**: its three lines were taken on a binary that still carried ADAPTIVE indexing — mechanism at 0, then at 1, then at 1 after a complete tick. The non-indexed side stays at the same order of magnitude in all three cases: the mechanism promoted no index, and it was removed for that reason (P6.8-b). The setting they name no longer exists, and the probe no longer records it; these lines therefore cannot be re-run as they are. |
 
-**Scannés avant publication** : chemins personnels, e-mails, jetons (`ghp_`/`AKIA`/`xox*-`/
-`AGE-SECRET`/`hvs.`/JWT), IP hors plages de documentation, hexadécimal ≥ 32 — **zéro
-correspondance**. Les seules requêtes qui y figurent sont celles du banc, synthétiques.
-Une seule chaîne déclenche le motif « e-mail » et elle est publiée en connaissance de cause :
-`user@1000.service`, un nom d'unité systemd dans le chemin du cgroup où le budget de 2 Gio a été
-appliqué (`.../user-1000.slice/user@1000.service/app.slice/plume-bench-N.scope`). Ce n'est pas une
-adresse ; c'est la PREUVE que le plafond était appliqué à un cgroup réel, et c'est pour ça qu'elle
-reste.
+**Scanned before publication**: personal paths, e-mails, tokens (`ghp_`/`AKIA`/`xox*-`/
+`AGE-SECRET`/`hvs.`/JWT), IPs outside documentation ranges, hexadecimal ≥ 32 — **zero
+matches**. The only queries that appear there are those of the bench, synthetic.
+A single string triggers the "e-mail" pattern and it is published knowingly:
+`user@1000.service`, a systemd unit name in the path of the cgroup where the 2 GiB budget was
+applied (`.../user-1000.slice/user@1000.service/app.slice/plume-bench-N.scope`). It is not an
+address; it is the PROOF that the ceiling was applied to a real cgroup, and that is why it
+stays.
 
-**Ce qui est DÉLIBÉRÉMENT absent** : `matrix.log`, le journal d'exécution. Il porte des chemins de
-build absolus de la machine qui a mesuré (3 occurrences de chemins personnels, vérifié) — le publier
-serait une fuite pour zéro gain de vérifiabilité, puisqu'il ne contient aucun chiffre qui ne soit
-déjà dans les JSONL. `report.py` l'accepte en `--fill-log` quand vous lancez le banc vous-même : il
-est une sortie de VOTRE exécution, pas une entrée qu'il faut recevoir de nous.
+**What is DELIBERATELY absent**: `matrix.log`, the execution log. It carries absolute build
+paths of the machine that measured (3 occurrences of personal paths, checked) — publishing it
+would be a leak for zero gain in verifiability, since it contains no figure that is not
+already in the JSONL files. `report.py` accepts it as `--fill-log` when you run the bench yourself: it
+is an output of YOUR run, not an input you need to receive from us.
 
-**La commande de rendu est publiée PAR le document lui-même** (`docs/BENCHMARK.md`, section
-« Reproduire ») : `report.py` la reconstruit depuis ses propres arguments et la repointe vers
-`bench/results/`. Elle est un POINT FIXE — la relancer telle quelle redonne le document à l'octet
-près, hors ligne d'horodatage (vérifié). La version précédente publiait une commande incomplète qui
-amputait le document de ses sections d'écart : une commande de reproduction fausse est pire
-qu'absente, elle fait croire à une reproduction réussie.
+**The rendering command is published BY the document itself** (`docs/BENCHMARK.md`, section
+"Reproduire"): `report.py` rebuilds it from its own arguments and repoints it to
+`bench/results/`. It is a FIXED POINT — running it again as is gives back the document byte for
+byte, except for the timestamp line (checked). The previous version published an incomplete command that
+amputated the document of its gap sections: a false reproduction command is worse
+than an absent one, it makes people believe in a successful reproduction.
 
-**Corollaire pour un contributeur** : si vous contestez un chiffre, rejouez `bench/run.sh` et
-comparez vos JSONL aux nôtres. Le générateur étant déterministe (`--digest` imprime le SHA-256 du
-flux), un désaccord se tranche sur des données identiques — ce qui est le seul cas où un désaccord
-de performance est arbitrable.
+**Corollary for a contributor**: if you challenge a figure, re-run `bench/run.sh` and
+compare your JSONL files with ours. The generator being deterministic (`--digest` prints the SHA-256 of the
+stream), a disagreement is settled on identical data — which is the only case in which a performance
+disagreement can be arbitrated.
 
-## Lancer
+## Running
 
 ```sh
 CARGO_TARGET_DIR=../.bench-target cargo build --release --features cold_tier \
     --manifest-path daemon/Cargo.toml
-bench/run.sh                          # 10 M d'événements, matrice complète
-BENCH_EVENTS=1000000 bench/run.sh     # 1 M — itération rapide
-BENCH_PHASES=matrix bench/run.sh      # rejouer la matrice sur une base déjà remplie
-BENCH_PHASES=simple bench/run.sh      # UNE configuration (masque vide) — le mode des A/B où
-                                      # seule LA DONNÉE change (mono-hôte contre flotte)
-BENCH_PHASES=cold BENCH_COLD=1 bench/run.sh   # tier froid : témoin chaud, aging réel
-                                      # (`plume-daemon retention`), bilan, puis matrice froide
-BENCH_SKIP=1400000 BENCH_PHASES=ingest bench/run.sh   # PROLONGER une base sans changer de graine
-# la PARITÉ (valeurs, pas latences) : deux daemons, l'un columnarisé, l'autre intact, MÊME binaire.
+bench/run.sh                          # 10 M events, complete matrix
+BENCH_EVENTS=1000000 bench/run.sh     # 1 M — quick iteration
+BENCH_PHASES=matrix bench/run.sh      # re-run the matrix on an already filled database
+BENCH_PHASES=simple bench/run.sh      # ONE configuration (empty mask) — the mode for A/B tests where
+                                      # only THE DATA changes (single host versus fleet)
+BENCH_PHASES=cold BENCH_COLD=1 bench/run.sh   # cold tier: hot witness, real aging
+                                      # (`plume-daemon retention`), summary, then cold matrix
+BENCH_SKIP=1400000 BENCH_PHASES=ingest bench/run.sh   # EXTEND a database without changing the seed
+# PARITY (values, not latencies): two daemons, one columnarized, the other intact, SAME binary.
 python3 bench/parity.py --hot-base http://127.0.0.1:7421 --cold-base http://127.0.0.1:7422 \
     --user <u> --password <p> --end-ts <ts> --span-days 28 --hot-window-days 7 \
     --retention-days 30 -o parity.jsonl
-# le rendu : NE PAS l'écrire de mémoire. La commande EXACTE est publiée par le document
-# lui-même (docs/BENCHMARK.md, section « Reproduire ») et elle en est un point fixe.
+# rendering: do NOT write it from memory. The EXACT command is published by the document
+# itself (docs/BENCHMARK.md, section "Reproduire") and it is a fixed point of it.
 ```
 
-`report.py` accepte PLUSIEURS fichiers de résultats : passer les JSONL de deux volumes différents
-active le tableau « comment la latence monte avec le volume », qui est ce qui répond vraiment à la
-question « des millions d'événements ». Pour obtenir un second volume sans refaire tout le
-remplissage, `gen_events.py --skip N` prolonge le MÊME flux déterministe (mêmes clés `dedup`, donc
-pas de doublon) au lieu de changer de graine.
+`report.py` accepts SEVERAL result files: passing the JSONL files of two different volumes
+enables the "how latency rises with volume" table, which is what really answers the
+question "millions of events". To get a second volume without redoing the whole
+fill, `gen_events.py --skip N` extends the SAME deterministic stream (same `dedup` keys, so
+no duplicate) instead of changing the seed.
 
-Sorties sous `$BENCH_DIR` (par défaut `../.bench`, **hors dépôt**) : `results.jsonl` (une ligne
-JSON par cellule, c'est la donnée brute), `manifest.json` (aiguilles et taux), `daemon.log`,
-`db/plume.db`. Compter **environ un Kio de base par événement**, index et FTS compris (ordre de
-grandeur relevé sur une base réelle) : dix millions d'événements font une dizaine de Gio.
+Outputs under `$BENCH_DIR` (by default `../.bench`, **outside the repository**): `results.jsonl` (one JSON
+line per cell, it is the raw data), `manifest.json` (switches and rates), `daemon.log`,
+`db/plume.db`. Count **about one KiB of database per event**, indexes and FTS included (order of
+magnitude read on a real database): ten million events make about ten GiB.
 
-## Les règles qui rendent le banc publiable
+## The rules that make the bench publishable
 
-1. **La RAM crête est mesurée, jamais estimée.** `measure.py` échantillonne `/proc/<pid>/statm`
-   pendant la requête et relève `VmHWM`. Le daemon tourne sous `MemoryMax=2G MemorySwapMax=0` :
-   un dépassement du budget est un *kill* du noyau, pas un glissement silencieux vers le swap.
-2. **Une cellule qui dépasse le budget est un résultat**, pas un échec. `report.py` les liste.
-3. **Une cellule prise sous swap est fausse.** Elle est marquée `swap_suspect` et signalée comme
-   à rejouer.
-4. **Les données entrent par le vrai chemin** (`POST /api/ingest`), pas par un `INSERT` qui
-   contournerait la normalisation, la promotion de colonnes, `cim_stamp`, les déclencheurs FTS et
-   les index d'expression.
-5. **Le déterminisme est vérifiable** : `gen_events.py --digest` imprime le SHA-256 du flux.
-6. **Zéro donnée réelle** : IPv4 uniquement dans les plages de documentation de la RFC 5737, IPv6
-   dans `2001:db8::/32` (RFC 3849), noms d'hôte en `.plume.invalid`, utilisateurs `bench-user-NNNN`.
+1. **Peak RAM is measured, never estimated.** `measure.py` samples `/proc/<pid>/statm`
+   during the query and records `VmHWM`. The daemon runs under `MemoryMax=2G MemorySwapMax=0`:
+   exceeding the budget is a kernel *kill*, not a silent slide into swap.
+2. **A cell that exceeds the budget is a result**, not a failure. `report.py` lists them.
+3. **A cell taken under swap is wrong.** It is marked `swap_suspect` and flagged as
+   to be re-run.
+4. **Data come in through the real path** (`POST /api/ingest`), not through an `INSERT` that
+   would bypass normalization, column promotion, `cim_stamp`, the FTS triggers and
+   the expression indexes.
+5. **Determinism is verifiable**: `gen_events.py --digest` prints the SHA-256 of the stream.
+6. **Zero real data**: IPv4 only in the documentation ranges of RFC 5737, IPv6
+   in `2001:db8::/32` (RFC 3849), host names in `.plume.invalid`, users `bench-user-NNNN`.
 
-## Les axes de la matrice, et pourquoi
+## The axes of the matrix, and why
 
-- **Classes de requêtes** : scan filtré + agrégat · plein-texte/regex sur `message` · group-by
-  multi-dimensions à haute cardinalité · récupération RAW paginée · **regex sur un champ étendu
-  (JSON)** · **la colonne `host`** (filtre, group-by, récupération d'UNE machine). L'avant-dernière
-  est le cas le plus coûteux, et c'est précisément celui qu'on prétend servir quand on dit « sur
-  tous les champs » ; la dernière est la seule qui distingue un laboratoire d'une flotte.
-- **Fenêtres** : dérivées des paramètres du produit (voir plus haut), pas choisies.
-- **Tier froid `PLUME_COLD_TIER` 0 et 1** : c'est le chemin de lecture de 358 des 365 jours d'une
-  rétention d'un an. Mesuré sur la MÊME base, avant et après columnarisation — et avec une
-  vérification de **parité de réponse**, parce qu'un chemin qui tronque est plus rapide sans être
-  meilleur.
-- **Nombre d'hôtes** : 1 (la production profilée), 50, 200. `host` est indexé ; à cardinalité 1
-  toute mesure qui le touche est dégénérée.
-- **`PLUME_FTS_FIELDS` 0 et 1** : il est à 0 par défaut. On mesure son **coût** (RAM, disque, ingest)
-  autant que son gain en latence.
-- **Masquage vide vs non vide** : décisif et contre-intuitif — un masque non vide désarme la route
-  de rollups *et* le moteur vectorisé. Des chiffres publiés sans cet axe ne valent que pour un
-  déploiement sans masquage.
+- **Query classes**: filtered scan + aggregate · full-text/regex on `message` · multi-dimension
+  group-by with high cardinality · paginated RAW retrieval · **regex on an extended field
+  (JSON)** · **the `host` column** (filter, group-by, retrieval of ONE machine). The second to last
+  is the most expensive case, and it is precisely the one we claim to serve when we say "on
+  all fields"; the last is the only one that tells a lab apart from a fleet.
+- **Windows**: derived from the product's parameters (see above), not chosen.
+- **Cold tier `PLUME_COLD_TIER` 0 and 1**: it is the read path for 358 of the 365 days of a
+  one-year retention. Measured on the SAME database, before and after columnarization — and with a
+  check of **answer parity**, because a path that truncates is faster without being
+  better.
+- **Number of hosts**: 1 (the profiled production), 50, 200. `host` is indexed; at cardinality 1
+  any measurement that touches it is degenerate.
+- **`PLUME_FTS_FIELDS` 0 and 1**: it is 0 by default. We measure its **cost** (RAM, disk, ingest)
+  as much as its latency gain.
+- **Empty vs non-empty masking**: decisive and counter-intuitive — a non-empty mask disarms the rollup
+  route *and* the vectorized engine. Figures published without this axis only hold for a
+  deployment without masking.
 
-## Re-profiler une autre production
+## Re-profiling another production
 
-**PRÉREQUIS SUR L'HÔTE, ET IL N'EST INSTALLÉ PAR AUCUN SCRIPT DE CE DÉPÔT** (`P7.20-l`) : un client
-`sqlcipher` en ligne de commande, compilé avec `SQLITE_ENABLE_DBSTAT_VTAB` — sans cette option, les
-passes d'occupation de `prod-profile.sql` échouent et la recette s'arrête à mi-chemin. Le paquet
-Debian/Ubuntu `sqlcipher` porte l'option ; ailleurs, la vérifier avant de commencer :
+**PREREQUISITE ON THE HOST, AND IT IS INSTALLED BY NO SCRIPT IN THIS REPOSITORY** (`P7.20-l`): a
+command-line `sqlcipher` client, compiled with `SQLITE_ENABLE_DBSTAT_VTAB` — without this option, the
+occupancy passes of `prod-profile.sql` fail and the recipe stops halfway. The
+Debian/Ubuntu `sqlcipher` package carries the option; elsewhere, check it before starting:
 
 ```sh
 command -v sqlcipher || sudo apt-get install -y sqlcipher
 sqlcipher :memory: "SELECT 1 FROM pragma_compile_options WHERE compile_options='ENABLE_DBSTAT_VTAB';"
-# une ligne « 1 » = l'option est présente ; AUCUNE sortie = ce client ne sait pas profiler
+# one line "1" = the option is present; NO output = this client cannot profile
 ```
 
-Ce prérequis se DÉCLARE ici au lieu d'être découvert au moment où l'on en a besoin : l'outil vit sur
-l'hôte, aucun manifeste ne le pose, et un ménage de paquets le retirerait sans que rien ne rougisse.
-Aucune garde ne le tient — une garde de dépôt ne peut pas juger un hôte qu'elle n'exécute pas, et
-faire rougir la CI pour un outil d'exploitant serait une rançon.
+This prerequisite is DECLARED here instead of being discovered at the moment it is needed: the tool lives on
+the host, no manifest sets it up, and a package cleanup would remove it without anything turning red.
+No guard holds it — a repository guard cannot judge a host it does not run on, and
+turning CI red over an operator tool would make every contributor pay for it.
 
 ```sh
 DB=/chemin/plume.db
@@ -314,6 +314,6 @@ python3 bench/distill_profile.py dump.txt --measured-at "$(date -Is)" \
     --host "<matériel>" --image "<version>" -o bench/profile-prod.json
 ```
 
-`mode=ro` interdit toute écriture. Mais un lecteur SQLite tient un instantané : tant qu'une passe
-tourne, le WAL ne peut pas être checkpointé et il grossit. Sur une grosse base, lancer les sections
-du SQL **une par une**.
+`mode=ro` forbids any write. But a SQLite reader holds a snapshot: as long as a pass
+is running, the WAL cannot be checkpointed and it grows. On a large database, run the sections
+of the SQL **one at a time**.

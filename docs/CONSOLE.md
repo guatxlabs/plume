@@ -1,58 +1,58 @@
-# La console, espace par espace et onglet par onglet
+# The console, space by space and tab by tab
 
-[Français](CONSOLE.md) | [English](CONSOLE.en.md)
+[English](CONSOLE.md) | [Français](CONSOLE.fr.md)
 
-La console de plume est une application web servie par le démon lui-même — du JavaScript à modules,
-sans étape de construction, sans dépendance à installer. Elle se navigue à **deux niveaux** : des
-**espaces** dans la barre latérale, et des **onglets** à l'intérieur d'un espace.
+The plume console is a web application served by the daemon itself — JavaScript modules,
+no build step, no dependency to install. It is navigated on **two levels**:
+**spaces** in the sidebar, and **tabs** inside a space.
 
-Ce document dit **ce que chaque onglet fait, qui peut le voir, et ce qu'il ne fait pas**. Il ne
-remplace pas l'aide intégrée — l'espace *Aide* de la console, entièrement statique et hors réseau —
-mais il est ce qu'on lit **avant** d'avoir une instance sous la main.
+This document says **what each tab does, who can see it, and what it does not do**. It does not
+replace the built-in help — the console's *Help* space, entirely static and offline —
+but it is what you read **before** you have an instance at hand.
 
 ---
 
-## 1. Ce qu'un lecteur doit savoir avant le tableau
+## 1. What a reader needs to know before the table
 
-### 1.1 Y accéder, dans les trois modes
+### 1.1 Reaching it, in all three modes
 
-L'adresse dépend du mode de déploiement : voir [`TROIS-MODES.md`](TROIS-MODES.md#31-atteindre-la-console).
-Dans les trois cas, le nom demandé doit correspondre à `PLUME_HOST`, sans quoi la garde
-anti-détournement de DNS rend `421`.
+The address depends on the deployment mode: see [`TROIS-MODES.md`](TROIS-MODES.md#31-reaching-the-console).
+In all three cases, the requested name must match `PLUME_HOST`, otherwise the DNS
+rebinding guard returns `421`.
 
-Sans `PLUME_PASS_HASH`, le central démarre en **mode SETUP** : un jeton d'installation à usage unique
-paraît dans les journaux, et l'assistant web prend le relais.
+Without `PLUME_PASS_HASH`, the central starts in **SETUP mode**: a single-use installation token
+appears in the logs, and the web wizard takes over.
 
-### 1.2 Trois rôles, et un défaut fermé
+### 1.2 Three roles, and a closed default
 
-`viewer` · `editor` · `admin`. Le contrôle qui compte est **côté serveur** : une route non listée est
-refusée, pas autorisée. Ce que la console masque est un confort, pas une sécurité — un onglet caché
-dont on forcerait l'adresse buterait sur un `403` de l'API.
+`viewer` · `editor` · `admin`. The check that counts is **server-side**: an unlisted route is
+refused, not allowed. What the console hides is a convenience, not security — a hidden tab
+whose address someone forced would run into a `403` from the API.
 
-Trois formes de restriction se lisent dans le tableau ci-dessous :
+Three forms of restriction appear in the table below:
 
-| Marque | Sens |
+| Mark | Meaning |
 |---|---|
-| **espace admin** | l'espace entier est réservé aux administrateurs (c'est le cas d'*Administration*) |
-| **onglet admin** | l'onglet seul est réservé, l'espace reste visible |
-| **multi-tenant** | l'onglet n'apparaît qu'en mode multi-tenant (`PLUME_MULTI_TENANT=1`), invisible sinon |
+| **admin space** | the whole space is reserved for administrators (that is the case of *Administration*) |
+| **admin tab** | only the tab is reserved, the space stays visible |
+| **multi-tenant** | the tab only appears in multi-tenant mode (`PLUME_MULTI_TENANT=1`), invisible otherwise |
 
-Plusieurs onglets sont **en lecture pour tous, en écriture pour éditeur ou administrateur** : la
-liste est visible, les boutons de modification ne le sont pas.
+Several tabs are **readable by everyone, writable by editor or administrator**: the
+list is visible, the edit buttons are not.
 
-### 1.3 Un onglet est une adresse
+### 1.3 A tab is an address
 
-Le fragment d'URL **est** l'identifiant de l'onglet, unique tous espaces confondus : `#explore`,
-`#ledger`, `#datamodels`. Les liens profonds fonctionnent donc, et se partagent. Quelques anciens
-fragments de premier niveau restent acceptés comme alias, pour ne pas casser les liens existants.
+The URL fragment **is** the tab's identifier, unique across all spaces: `#explore`,
+`#ledger`, `#datamodels`. Deep links therefore work, and can be shared. A few old
+top-level fragments are still accepted as aliases, so as not to break existing links.
 
-Un espace qui n'a qu'un seul onglet n'affiche pas de barre d'onglets.
+A space that has a single tab shows no tab bar.
 
-### 1.4 D'où vient ce tableau, et pourquoi il ne peut plus vieillir en silence
+### 1.4 Where this table comes from, and why it can no longer go stale silently
 
-**La colonne « Onglet » est dérivée de la structure de navigation ; la colonne « Libellé » l'est du
-document servi.** Relevé sur l'arbre suivi le 2026-08-25 : **8 espaces, 37 onglets** — compte
-inchangé le 2026-08-30. La commande qui redonne les comptes :
+**The "Tab" column is derived from the navigation structure; the "Label" column from the
+served document.** Read from the tracked tree on 2026-08-25: **8 spaces, 37 tabs** — count
+unchanged on 2026-08-30. The command that gives the counts again:
 
 ```sh
 python3 - <<'PY'
@@ -65,197 +65,197 @@ print(len(esp), "espaces,", len(ong), "onglets")
 PY
 ```
 
-**Un libellé n'est pas un nom écrit : c'est un nom DÉRIVÉ.** Depuis le 2026-08-25, la console
-n'écrit plus le nom d'un onglet nulle part. Elle le prend là où il est permanent, dans cet ordre :
-le **titre du panneau** que l'onglet ouvre quand il n'en ouvre qu'un ; à défaut, le **lien de barre
-latérale** de l'espace, quand cet espace n'a qu'un onglet ; à défaut, le libellé qu'un onglet
-**groupe** déclare, faute de panneau unique à nommer (deux cas seulement) ; à défaut, un **aveu**
-qui dit que la destination n'est pas nommée, jamais un silence.
+**A label is not a written name: it is a DERIVED name.** Since 2026-08-25, the console
+no longer writes a tab's name anywhere. It takes it where it is permanent, in this order:
+the **title of the panel** the tab opens when it opens only one; failing that, the space's **sidebar
+link**, when that space has only one tab; failing that, the label that a **group** tab
+declares, for lack of a single panel to name (two cases only); failing that, an **admission**
+that says the destination is not named, never a silence.
 
-Cette colonne, elle, restait recopiée à la main — et elle a cessé d'être tenue le jour même, sans
-que rien ne le dise. **Mesuré le 2026-08-30 : 24 des 37 lignes nommaient un onglet autrement que
-l'écran.** Elles sont désormais dérivées, et la propriété est **tenue par un instrument** plutôt
-que par une relecture : `check_a_documented_tab_label_is_the_name_the_console_serves.py` rejoue la
-dérivation à chaque intégration, compare, et **refuse de conclure** — au lieu de deviner — sur
-toute destination qu'il ne sait pas trancher. Un titre de panneau modifié fait donc rougir ce
-document.
+This column, though, was still copied by hand — and it stopped being kept up the very same day, without
+anything saying so. **Measured on 2026-08-30: 24 of the 37 rows named a tab differently from
+the screen.** They are now derived, and the property is **held by an instrument** rather
+than by proofreading: `check_a_documented_tab_label_is_the_name_the_console_serves.py` re-runs the
+derivation at each integration, compares, and **refuses to conclude** — instead of guessing — on
+any destination it cannot decide. A modified panel title therefore turns this
+document red.
 
-**Ce que cet instrument ne voit pas**, et c'est écrit ici plutôt que tu par une garde verte : un nom cité en **prose**
-lui échappe, et une colonne de libellé déplacée hors de la deuxième position lui échapperait aussi.
-S'y ajoute un angle mort mesuré le 2026-08-30 en éprouvant la garde elle-même : elle consulte quatre
-sources pour dériver un nom, et l'ORDRE dans lequel elle les consulte — qui EST la dérivation, pas un
-détail — n'est exercé par aucune de ses épreuves. Inverser cet ordre la laisse VERTE. Ni son corpus
-témoin, ni son oracle, ni le document réel ne peuvent le trancher, pour une raison unique : les seuls
-onglets qui retombent sur une source secondaire ont un titre de panneau VIDE, si bien que les deux
-ordres y rendent la même chaîne. Le cas qui déciderait est nommable et n'existe pas : un espace à
-onglet UNIQUE dont le panneau porte un titre DIFFÉRENT de son lien de barre latérale.
+**What this instrument does not see**, and it is written here rather than silenced by a green guard: a name quoted in **prose**
+escapes it, and a label column moved out of the second position would escape it too.
+On top of that comes a blind spot measured on 2026-08-30 while testing the guard itself: it consults four
+sources to derive a name, and the ORDER in which it consults them — which IS the derivation, not a
+detail — is exercised by none of its tests. Reversing that order leaves it GREEN. Neither its witness
+corpus, nor its oracle, nor the real document can decide it, for a single reason: the only
+tabs that fall back on a secondary source have an EMPTY panel title, so that both
+orders yield the same string there. The deciding case can be named and does not exist: a space with a
+SINGLE tab whose panel carries a title DIFFERENT from its sidebar link.
 
 ---
 
-## 2. Les huit espaces
+## 2. The eight spaces
 
-### 2.1 `overview` — Vue d'ensemble
+### 2.1 `overview` — Overview
 
-Un seul onglet. C'est la page d'atterrissage : elle répond à « est-ce que ça va ? » avant qu'on
-sache quoi demander.
+A single tab. It is the landing page: it answers "is everything all right?" before you
+know what to ask.
 
-| Onglet | Libellé | Rôle | Ce qu'on y voit |
+| Tab | Label | Role | What you see there |
 |---|---|---|---|
-| `overview` | Vue d'ensemble | viewer+ | pare-feu, catalogue de contrôles, intégrations, et un pouls compact de la **fraîcheur** des sources |
+| `overview` | Vue d'ensemble | viewer+ | firewall, control catalog, integrations, and a compact pulse of source **freshness** |
 
-Elle est **en direct** : elle ignore le sélecteur de plage temporelle de la barre, contrairement aux
-tableaux de bord. Le détail complet de la fraîcheur a son propre onglet (`freshness-view`), pour que
-cette page reste lisible.
+It is **live**: it ignores the bar's time range selector, unlike the
+dashboards. The full freshness detail has its own tab (`freshness-view`), so that
+this page stays readable.
 
-### 2.2 `search` — Recherche
+### 2.2 `search` — Search
 
-Un seul onglet, et c'est le cœur du produit.
+A single tab, and it is the heart of the product.
 
-| Onglet | Libellé | Rôle | Ce qu'on y fait |
+| Tab | Label | Role | What you do there |
 |---|---|---|---|
-| `explore` | Recherche | viewer+ | écrire une requête GXQL, la valider pendant la frappe, lire les résultats, l'histogramme temporel et les facettes de champs, déplier un événement, exporter |
+| `explore` | Recherche | viewer+ | write a GXQL query, validate it while typing, read the results, the time histogram and the field facets, expand an event, export |
 
-C'est le **seul** onglet où la barre de requête est affichée, et il porte son propre sélecteur de
-plage, distinct de celui des tableaux de bord. Le langage lui-même est décrit dans
-[`GXQL.md`](GXQL.md) ; les gabarits livrés s'y chargent en un clic.
+It is the **only** tab where the query bar is displayed, and it carries its own range
+selector, distinct from the dashboards' one. The language itself is described in
+[`GXQL.md`](GXQL.md); the shipped templates load there in one click.
 
-### 2.3 `cases` — le flux alerte → cas
+### 2.3 `cases` — the alert → case flow
 
-| Onglet | Libellé | Rôle | Ce qu'on y fait |
+| Tab | Label | Role | What you do there |
 |---|---|---|---|
-| `alerts` | Alertes | viewer+ | la file des alertes levées par les règles, groupées, à trier |
-| `cases` | Cases (gestion d'incident) | viewer+ | un cas d'incident : chronologie, événements et alertes liés, échéances |
+| `alerts` | Alertes | viewer+ | the queue of alerts raised by the rules, grouped, to triage |
+| `cases` | Cases (gestion d'incident) | viewer+ | an incident case: timeline, linked events and alerts, deadlines |
 
-La séparation est délibérée : *Alertes* est ce qui arrive, *Cases (gestion d'incident)* est ce
-qu'on en fait.
+The separation is deliberate: *Alerts* is what comes in, *Cases (incident management)* is what
+you do about it.
 
-### 2.4 `dashboards` — Tableaux de bord
+### 2.4 `dashboards` — Dashboards
 
-| Onglet | Libellé | Rôle | Ce qu'on y fait |
+| Tab | Label | Role | What you do there |
 |---|---|---|---|
-| `dashboards` | Dashboards | viewer+ | composer et lire des tableaux de bord ; **chaque panneau affiche la requête qui le produit** |
+| `dashboards` | Dashboards | viewer+ | build and read dashboards; **each panel displays the query that produces it** |
 
-C'est le seul espace piloté par le **sélecteur de plage de la barre** ; il se rafraîchit
-automatiquement.
+It is the only space driven by the **bar's range selector**; it refreshes
+automatically.
 
-### 2.5 `detresp` — Détection et réponse
+### 2.5 `detresp` — Detection and response
 
-Sept onglets : de la règle qui détecte à l'action qui répond.
+Seven tabs: from the rule that detects to the action that responds.
 
-| Onglet | Libellé | Rôle | Ce qu'on y fait |
+| Tab | Label | Role | What you do there |
 |---|---|---|---|
-| `detection` | Détection | viewer+ lecture · éditeur+ écriture | les règles livrées et les vôtres, et le panneau de couverture |
-| `attack` | Matrice ATT&CK (couverture) | viewer+ | la matrice de couverture MITRE ATT&CK — chaque manqué devient un angle mort visible |
-| `playbooks` | Playbooks | viewer+ lecture · **rédaction de runbooks réservée aux administrateurs** | détection → réponse automatique, et l'interrupteur du **Mode Engagement** |
-| `actions` | Actions | viewer+ | la file de riposte : ce qui est proposé, approuvé, appliqué, refusé |
-| `risk` | Risque par entité (RBA) | viewer+ | score de risque par entité (alerting basé sur le risque) |
-| `detadv` | Détection avancée | viewer+ lecture · éditeur+ écriture | corrélations de séquence et lignes de base comportementales |
-| `routing` | Politiques de notification | viewer+ lecture · éditeur+ écriture | à qui part une notification, et ce qu'on met en sourdine |
+| `detection` | Détection | viewer+ read · editor+ write | the shipped rules and your own, and the coverage panel |
+| `attack` | Matrice ATT&CK (couverture) | viewer+ | the MITRE ATT&CK coverage matrix — each miss becomes a visible blind spot |
+| `playbooks` | Playbooks | viewer+ read · **runbook authoring reserved for administrators** | detection → automatic response, and the **Engagement Mode** switch |
+| `actions` | Actions | viewer+ | the response queue: what is proposed, approved, applied, refused |
+| `risk` | Risque par entité (RBA) | viewer+ | risk score per entity (risk-based alerting) |
+| `detadv` | Détection avancée | viewer+ read · editor+ write | sequence correlations and behavioral baselines |
+| `routing` | Politiques de notification | viewer+ read · editor+ write | who a notification goes to, and what gets muted |
 
-Une action n'est **jamais** appliquée sans passer par cette chaîne : proposition, **approbation d'un
-administrateur**, réclamation par l'agent, résultat au journal d'audit. Le détail du canal retour est
-dans [`AGENTS-PROTOCOLE.md`](AGENTS-PROTOCOLE.md#6-le-canal-retour--réclamer-une-action).
+An action is **never** applied without going through this chain: proposal, **approval by an
+administrator**, claim by the agent, result in the audit log. The detail of the return channel is
+in [`AGENTS-PROTOCOLE.md`](AGENTS-PROTOCOLE.md#6-the-return-channel-claiming-an-action).
 
-### 2.6 `data` — Les données et leur tuyauterie
+### 2.6 `data` — Data and its plumbing
 
-Le plus gros espace : treize onglets, de la source brute jusqu'à la couche sémantique.
+The largest space: thirteen tabs, from the raw source up to the semantic layer.
 
-| Onglet | Libellé | Rôle | Ce qu'on y fait |
+| Tab | Label | Role | What you do there |
 |---|---|---|---|
-| `sources` | Inventaire des sources | viewer+ | l'inventaire des flux déclarés : attendu contre réel |
-| `freshness-view` | Fraîcheur des sources | viewer+ | la santé de collecte, flux par flux, en détail |
-| `system` | Système — opérabilité | viewer+ lecture · outils d'administration réservés | auto-métriques du démon, santé par composant, bulletin et diagnostic |
-| `fleet` | Flotte — par hôte | viewer+ | l'inventaire des hôtes et des points d'accès : dernier contact, statut, enrôlement |
-| `connectors` | Connecteurs de sources | **admin** | les sources externes en **PULL** — le chemin d'ajout de source qui existe dans les trois modes |
-| `destinations` | Destinations de sortie | **admin** | le renvoi d'événements vers un puits externe (syslog, HEC, webhook) — surface d'exfiltration, d'où la restriction |
-| `processors` | Processeur d'ingest | **admin** | filtrer, masquer, router, échantillonner **à l'ingestion** |
-| `indexes` | Indexes & rétention | **admin** | des index logiques nommés, avec leur rétention et leurs plafonds propres |
-| `parsers` | Parsers (extraction de champs) | viewer+ lecture · éditeur+ écriture | les extracteurs de champs, livrés et personnels |
-| `lookups` | Lookups (tables d'enrichissement) | viewer+ lecture · éditeur+ écriture | les tables de correspondance qu'utilise la commande `lookup` |
-| `knowledge` | Objets de savoir | viewer+ lecture · éditeur+ écriture | objets de savoir résolus au moment de la recherche : alias, champs calculés, types d'événement, étiquettes |
-| `datamodels` | Modèles de données & Pivot | viewer+ lecture et exécution · éditeur+ écriture | la couche sémantique et le constructeur de rapports par pivot |
-| `dataaccess` | Accès données | viewer+ | la gouvernance d'accès aux données, en lecture seule |
+| `sources` | Inventaire des sources | viewer+ | the inventory of declared feeds: expected versus actual |
+| `freshness-view` | Fraîcheur des sources | viewer+ | collection health, feed by feed, in detail |
+| `system` | Système — opérabilité | viewer+ read · administration tools reserved | daemon self-metrics, per-component health, bulletin and diagnostics |
+| `fleet` | Flotte — par hôte | viewer+ | the inventory of hosts and endpoints: last contact, status, enrollment |
+| `connectors` | Connecteurs de sources | **admin** | external sources in **PULL** — the source-adding path that exists in all three modes |
+| `destinations` | Destinations de sortie | **admin** | forwarding events to an external sink (syslog, HEC, webhook) — an exfiltration surface, hence the restriction |
+| `processors` | Processeur d'ingest | **admin** | filter, mask, route, sample **at ingestion** |
+| `indexes` | Indexes & rétention | **admin** | named logical indexes, with their own retention and caps |
+| `parsers` | Parsers (extraction de champs) | viewer+ read · editor+ write | field extractors, shipped and personal |
+| `lookups` | Lookups (tables d'enrichissement) | viewer+ read · editor+ write | the lookup tables used by the `lookup` command |
+| `knowledge` | Objets de savoir | viewer+ read · editor+ write | knowledge objects resolved at search time: aliases, calculated fields, event types, tags |
+| `datamodels` | Modèles de données & Pivot | viewer+ read and run · editor+ write | the semantic layer and the pivot report builder |
+| `dataaccess` | Accès données | viewer+ | data access governance, read-only |
 
-> **À noter pour les modes conteneur et cluster.** Déposer un parseur ou une règle **par fichier** y
-> est difficile ou impossible (racine en lecture seule). Les onglets `parsers`, `detection` et
-> `lookups` sont donc le chemin normal dans ces deux modes — et ce qu'on y crée porte une marque
-> distincte de ce qui vient d'un fichier versionné. Voir
-> [`TROIS-MODES.md`](TROIS-MODES.md#34-ajouter-un-parseur-une-règle-un-playbook).
+> **Note for the container and cluster modes.** Dropping a parser or a rule **as a file** there
+> is difficult or impossible (read-only root). The `parsers`, `detection` and
+> `lookups` tabs are therefore the normal path in these two modes — and what you create there carries a mark
+> distinct from what comes from a versioned file. See
+> [`TROIS-MODES.md`](TROIS-MODES.md#34-adding-a-parser-a-rule-a-playbook).
 
 ### 2.7 `admin` — Administration
 
-**Espace entièrement réservé aux administrateurs.** Onze onglets.
+**Space entirely reserved for administrators.** Eleven tabs.
 
-| Onglet | Libellé | Rôle | Ce qu'on y fait |
+| Tab | Label | Role | What you do there |
 |---|---|---|---|
-| `settings` | Réglages | son propre compte | mot de passe, préférences, et l'inscription d'un second facteur TOTP |
-| `users` | Comptes & accès | admin | les comptes et leurs rôles |
-| `tokens` | Jetons (agent & HEC) | **admin** | provisionner un jeton d'agent ou HEC — le secret ne s'affiche **qu'une fois** |
-| `idp` | Identité fédérée (SSO) | **admin** | fournisseurs OIDC et LDAP — voir [`NATIVE-IDP.md`](NATIVE-IDP.md) |
-| `fieldfilters` | Field filters (masquage PII) | **admin** | masquage par champ ; c'est une configuration qui **contraint** les autres rôles |
-| `tenants` | Tenants | **multi-tenant seulement** | les tenants et les habilitations ; invisible en mono-tenant |
-| `notifiers` | Canaux de notification | admin | où partent les notifications |
-| `threatintel` | Threat Intel (IOC) | admin | le magasin d'IOC : couverture, liste, ajout, import STIX |
-| `suppressions` | Suppressions & whitelists actives | admin | ce qu'on choisit de ne plus voir, et pourquoi |
-| `retention` | Rétention des données | admin | combien de temps on garde — voir aussi [`PURGE.md`](PURGE.md) |
-| `ledger` | Journal d'audit | admin | le journal d'audit en chaîne de hachage, vérifiable hors ligne par `plume-daemon verify` |
+| `settings` | Réglages | your own account | password, preferences, and enrolling a TOTP second factor |
+| `users` | Comptes & accès | admin | accounts and their roles |
+| `tokens` | Jetons (agent & HEC) | **admin** | provision an agent or HEC token — the secret is displayed **only once** |
+| `idp` | Identité fédérée (SSO) | **admin** | OIDC and LDAP providers — see [`NATIVE-IDP.md`](NATIVE-IDP.md) |
+| `fieldfilters` | Field filters (masquage PII) | **admin** | per-field masking; it is a configuration that **constrains** the other roles |
+| `tenants` | Tenants | **multi-tenant only** | tenants and entitlements; invisible in single-tenant |
+| `notifiers` | Canaux de notification | admin | where notifications go |
+| `threatintel` | Threat Intel (IOC) | admin | the IOC store: coverage, list, add, STIX import |
+| `suppressions` | Suppressions & whitelists actives | admin | what you choose to no longer see, and why |
+| `retention` | Rétention des données | admin | how long data is kept — see also [`PURGE.md`](PURGE.md) |
+| `ledger` | Journal d'audit | admin | the hash-chained audit log, verifiable offline with `plume-daemon verify` |
 
-Le masquage par champ mérite d'être compris avant d'être posé : il agit **à la compilation de la
-requête**, et une requête qui porterait sur un champ masqué est **refusée** plutôt que de rendre une
-valeur creuse — voir [`GXQL.md`](GXQL.md#53-le-masquage-se-fait-à-la-compilation).
+Per-field masking deserves to be understood before it is set: it acts **at query
+compile time**, and a query that touches a masked field is **refused** rather than returning an
+empty value — see [`GXQL.md`](GXQL.md#53-masking-happens-at-compile-time).
 
-### 2.8 `help` — Aide
+### 2.8 `help` — Help
 
-| Onglet | Libellé | Rôle | Ce qu'on y trouve |
+| Tab | Label | Role | What you find there |
 |---|---|---|---|
-| `help` | Aide | tous | le guide intégré : sommaire des espaces et glossaire, **entièrement statique, aucun appel réseau** |
+| `help` | Aide | everyone | the built-in guide: summary of the spaces and glossary, **entirely static, no network call** |
 
-Les boutons « ? » disséminés dans la console ouvrent une section de ce même guide. Une garde de CI
-(`check_every_help_trigger_has_a_section.py`) refuse qu'un bouton d'aide ouvre une section qui
-n'existe pas — le défaut avait vécu des semaines sans que rien le dise.
+The "?" buttons scattered across the console open a section of this same guide. A CI guard
+(`check_every_help_trigger_has_a_section.py`) refuses a help button that opens a section that
+does not exist — the defect had lived for weeks without anything saying so.
 
 ---
 
-## 3. Comment la console est faite, et pourquoi
+## 3. How the console is built, and why
 
-**Pas d'étape de construction.** Du JavaScript à modules, servi tel quel depuis le disque. Un
-opérateur peut lire ce qui tourne chez lui sans outillage — c'est cohérent avec un produit qui
-promet un seul binaire et aucune dépendance externe. Le prix est réel : pas de typage, pas de
-transpilation, et un import cassé se voit à l'exécution — d'où un harnais de modules dans la CI, qui
-charge la console hors navigateur pour attraper ces liens rompus.
+**No build step.** JavaScript modules, served as is from disk. An
+operator can read what runs at their site without tooling — consistent with a product that
+promises a single binary and no external dependency. The price is real: no typing, no
+transpilation, and a broken import shows up at runtime — hence a module harness in CI, which
+loads the console outside a browser to catch those broken links.
 
-**La navigation est une donnée, pas du code.** Espaces et onglets sont déclarés dans une seule
-structure ; les index (onglet → espace, fragment → onglet) en sont **dérivés**. C'est ce qui permet à
-ce document — et à sa garde — de s'appuyer sur une source unique plutôt que sur une liste tenue à la
-main.
+**Navigation is data, not code.** Spaces and tabs are declared in a single
+structure; the indexes (tab → space, fragment → tab) are **derived** from it. That is what lets
+this document — and its guard — rely on a single source rather than on a hand-kept
+list.
 
-**Ce qui écrit se distingue de ce qui lit.** Un onglet qui expose une surface d'exfiltration
-(*Destinations de sortie*), qui manipule des secrets (*Jetons (agent & HEC)*, *Identité fédérée
-(SSO)*) ou qui contraint les autres rôles (*Field filters (masquage PII)*) est réservé à
-l'administrateur — et l'API le refuse aussi, indépendamment de ce que
-la console montre. Les routes sensibles passent par une confirmation partagée, elle-même **dérivée du
-routeur** par une garde de CI plutôt qu'énumérée.
+**What writes is kept apart from what reads.** A tab that exposes an exfiltration surface
+(*Output destinations*), that handles secrets (*Tokens (agent & HEC)*, *Federated identity
+(SSO)*) or that constrains the other roles (*Field filters (PII masking)*) is reserved for
+the administrator — and the API refuses it too, independently of what
+the console shows. Sensitive routes go through a shared confirmation, itself **derived from the
+router** by a CI guard rather than enumerated.
 
-**Le contenu porte son origine.** Une règle, un parseur ou un tableau de bord affiche s'il vient du
-produit, d'un overlay de fichier versionné, ou d'une création faite dans la console. Sans cette
-marque, un opérateur ne saurait pas ce qu'un redémarrage peut réécrire — et un homonyme personnel
-fait **ignorer** l'overlay de fichier, avec un avertissement, plutôt que d'écraser silencieusement
-son travail.
+**Content carries its origin.** A rule, a parser or a dashboard shows whether it comes from the
+product, from a versioned file overlay, or from something created in the console. Without this
+mark, an operator would not know what a restart can rewrite — and a personal homonym
+causes the file overlay to be **ignored**, with a warning, rather than silently overwriting
+the operator's work.
 
-**Chaque panneau montre sa requête.** Un graphique dont on ne peut pas lire la question est une
-boîte noire ; dans un outil de sécurité, c'est un défaut, pas un choix d'ergonomie.
+**Each panel shows its query.** A chart whose question cannot be read is a
+black box; in a security tool, that is a defect, not an ergonomic choice.
 
 ---
 
-## 4. Ce que ce document ne couvre pas
+## 4. What this document does not cover
 
-- **L'ergonomie fine** — raccourcis clavier, préférences, thème clair et sombre, bilinguisme et
-  fuseaux horaires — n'est pas décrite ici : elle vit dans le guide intégré, au plus près de l'écran.
-- **Aucune capture de ce document n'a été prise dans ce lot**, et **aucune instance n'a été
-  ouverte** : les onglets, leurs libellés, leurs restrictions de rôle et leur regroupement sont
-  **dérivés de la structure de navigation** de la console, pas observés à l'écran. Un écart entre ce
-  tableau et votre instance est un défaut à signaler.
-- **Les onglets adossés à une fonctionnalité optionnelle** peuvent se comporter différemment selon la
-  compilation ou la configuration — SAML absent de l'image livrée, tier analytique expérimental,
-  multi-tenant désactivé par défaut. L'état de chaque sujet est porté par
-  [`README.md`](README.md), l'index de cette documentation.
+- **Fine ergonomics** — keyboard shortcuts, preferences, light and dark theme, bilingualism and
+  time zones — is not described here: it lives in the built-in guide, as close to the screen as possible.
+- **No screenshot for this document was taken in this batch**, and **no instance was
+  opened**: the tabs, their labels, their role restrictions and their grouping are
+  **derived from the console's navigation structure**, not observed on screen. A discrepancy between this
+  table and your instance is a defect to report.
+- **Tabs backed by an optional feature** may behave differently depending on the
+  build or the configuration — SAML absent from the shipped image, experimental analytics tier,
+  multi-tenant disabled by default. The status of each topic is carried by
+  [`README.md`](README.md), the index of this documentation.

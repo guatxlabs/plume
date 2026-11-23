@@ -1,205 +1,205 @@
-# Plume — Catalogue de détection curé (starter pack)
+# Plume — Curated detection catalog (starter pack)
 
-[Français](DETECTION-CATALOG.md) | [English](DETECTION-CATALOG.en.md)
+[English](DETECTION-CATALOG.md) | [Français](DETECTION-CATALOG.fr.md)
 
-> **Statut : contenu additif, vendor-agnostic, inerte par défaut.** Ce catalogue livre une
-> BIBLIOTHÈQUE de règles de détection haute-valeur, mappées CIM + ATT&CK, sous
-> [`config.d/rules/catalog/*.json`](../config.d/rules/catalog). Chargées au boot par le loader
-> d'overlays (`daemon/src/overlays.rs`) avec `managed=1` (source git), MÊME validation
-> « compile-ou-ignore » que toute règle overlay. Elles complètent — sans dupliquer — les règles
-> SEEDÉES actives (`daemon/src/seeds.rs`) et les overlays racine (`config.d/rules/*.json`).
+> **Status: additive content, vendor-agnostic, inert by default.** This catalog ships a
+> LIBRARY of high-value detection rules, mapped to CIM + ATT&CK, under
+> [`config.d/rules/catalog/*.json`](../config.d/rules/catalog). Loaded at boot by the overlay
+> loader (`daemon/src/overlays.rs`) with `managed=1` (git source), with the SAME
+> "compile-or-skip" validation as any overlay rule. They complement — without duplicating — the active
+> SEEDED rules (`daemon/src/seeds.rs`) and the root overlays (`config.d/rules/*.json`).
 
-## Principe & politique enabled/disabled
+## Principle & enabled/disabled policy
 
-- **37 règles LIVRÉES** (`git ls-files 'config.d/rules/catalog/*.json' | wc -l`, compte comparé à l'arbre
-  par `.github/scripts/check_a_published_rule_count_is_the_count_shipped.py`), dont **34 décrites** dans
-  les tables ci-dessous (noms tous distincts). Ensemble, les règles livrées citent **26 techniques**
-  ATT&CK distinctes qui retombent sur **13 tactiques** (mappées via `guatx_core::attack::CATALOG` ;
-  aucune technique non mappée). Les trois règles livrées non décrites ici, toutes en T1562.001, sont
-  `de-auditd-silent.json` (« Hôte: auditd muet (dead-man's-switch anti-forensics) »),
-  `de-auditd-no-exec-rule.json` (auditd tourne sans règle execve 64 bits) et
-  `de-collector-unavailable.json` (un capteur déclare ne pas pouvoir collecter).
-- **TOUTES `enabled=false` par défaut, sauf une** : `de-detection-content-mutated.json`, l'auto-détection
-  d'une modification du contenu de détection, est active (exception tenue par
-  `catalog_rules_all_compile_and_are_disabled_by_default`). C'est une BIBLIOTHÈQUE : l'admin ACTIVE chaque règle
-  selon la télémétrie réellement branchée, via le toggle UI (aucune règle ne se met à alerter
-  sur une install fraîche ⇒ zéro bruit day-0). Le socle « universellement présent + faible FP »
-  est DÉJÀ activé par la couche seed ; le catalogue est l'étendue opt-in.
-- **Toutes en GXQL** (`is_soql=true`) ⇒ compilées par le compilateur FERMÉ (injection-safe par
-  construction ; jamais de SQL brut). Une règle qui ne compile pas est DROPPÉE au boot ⇒ un test
-  (`catalog_rules_all_compile_and_are_disabled_by_default`) exige que les 37 compilent et chargent.
-- **CIM-exact** : chaque règle ne référence que des `source`/`category`/`fields.*` réellement
-  émis par les collecteurs (voir [`docs/CIM.md`](CIM.md)). NB le port de destination des
-  collecteurs natifs (conntrack/ufw/portscan) est `dport` (chaîne), pas `dst_port`.
-- **Chaque règle porte un tag `mitre`** ⇒ la matrice de couverture ATT&CK s'allume dès activation.
+- **37 SHIPPED rules** (`git ls-files 'config.d/rules/catalog/*.json' | wc -l`, a count compared with the tree
+  by `.github/scripts/check_a_published_rule_count_is_the_count_shipped.py`), of which **34 are described** in
+  the tables below (all names distinct). Together, the shipped rules cite **26 distinct ATT&CK
+  techniques** that fall under **13 tactics** (mapped via `guatx_core::attack::CATALOG`;
+  no unmapped technique). The three shipped rules not described here, all in T1562.001, are
+  `de-auditd-silent.json` ("Hôte: auditd muet (dead-man's-switch anti-forensics)"),
+  `de-auditd-no-exec-rule.json` (auditd runs with no 64-bit execve rule) and
+  `de-collector-unavailable.json` (a sensor declares that it cannot collect).
+- **ALL `enabled=false` by default, except one**: `de-detection-content-mutated.json`, the self-detection
+  of a change to the detection content, is active (exception held by
+  `catalog_rules_all_compile_and_are_disabled_by_default`). It is a LIBRARY: the admin ENABLES each rule
+  according to the telemetry actually wired in, through the UI toggle (no rule starts alerting
+  on a fresh install ⇒ zero day-0 noise). The "universally present + low FP" base
+  is ALREADY enabled by the seed layer; the catalog is the opt-in extension.
+- **All in GXQL** (`is_soql=true`) ⇒ compiled by the CLOSED compiler (injection-safe by
+  construction; never raw SQL). A rule that does not compile is DROPPED at boot ⇒ a test
+  (`catalog_rules_all_compile_and_are_disabled_by_default`) requires all 37 to compile and load.
+- **CIM-exact**: each rule references only `source`/`category`/`fields.*` values actually
+  emitted by the collectors (see [`docs/CIM.md`](CIM.md)). NB the destination port of the
+  native collectors (conntrack/ufw/portscan) is `dport` (string), not `dst_port`.
+- **Every rule carries a `mitre` tag** ⇒ the ATT&CK coverage matrix lights up as soon as it is enabled.
 
-### Recommandations « activer en premier » (faible FP, forte valeur)
-- `Catalogue — Persistance: clé SSH ajoutée à authorized_keys` (T1098.004) — télémétrie native
-  (integrity), quasi-zéro FP hors provisioning.
-- `Catalogue — K8s: accès API anonyme / non-authentifié` (T1078) — si audit k8s présent, ~0 FP.
-- `Catalogue — IDS: signature Suricata déclenchée (haute sévérité)` (T1190) — si Suricata présent.
+### "Enable first" recommendations (low FP, high value)
+- `Catalogue — Persistance: clé SSH ajoutée à authorized_keys` (T1098.004) — native telemetry
+  (integrity), near-zero FP outside provisioning.
+- `Catalogue — K8s: accès API anonyme / non-authentifié` (T1078) — if k8s audit is present, ~0 FP.
+- `Catalogue — IDS: signature Suricata déclenchée (haute sévérité)` (T1190) — if Suricata is present.
 
-### Signaux nécessitant une télémétrie NON universellement présente (note honnête)
-- **Kubernetes** (`kube-audit`/`kube-rbac`) : 6 règles — inertes hors cluster k8s avec audit activé.
-- **Endpoint FIM BYO-agent** (`category=integrity fim_event=*`) : 2 règles ransomware/wipe —
-  nécessitent un agent Wazuh/osquery branché (distinct du FIM natif hôte `kind`/`change`).
-- **MinIO audit relay** (`minio-audit`) : 3 règles — nécessitent le relais d'audit S3.
-- **Suricata / Falco** : n'émettent pas de champs structurés (signal via `category`+`severity`).
-- **Mail / Vault** : opt-in selon la stack déployée.
-- **Impossible-travel géo** : NON livré (aucune source ne fournit de géo/ASN au CIM à ce jour) —
-  gap documenté, à ouvrir quand un enrichissement géo existera.
+### Signals that need telemetry that is NOT universally present (honest note)
+- **Kubernetes** (`kube-audit`/`kube-rbac`): 6 rules — inert outside a k8s cluster with audit enabled.
+- **Endpoint FIM BYO-agent** (`category=integrity fim_event=*`): 2 ransomware/wipe rules —
+  they need a Wazuh/osquery agent wired in (distinct from the native host FIM `kind`/`change`).
+- **MinIO audit relay** (`minio-audit`): 3 rules — they need the S3 audit relay.
+- **Suricata / Falco**: do not emit structured fields (signal via `category`+`severity`).
+- **Mail / Vault**: opt-in depending on the deployed stack.
+- **Geo impossible-travel**: NOT shipped (no source provides geo/ASN to the CIM to date) —
+  a documented gap, to be opened once a geo enrichment exists.
 
-## Index — règle → tactique → technique → télémétrie → activée par défaut
+## Index — rule → tactic → technique → telemetry → enabled by default
 
 
 ### Reconnaissance (TA0043)
 
-| Règle | ATT&CK | Sév | Télémétrie requise | Activée |
-|-------|--------|:---:|--------------------|:-------:|
-| Exploit web: motif d'injection/traversal dans l'URL (origine) | `T1190` | 3 | web (path) | non |
-| Recon web: forced-browsing (403-breadth par IP) | `T1595.003` | 2 | web (action, status, path) | non |
-| Recon: scanner web identifié par User-Agent (sqlmap/nikto/nuclei) | `T1595.002` | 2 | web (ua) | non |
+| Rule | ATT&CK | Sev | Required telemetry | Enabled |
+|------|--------|:---:|--------------------|:-------:|
+| Exploit web: motif d'injection/traversal dans l'URL (origine) | `T1190` | 3 | web (path) | no |
+| Recon web: forced-browsing (403-breadth par IP) | `T1595.003` | 2 | web (action, status, path) | no |
+| Recon: scanner web identifié par User-Agent (sqlmap/nikto/nuclei) | `T1595.002` | 2 | web (ua) | no |
 
 ### Credential Access (TA0006)
 
-| Règle | ATT&CK | Sév | Télémétrie requise | Activée |
-|-------|--------|:---:|--------------------|:-------:|
-| Brute-force auth mail (SMTP/IMAP/POP) | `T1110` | 3 | mail (collecteur mail : category=auth action=failure, src_ip promu) | non |
-| Brute-force distribué (nombreuses IP sources sur l'auth) | `T1110` | 2 | toute source d'auth (category=auth : journal/auditd/mail — CIM neutre) | non |
-| Brute-force sur login web (401 par IP) | `T1110` | 3 | web (reverse-proxy/app : category=web, champ status) | non |
-| Password spray (comptes distincts échoués depuis une IP) | `T1110.003` | 3 | auditd (audit PAM/auth : famille de records category=auth, champ acct + addr promu src_ip) | non |
-| Persistance: clé SSH ajoutée à authorized_keys (intégrité) | `T1098.004` | 4 | integrity (FIM natif hôte : kind, change — collecteur par défaut) | non |
-| Vault: moisson de secrets (volume élevé par identité) | `T1552.001` | 3 | vault-audit (audit device Vault : operation, path, user) | non |
+| Rule | ATT&CK | Sev | Required telemetry | Enabled |
+|------|--------|:---:|--------------------|:-------:|
+| Brute-force auth mail (SMTP/IMAP/POP) | `T1110` | 3 | mail (mail collector: category=auth action=failure, src_ip promoted) | no |
+| Brute-force distribué (nombreuses IP sources sur l'auth) | `T1110` | 2 | any auth source (category=auth: journal/auditd/mail — neutral CIM) | no |
+| Brute-force sur login web (401 par IP) | `T1110` | 3 | web (reverse proxy/app: category=web, status field) | no |
+| Password spray (comptes distincts échoués depuis une IP) | `T1110.003` | 3 | auditd (PAM/auth audit: record family category=auth, acct field + addr promoted to src_ip) | no |
+| Persistance: clé SSH ajoutée à authorized_keys (intégrité) | `T1098.004` | 4 | integrity (native host FIM: kind, change — default collector) | no |
+| Vault: moisson de secrets (volume élevé par identité) | `T1552.001` | 3 | vault-audit (Vault audit device: operation, path, user) | no |
 
 ### Discovery (TA0007)
 
-| Règle | ATT&CK | Sév | Télémétrie requise | Activée |
-|-------|--------|:---:|--------------------|:-------:|
-| Balayage réseau interne (une source touche de nombreux hôtes) | `T1046` | 3 | conntrack (flux : scope, dir, dst_ip — parc MULTI-HÔTES) | non |
-| K8s: rafale d'accès refusés (énumération API) | `T1069` | 3 | kube-audit (audit Kubernetes : action=forbidden, user) | non |
-| K8s: énumération de secrets (list massif) | `T1552.007` | 3 | kube-audit (resource, verb) | non |
-| Objet-store: rafale d'AccessDenied (recon de buckets) | `T1526` | 2 | minio-audit (relay audit S3 : status, accessKey) | non |
+| Rule | ATT&CK | Sev | Required telemetry | Enabled |
+|------|--------|:---:|--------------------|:-------:|
+| Balayage réseau interne (une source touche de nombreux hôtes) | `T1046` | 3 | conntrack (flows: scope, dir, dst_ip — MULTI-HOST fleet) | no |
+| K8s: rafale d'accès refusés (énumération API) | `T1069` | 3 | kube-audit (Kubernetes audit: action=forbidden, user) | no |
+| K8s: énumération de secrets (list massif) | `T1552.007` | 3 | kube-audit (resource, verb) | no |
+| Objet-store: rafale d'AccessDenied (recon de buckets) | `T1526` | 2 | minio-audit (S3 audit relay: status, accessKey) | no |
 
 ### Lateral Movement (TA0008)
 
-| Règle | ATT&CK | Sév | Télémétrie requise | Activée |
-|-------|--------|:---:|--------------------|:-------:|
-| Latéralisation SSH interne (une source -> plusieurs hôtes en 22) | `T1021.004` | 3 | conntrack (scope, dir, dport, dst_ip) | non |
+| Rule | ATT&CK | Sev | Required telemetry | Enabled |
+|------|--------|:---:|--------------------|:-------:|
+| Latéralisation SSH interne (une source -> plusieurs hôtes en 22) | `T1021.004` | 3 | conntrack (scope, dir, dport, dst_ip) | no |
 
 ### Priv-Esc / Persistence (TA0004/TA0003)
 
-| Règle | ATT&CK | Sév | Télémétrie requise | Activée |
-|-------|--------|:---:|--------------------|:-------:|
-| Hôte: compte local créé/modifié (useradd/usermod) | `T1136.001` | 3 | auditd (records category=account : useradd/usermod/passwd) | non |
-| Hôte: nouveau binaire SUID déposé (intégrité) | `T1548.001` | 4 | integrity (FIM natif : kind=suid, change=ajout) | non |
-| K8s: (Cluster)RoleBinding créé (octroi de droits RBAC) | `T1098` | 3 | kube-audit (resource, verb) | non |
-| K8s: ServiceAccount lié à cluster-admin (clés du royaume) | `T1098` | 4 | kube-rbac (snapshot RBAC : role, kind, subject) | non |
+| Rule | ATT&CK | Sev | Required telemetry | Enabled |
+|------|--------|:---:|--------------------|:-------:|
+| Hôte: compte local créé/modifié (useradd/usermod) | `T1136.001` | 3 | auditd (records category=account: useradd/usermod/passwd) | no |
+| Hôte: nouveau binaire SUID déposé (intégrité) | `T1548.001` | 4 | integrity (native FIM: kind=suid, change=ajout) | no |
+| K8s: (Cluster)RoleBinding créé (octroi de droits RBAC) | `T1098` | 3 | kube-audit (resource, verb) | no |
+| K8s: ServiceAccount lié à cluster-admin (clés du royaume) | `T1098` | 4 | kube-rbac (RBAC snapshot: role, kind, subject) | no |
 
 ### Defense Evasion (TA0005)
 
-| Règle | ATT&CK | Sév | Télémétrie requise | Activée |
-|-------|--------|:---:|--------------------|:-------:|
-| Hôte: tentative de désactivation de l'audit (auditctl) | `T1562.001` | 4 | auditd (records category=exec : exe) | non |
-| SOC: modification du contenu de détection (règle créée/éditée/désactivée) | `T1562.001` | 2 | plume self (auto-audit : source=plume-config, action=config.rule.*) | oui |
+| Rule | ATT&CK | Sev | Required telemetry | Enabled |
+|------|--------|:---:|--------------------|:-------:|
+| Hôte: tentative de désactivation de l'audit (auditctl) | `T1562.001` | 4 | auditd (records category=exec: exe) | no |
+| SOC: modification du contenu de détection (règle créée/éditée/désactivée) | `T1562.001` | 2 | plume self (self-audit: source=plume-config, action=config.rule.*) | yes |
 
 ### Execution (TA0002)
 
-| Règle | ATT&CK | Sév | Télémétrie requise | Activée |
-|-------|--------|:---:|--------------------|:-------:|
-| Hôte: exécution depuis un répertoire monde-inscriptible (/tmp, /dev/shm, /var/tmp, /run) | `T1059.004` | 3 | auditd (records category=exec : exe) | non |
-| IDS: signature Suricata déclenchée (haute sévérité) | `T1190` | 3 | suricata (IDS : category=alert, severity) | non |
-| Runtime: activité suspecte Falco (eBPF, sév≥3) | `T1059` | 3 | falco (eBPF : category=ebpf, severity) | non |
-| Webshell probable (POST -> script .php renvoyant 200) | `T1505.003` | 3 | web (method, status, path) | non |
+| Rule | ATT&CK | Sev | Required telemetry | Enabled |
+|------|--------|:---:|--------------------|:-------:|
+| Hôte: exécution depuis un répertoire monde-inscriptible (/tmp, /dev/shm, /var/tmp, /run) | `T1059.004` | 3 | auditd (records category=exec: exe) | no |
+| IDS: signature Suricata déclenchée (haute sévérité) | `T1190` | 3 | suricata (IDS: category=alert, severity) | no |
+| Runtime: activité suspecte Falco (eBPF, sév≥3) | `T1059` | 3 | falco (eBPF: category=ebpf, severity) | no |
+| Webshell probable (POST -> script .php renvoyant 200) | `T1505.003` | 3 | web (method, status, path) | no |
 
 ### Collection (TA0009)
 
-| Règle | ATT&CK | Sév | Télémétrie requise | Activée |
-|-------|--------|:---:|--------------------|:-------:|
-| Hôte: accès répété aux secrets/identifiants (dataaccess) | `T1552.001` | 3 | dataaccess (watch fichiers sensibles : key, action, user) | non |
+| Rule | ATT&CK | Sev | Required telemetry | Enabled |
+|------|--------|:---:|--------------------|:-------:|
+| Hôte: accès répété aux secrets/identifiants (dataaccess) | `T1552.001` | 3 | dataaccess (watch on sensitive files: key, action, user) | no |
 
 ### Exfiltration (TA0010)
 
-| Règle | ATT&CK | Sév | Télémétrie requise | Activée |
-|-------|--------|:---:|--------------------|:-------:|
-| Exfiltration/spam: envoi sortant de masse depuis une identité | `T1048` | 2 | mail (category=mailflow, sender) | non |
-| Objet-store: lecture de masse (exfiltration probable) | `T1530` | 3 | minio-audit (api, accessKey) | non |
-| Égress: éventail vers de nombreuses IP externes (hors infra) | `T1071` | 2 | conntrack (dir, scope, proc, dst_ip) | non |
+| Rule | ATT&CK | Sev | Required telemetry | Enabled |
+|------|--------|:---:|--------------------|:-------:|
+| Exfiltration/spam: envoi sortant de masse depuis une identité | `T1048` | 2 | mail (category=mailflow, sender) | no |
+| Objet-store: lecture de masse (exfiltration probable) | `T1530` | 3 | minio-audit (api, accessKey) | no |
+| Égress: éventail vers de nombreuses IP externes (hors infra) | `T1071` | 2 | conntrack (dir, scope, proc, dst_ip) | no |
 
 ### Impact (TA0040)
 
-| Règle | ATT&CK | Sév | Télémétrie requise | Activée |
-|-------|--------|:---:|--------------------|:-------:|
-| Destruction: suppression de masse de fichiers (FIM endpoint) | `T1485` | 4 | endpoint FIM (category=integrity, fim_event, agent_name) | non |
-| K8s: suppression de masse de ressources | `T1485` | 3 | kube-audit (verb, action, user) | non |
-| Ransomware: modification de masse de fichiers (FIM endpoint) | `T1486` | 4 | endpoint FIM (agent BYO : category=integrity, fim_event, agent_name) | non |
-| Vague d'attaques: rafale de bannissements (fail2ban/CrowdSec) | `T1595` | 2 | bans (fail2ban/crowdsec : category=ban, src_ip promu) | non |
+| Rule | ATT&CK | Sev | Required telemetry | Enabled |
+|------|--------|:---:|--------------------|:-------:|
+| Destruction: suppression de masse de fichiers (FIM endpoint) | `T1485` | 4 | endpoint FIM (category=integrity, fim_event, agent_name) | no |
+| K8s: suppression de masse de ressources | `T1485` | 3 | kube-audit (verb, action, user) | no |
+| Ransomware: modification de masse de fichiers (FIM endpoint) | `T1486` | 4 | endpoint FIM (BYO agent: category=integrity, fim_event, agent_name) | no |
+| Vague d'attaques: rafale de bannissements (fail2ban/CrowdSec) | `T1595` | 2 | bans (fail2ban/crowdsec: category=ban, src_ip promoted) | no |
 
 ### Cloud / Container (TA0001/TA0004)
 
-| Règle | ATT&CK | Sév | Télémétrie requise | Activée |
-|-------|--------|:---:|--------------------|:-------:|
-| K8s: accès API anonyme / non-authentifié | `T1078` | 3 | kube-audit (user) | non |
-| Objet-store: bucket exposé publiquement | `T1530` | 3 | minio (snapshot policy : kind=bucket, risk=public) | non |
+| Rule | ATT&CK | Sev | Required telemetry | Enabled |
+|------|--------|:---:|--------------------|:-------:|
+| K8s: accès API anonyme / non-authentifié | `T1078` | 3 | kube-audit (user) | no |
+| Objet-store: bucket exposé publiquement | `T1530` | 3 | minio (policy snapshot: kind=bucket, risk=public) | no |
 
-## Couverture ATT&CK ajoutée
+## ATT&CK coverage added
 
-Techniques nouvellement couvertes / renforcées par le catalogue : `T1021.004`, `T1046`, `T1048`, `T1059`, `T1059.004`, `T1069`, `T1071`, `T1078`, `T1098`, `T1098.004`, `T1110`, `T1110.003`, `T1136.001`, `T1190`, `T1485`, `T1486`, `T1505.003`, `T1526`, `T1530`, `T1548.001`, `T1552.001`, `T1552.007`, `T1562.001`, `T1595`, `T1595.002`, `T1595.003`.
+Techniques newly covered / reinforced by the catalog: `T1021.004`, `T1046`, `T1048`, `T1059`, `T1059.004`, `T1069`, `T1071`, `T1078`, `T1098`, `T1098.004`, `T1110`, `T1110.003`, `T1136.001`, `T1190`, `T1485`, `T1486`, `T1505.003`, `T1526`, `T1530`, `T1548.001`, `T1552.001`, `T1552.007`, `T1562.001`, `T1595`, `T1595.002`, `T1595.003`.
 
-Ces tags rejoignent la jointure de couverture (`/api/coverage/detections`) : dès qu'une règle
-catalogue est activée, sa technique passe de *missed* à *detected* dans la matrice.
+These tags join the coverage join (`/api/coverage/detections`): as soon as a catalog
+rule is enabled, its technique moves from *missed* to *detected* in the matrix.
 
-Deux précisions sur ce que la matrice compte, côté consommateur (la boucle purple de Forge) :
+Two clarifications on what the matrix counts, on the consumer side (Forge's purple loop):
 
-- **La technique du tag est celle qui compte, sous-technique comprise.** Activer une règle taguée de
-  la technique **parente** (`T1110`) ne fait PAS passer une **sous-technique** tirée (`T1110.001`) en
-  *detected* : elle est classée `detected-parent-approx` — un angle mort **nommé**, exclu du taux de
-  détection et du MTTD. Une règle parente générique ne prouve pas la couverture d'un vecteur
-  particulier : les trois règles `T1110` de ce catalogue sont bornées au mail (`source=mail`), bornées
-  au web (`source=web status=401`), ou exigent une dispersion d'IP (`stats dc(src_ip)`) — aucune de ces
-  trois n'attrape un brute-force SSH mono-source. D'autres règles `T1110` **seedées** le pourraient
-  selon la télémétrie branchée : c'est justement ce que la jointure ne peut pas savoir depuis un tag,
-  et pourquoi elle nomme le doute au lieu de le trancher. Pour faire passer une sous-technique au vert,
-  taguez une règle **de cette sous-technique**.
-- **Un tag peut porter PLUSIEURS techniques** (`"T1595.002 T1046"`, séparateurs espace/virgule/
-  point-virgule — la norme SigmaHQ). L'endpoint les **éclate** : une entrée par technique, counts
-  sommés, `first_ts` = la première détection. La chaîne composée n'est jamais servie telle quelle.
+- **The tag's technique is the one that counts, sub-technique included.** Enabling a rule tagged with
+  the **parent** technique (`T1110`) does NOT move a fired **sub-technique** (`T1110.001`) to
+  *detected*: it is classified `detected-parent-approx` — a **named** blind spot, excluded from the detection
+  rate and from the MTTD. A generic parent rule does not prove coverage of a particular
+  vector: the three `T1110` rules in this catalog are bound to mail (`source=mail`), bound
+  to web (`source=web status=401`), or require IP dispersion (`stats dc(src_ip)`) — none of those
+  three catches a single-source SSH brute force. Other **seeded** `T1110` rules could,
+  depending on the telemetry wired in: that is precisely what the join cannot know from a tag,
+  and why it names the doubt instead of settling it. To turn a sub-technique green,
+  tag a rule **with that sub-technique**.
+- **A tag can carry SEVERAL techniques** (`"T1595.002 T1046"`, separated by space/comma/
+  semicolon — the SigmaHQ convention). The endpoint **splits** them: one entry per technique, counts
+  summed, `first_ts` = the first detection. The composite string is never served as-is.
 
-## Règles graine (posées à l'installation) — sur quelle population chaque seuil a été calibré
+## Seed rules (laid down at install) — the population each threshold was calibrated on
 
-Les règles de ce catalogue sont **éteintes** par défaut ; celles-ci, au contraire, sont **posées à
-l'installation** (`seeds.rs`), et activées **seulement si un producteur livré émet la télémétrie
-qu'elles lisent** — une règle dont personne n'alimente la source est posée éteinte, et l'audit dit
-laquelle et pourquoi (verrou valable sur une base NEUVE : une installation déjà en service garde ce
-que sa migration a posé). Un seuil n'a de sens que pour la population sur laquelle il a été calibré.
-Cette table dit laquelle, et ce qu'une population **neuve** sous la même règle change (`P4.12-e`).
+The rules in this catalog are **off** by default; these ones, on the contrary, are **laid down at
+install** (`seeds.rs`), and enabled **only if a shipped producer emits the telemetry
+they read** — a rule whose source nobody feeds is laid down disabled, and the audit says
+which one and why (a lock that holds on a FRESH database: an installation already in service keeps what
+its migration laid down). A threshold only makes sense for the population it was calibrated on.
+This table says which one, and what a **new** population under the same rule changes (`P4.12-e`).
 
-Depuis la migration v122 (`P4.12-g`), cette population est aussi **déclarée dans la base**, lisible par
-le code : la colonne `population` de chaque règle livrée (table unique `daemon/src/population_de_calibrage.rs`,
-écrite par les semeurs et rejouée par la migration sans écraser une déclaration de l'exploitant), et la
-boucle de règles écrit au tir, dans `population_vue`, les sources imputées qui n'en font pas partie — la
-ligne de la règle porte alors « population neuve : <source> ». Cette table reste la prose de cette
-déclaration ; le code en est la source de vérité.
+Since migration v122 (`P4.12-g`), this population is also **declared in the database**, readable by
+the code: the `population` column of each shipped rule (single table `daemon/src/population_de_calibrage.rs`,
+written by the seeders and replayed by the migration without overwriting an operator's declaration), and the
+rule loop writes at fire time, into `population_vue`, the attributed sources that are not part of it — the
+rule's row then carries "new population: <source>". This table remains the prose version of that
+declaration; the code is its source of truth.
 
-| Règle graine | Forme de la requête | Seuil et fenêtre | Population de calibrage | Une population neuve sous cette règle |
-|--------------|---------------------|------------------|-------------------------|---------------------------------------|
-| Brute-force auth par IP (5 min) | `category=auth action=failure \| stats count by src_ip \| where count > 15` | > 15 échecs par IP, 5 min, tirée toutes les 60 s | le `rhost` de **sshd** : du SSH exposé, où 15 échecs en 5 min depuis une même adresse est un automate | les échecs **Windows** (4625/4771/4776) portent `src_ip` depuis le 2026-08-29 : une passerelle RDS/Citrix ou un contrôleur de domaine qui concentre les échecs de tout un service sous UNE adresse dépasse ce seuil un lundi matin, sans attaque. Et une alerte ouverte est rafraîchie sans re-notification (`P4.12-h`) |
-| RBA : brute-force d'authentification (risque par IP source) | `category=auth action=failure \| stats count by src_ip \| where count > 5` | > 5 échecs par IP, 1 h, 30 points de risque par contribution, entité `ip` | le même `rhost` de sshd ; le score ne franchit le seuil d'alerte qu'après plusieurs heures distinctes | sur un parc Windows, chaque poste dont un client mail, un lecteur réseau mappé ou une tâche planifiée porte un mot de passe périmé contribue chaque heure : jusqu'à une alerte de risque **par poste** (clé de dédup par entité) |
-| Pic d'échecs d'authentification (1h) | `category=auth action=failure \| stats count` | > 100 échecs toutes sources, 1 h | le pic **global** d'un hôte exposé (SSH + mail) — c'est lui qui voit un password-spray réparti sur beaucoup d'adresses, que la règle par IP ne voit pas | un parc entier compte ses échecs au même endroit : le seuil est atteint par le seul bruit de fond d'un grand nombre de postes |
-| Port-scan détecté (nft PORTSCAN, 10 min) | `source=portscan dir=inbound \| stats count` | > 0 événement, 10 min | la chaîne `PORTSCAN` de nftables : un événement n'existe que si le pare-feu l'a déjà classé | aucune : la population est celle que le pare-feu produit |
-| RBA : reconnaissance / port-scan (risque par hôte ciblé) | `source=portscan dir=inbound \| stats count by host \| where count > 0` | > 0 par hôte, 1 h, 20 points, entité `host` | la même chaîne `PORTSCAN` | aucune |
-| CPU > 90% (10 min) | `SELECT value FROM metric WHERE name='cpu_pct' … LIMIT 1` | dernière valeur > 90, 10 min | aucune population : un seuil de capacité, pas de comportement | un hôte chargé par construction (bâtisseur, traitement par lots) lève l'alerte à chaque fenêtre |
-| CF : scan/bot absorbé au edge (> 20 challenges managés/IP) · exploit WAF managé (> 3 blocages) · L7 flood (> 100 req/IP) · recon multi-vhost (> 3 vhosts/IP) · volume de challenges (> 20 IP distinctes) | `source=cloudflare …` | voir `seeds.rs` | **non calibrées** : le code le dit lui-même (« seuils à calibrer »), elles décrivent la forme des événements qu'un plan Cloudflare sans WAF managé émet | un plan avec WAF managé, ou un site à fort trafic, change le sens de chaque seuil : à recalibrer par l'exploitant |
+| Seed rule | Query shape | Threshold and window | Calibration population | A new population under this rule |
+|-----------|-------------|----------------------|------------------------|----------------------------------|
+| Brute-force auth par IP (5 min) | `category=auth action=failure \| stats count by src_ip \| where count > 15` | > 15 failures per IP, 5 min, evaluated every 60 s | the **sshd** `rhost`: exposed SSH, where 15 failures in 5 min from the same address is automated traffic | **Windows** failures (4625/4771/4776) carry `src_ip` since 2026-08-29: an RDS/Citrix gateway or a domain controller that concentrates the failures of a whole service under ONE address crosses this threshold on a Monday morning, with no attack. And an open alert is refreshed without re-notification (`P4.12-h`) |
+| RBA : brute-force d'authentification (risque par IP source) | `category=auth action=failure \| stats count by src_ip \| where count > 5` | > 5 failures per IP, 1 h, 30 risk points per contribution, entity `ip` | the same sshd `rhost`; the score only crosses the alert threshold after several distinct hours | on a Windows fleet, every desktop whose mail client, mapped network drive or scheduled task holds an expired password contributes every hour: up to one risk alert **per desktop** (dedup key per entity) |
+| Pic d'échecs d'authentification (1h) | `category=auth action=failure \| stats count` | > 100 failures across all sources, 1 h | the **global** spike of an exposed host (SSH + mail) — it is what sees a password spray spread over many addresses, which the per-IP rule does not see | an entire fleet counts its failures in the same place: the threshold is reached by the mere background noise of a large number of desktops |
+| Port-scan détecté (nft PORTSCAN, 10 min) | `source=portscan dir=inbound \| stats count` | > 0 events, 10 min | the nftables `PORTSCAN` chain: an event only exists if the firewall has already classified it | none: the population is the one the firewall produces |
+| RBA : reconnaissance / port-scan (risque par hôte ciblé) | `source=portscan dir=inbound \| stats count by host \| where count > 0` | > 0 per host, 1 h, 20 points, entity `host` | the same `PORTSCAN` chain | none |
+| CPU > 90% (10 min) | `SELECT value FROM metric WHERE name='cpu_pct' … LIMIT 1` | last value > 90, 10 min | no population: a capacity threshold, not a behavior | a host loaded by design (builder, batch processing) raises the alert in every window |
+| CF : scan/bot absorbé au edge (> 20 challenges managés/IP) · exploit WAF managé (> 3 blocages) · L7 flood (> 100 req/IP) · recon multi-vhost (> 3 vhosts/IP) · volume de challenges (> 20 IP distinctes) | `source=cloudflare …` | see `seeds.rs` | **not calibrated**: the code says so itself ("thresholds to be calibrated"), they describe the shape of the events that a Cloudflare plan without managed WAF emits | a plan with managed WAF, or a high-traffic site, changes the meaning of each threshold: to be recalibrated by the operator |
 
-**Ce qu'une couverture accidentelle cachait.** Avant que les échecs Windows ne portent `src_ip`
-(`P4.12-a`), ils tombaient tous dans un seul seau vide : un password-spray de vingt adresses à dix
-échecs chacune faisait `count=200 > 15` et la règle « Brute-force auth par IP » tirait — pour une
-mauvaise raison, mais elle tirait. Depuis, vingt seaux de dix, aucun au-dessus de quinze, **aucune
-alerte par IP** : ce cas n'est vu que par le « Pic d'échecs (1h) » (seuil 100) et par la règle de
-ce catalogue « Brute-force distribué (nombreuses IP sources sur l'auth) », qui est **éteinte par
-défaut** comme tout le catalogue. Un exploitant qui veut voir le spray l'active ; ce document ne
-prétend pas qu'il est couvert sans cela.
+**What accidental coverage was hiding.** Before Windows failures carried `src_ip`
+(`P4.12-a`), they all fell into a single empty bucket: a password spray from twenty addresses with ten
+failures each made `count=200 > 15` and the "Brute-force auth par IP" rule fired — for the
+wrong reason, but it fired. Since then, twenty buckets of ten, none above fifteen, **no
+per-IP alert**: this case is only seen by the "Pic d'échecs (1h)" (threshold 100) and by the
+catalog rule "Brute-force distribué (nombreuses IP sources sur l'auth)", which is **off by
+default** like the whole catalog. An operator who wants to see the spray enables it; this document does not
+claim it is covered otherwise.
 
-**Ce que personne n'a mesuré.** Le taux d'échecs d'authentification par IP d'un parc Windows **au
-repos** — le chiffre qui déciderait si les seuils ci-dessus produisent des faux positifs sur cette
-population — n'a été mesuré sur aucune machine. Tant qu'il ne l'est pas, ni « faux positif » ni
-« vrai positif » ne peut être affirmé pour les échecs Windows.
+**What nobody has measured.** The per-IP authentication failure rate of a Windows fleet **at
+rest** — the figure that would decide whether the thresholds above produce false positives on this
+population — has not been measured on any machine. Until it is, neither "false positive" nor
+"true positive" can be asserted for Windows failures.

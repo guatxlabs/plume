@@ -1,38 +1,38 @@
-# Plume — Parseur déclaratif (DSL CIM) — Slice #7, pièce 2
+# Plume — Declarative parser (CIM DSL) — Slice #7, part 2
 
-[Français](PARSER-DSL.md) | [English](PARSER-DSL.en.md)
+[English](PARSER-DSL.md) | [Français](PARSER-DSL.fr.md)
 
-> **Statut : contrat opérateur.** Ce document décrit le format d'un **parseur déclaratif** : un fichier
-> JSON posé sous `config.d/parsers/` qui **mappe une source vers le CIM** (`docs/CIM.md`) **sans recompiler
-> Rust**. Il répond au blocage « est-ce que mes 40 sources vont parser ? » : ajouter une source = ajouter
-> un fichier.
+> **Status: operator contract.** This document describes the format of a **declarative parser**: a JSON
+> file placed under `config.d/parsers/` that **maps a source to the CIM** (`docs/CIM.md`) **without recompiling
+> Rust**. It answers the blocker "will my 40 sources parse?": adding a source = adding
+> a file.
 
-- **Ancre code** : `dparser_compile` / `dparsers_reload` / `dparsers_apply` (`daemon/src/parsers.rs`),
+- **Code anchor**: `dparser_compile` / `dparsers_reload` / `dparsers_apply` (`daemon/src/parsers.rs`),
   table `dparser` (migration v78), loader `load_overlay_dparsers`.
-- **Exemple livré** : [`config.d/parsers/example-cim-firewall.json`](../config.d/parsers/example-cim-firewall.json).
+- **Shipped example**: [`config.d/parsers/example-cim-firewall.json`](../config.d/parsers/example-cim-firewall.json).
 
 ---
 
-## 0. Principe directeur — ENRICH / MAP, jamais DROP
+## 0. Guiding principle — ENRICH / MAP, never DROP
 
-Un parseur déclaratif **parse, mappe, enrichit**. Il **ne peut pas supprimer ni filtrer** un événement :
-une capture absente = **aucun enrichissement** (jamais une suppression). Toute réduction de collecte est un
-**filtre**, qui appartient au panneau *whitelists* (#10), **pas à un parseur**.
+A declarative parser **parses, maps, enriches**. It **cannot remove or filter** an event:
+a missing capture = **no enrichment** (never a removal). Any reduction of collection is a
+**filter**, which belongs to the *whitelists* panel (#10), **not to a parser**.
 
-**Mode 0 / byte-identique** : tant qu'aucun parseur déclaratif ne cible une source, l'événement est stocké
-**à l'octet près** comme aujourd'hui. Le mécanisme est **purement additif**.
+**Mode 0 / byte-identical**: as long as no declarative parser targets a source, the event is stored
+**byte for byte** as it is today. The mechanism is **purely additive**.
 
 ---
 
-## 1. Où et comment
+## 1. Where and how
 
-- Fichier `config.d/parsers/<nom>.json`. Le **discriminant** d'un parseur déclaratif est la présence d'un
-  objet **`map`** (les parseurs *regex legacy* à `pattern` vivent dans le même dossier et sont chargés
-  séparément — un fichier va à exactement un loader).
-- Chargé au boot par `load_overlay_dparsers` (`managed=1`, source git), **validé-ou-ignoré** : une spec
-  invalide (regex/`match`/`map` cassés) est **WARN + skip**, jamais un crash boot.
-- Compilé au registre par `dparsers_reload`, puis **exécuté à l'ingest** (chemin `kind=events`), **après**
-  `parsers_apply`/`extract_generic` et **avant** la promotion `src_ip`/`dst_ip`/`url` en colonnes.
+- File `config.d/parsers/<nom>.json`. What **discriminates** a declarative parser is the presence of a
+  **`map`** object (the *legacy regex* parsers with `pattern` live in the same folder and are loaded
+  separately — a file goes to exactly one loader).
+- Loaded at boot by `load_overlay_dparsers` (`managed=1`, git source), **validated-or-skipped**: an invalid
+  spec (broken regex/`match`/`map`) is **WARN + skip**, never a boot crash.
+- Compiled into the registry by `dparsers_reload`, then **executed at ingest** (`kind=events` path), **after**
+  `parsers_apply`/`extract_generic` and **before** `src_ip`/`dst_ip`/`url` are promoted to columns.
 
 ---
 
@@ -40,72 +40,72 @@ une capture absente = **aucun enrichissement** (jamais une suppression). Toute r
 
 ```jsonc
 {
-  "name": "…",              // requis, clé d'UPSERT
-  "source": "firewall",      // source d'event ciblée ('*' = toutes). Défaut '*'
-  "enabled": true,           // défaut true
+  "name": "…",              // required, UPSERT key
+  "source": "firewall",      // targeted event source ('*' = all). Default '*'
+  "enabled": true,           // default true
 
-  "match": "action=",        // OPTIONNEL : regex de garde. Le parseur ne s'applique QU'AUX
-                              //   messages qui matchent. Absent = s'applique à toute la source.
+  "match": "action=",        // OPTIONAL: guard regex. The parser applies ONLY to
+                              //   messages that match. Absent = applies to the whole source.
 
-  "extract": [               // OPTIONNEL : étapes ORDONNÉES d'extraction -> sac de captures.
-    { "regex": "SRC=(?P<src>\\S+) DST=(?P<dst>\\S+)" },  // groupes NOMMÉS Rust (?P<nom>…)
-    { "kv": true },          // balaye key=value / key="quoté" / logfmt   (alias: "logfmt": true)
-    { "json": true },        // message = objet JSON top-level, aplati 1 niveau (k, k.sous-clé)
+  "extract": [               // OPTIONAL: ORDERED extraction steps -> bag of captures.
+    { "regex": "SRC=(?P<src>\\S+) DST=(?P<dst>\\S+)" },  // Rust NAMED groups (?P<name>…)
+    { "kv": true },          // scans key=value / key="quoted" / logfmt   (alias: "logfmt": true)
+    { "json": true },        // message = top-level JSON object, flattened 1 level (k, k.subkey)
     { "csv": { "delimiter": ",", "columns": ["ts", "src", "dst", "action"] } }
-                             // message = UNE ligne délimitée (export CSV) ; chaque cellule est capturée
-                             //   sous le nom de la colonne DÉCLARÉE (guillemets, "" intérieur et séparateur
-                             //   quoté respectés). La ligne d'en-tête (cellules == colonnes) n'est PAS un
-                             //   enregistrement : aucune capture, comptée (ingest.csv_header_lines_total).
+                             // message = ONE delimited line (CSV export); each cell is captured
+                             //   under the name of the DECLARED column (quotes, inner "" and quoted
+                             //   separator honored). The header line (cells == columns) is NOT a
+                             //   record: no capture, counted (ingest.csv_header_lines_total).
   ],
 
-  "map": {                   // REQUIS : assigne des valeurs aux champs CIM.
-    "category": "firewall",   //   littéral OU "$capture". Pose la colonne `category`.
-    "severity": 2,            //   entier 0..4 (ou "$capture" numérique). Hors plage -> ignoré.
-    "src_ip":  "$src",        //   -> fields.src_ip  (PROMU en colonne src_ip par le daemon)
-    "dst_ip":  "$dst",        //   -> fields.dst_ip  (PROMU en colonne dst_ip)
-    "url":     "$url",        //   -> fields.url     (PROMU en colonne url)
-    "action":  "$act",        //   -> fields.action  (outcome CIM : cf. action_vocab)
-    "fields":  { "proto": "$proto", "vendor": "acme" }  // champs étendus arbitraires
+  "map": {                   // REQUIRED: assigns values to CIM fields.
+    "category": "firewall",   //   literal OR "$capture". Sets the `category` column.
+    "severity": 2,            //   integer 0..4 (or numeric "$capture"). Out of range -> ignored.
+    "src_ip":  "$src",        //   -> fields.src_ip  (PROMOTED to the src_ip column by the daemon)
+    "dst_ip":  "$dst",        //   -> fields.dst_ip  (PROMOTED to the dst_ip column)
+    "url":     "$url",        //   -> fields.url     (PROMOTED to the url column)
+    "action":  "$act",        //   -> fields.action  (CIM outcome: see action_vocab)
+    "fields":  { "proto": "$proto", "vendor": "acme" }  // arbitrary extended fields
   }
 }
 ```
 
-**Valeurs de `map`** : une chaîne `"$nom"` référence une **capture** (issue des étapes `extract`) ; toute
-autre chaîne/nombre est un **littéral**. Une référence `$nom` **absente ou vide** => la cible est **laissée
-telle quelle** (jamais un champ vide écrit, jamais un drop).
+**`map` values**: a `"$nom"` string references a **capture** (from the `extract` steps); any
+other string/number is a **literal**. A `$nom` reference that is **absent or empty** => the target is **left
+as is** (never an empty field written, never a drop).
 
-**Précédence** (ENRICH) : `fields` **fusionne sans écraser** (une clé déjà posée par le collecteur gagne) ;
-`category`/`severity` sont posés par le **premier** parseur qui les produit. `src_ip`/`dst_ip`/`url` sont
-écrits **dans `fields`** puis **promus en colonnes** par l'infra existante (`fields_ip`/`fields_dst`/`fields_url`).
+**Precedence** (ENRICH): `fields` **merges without overwriting** (a key already set by the collector wins);
+`category`/`severity` are set by the **first** parser that produces them. `src_ip`/`dst_ip`/`url` are
+written **into `fields`** then **promoted to columns** by the existing machinery (`fields_ip`/`fields_dst`/`fields_url`).
 
-**Bornes** (budget RAM) : ≤ 8 étapes `extract`, ≤ 32 captures, valeur ≤ 256 c., regex ≤ 1000 c., message
-tronqué à 8192. Clés de `map.fields` : doivent passer `soql_ident_ok` (`[A-Za-z0-9_]`), sinon ignorées.
-Étape `csv` : `delimiter` = un seul caractère ASCII (ni guillemet ni fin de ligne, défaut `,`), `columns` =
-1 à 32 noms requêtables et distincts ; une colonne manquante n'écrit rien, une cellule surnuméraire est
-ignorée. Hors de portée, et dit plutôt que tu : un retour à la ligne à l'intérieur d'une cellule quotée (le
-message EST une ligne — un tel export doit être recollé en amont) et un export UTF-16 (à convertir en UTF-8).
-Exemple livré : `config.d/parsers/example-csv-firewall.json`.
+**Bounds** (RAM budget): ≤ 8 `extract` steps, ≤ 32 captures, value ≤ 256 chars, regex ≤ 1000 chars, message
+truncated to 8192. `map.fields` keys: must pass `soql_ident_ok` (`[A-Za-z0-9_]`), otherwise ignored.
+`csv` step: `delimiter` = a single ASCII character (neither a quote nor a line ending, default `,`), `columns` =
+1 to 32 distinct, queryable names; a missing column writes nothing, an extra cell is
+ignored. Out of reach, and stated rather than left unsaid: a line break inside a quoted cell (the
+message IS one line — such an export must be rejoined upstream) and a UTF-16 export (to be converted to UTF-8).
+Shipped example: `config.d/parsers/example-csv-firewall.json`.
 
 ---
 
-## 3. Exemple — firewall générique (key=value) → CIM
+## 3. Example — generic firewall (key=value) → CIM
 
-Message ingéré (`source=firewall`) :
+Ingested message (`source=firewall`):
 
 ```
 action=deny proto=tcp src=203.0.113.7 dst=198.51.100.2 dport=22
 ```
 
-Avec l'exemple livré → événement CIM : `category=firewall`, `severity=2`, colonne `src_ip=203.0.113.7`,
-colonne `dst_ip=198.51.100.2`, `fields.action=deny`, `fields.proto=tcp`.
+With the shipped example → CIM event: `category=firewall`, `severity=2`, column `src_ip=203.0.113.7`,
+column `dst_ip=198.51.100.2`, `fields.action=deny`, `fields.proto=tcp`.
 
-Une **règle de détection** compose alors dessus **sans connaître le vendeur** (cf. `docs/CIM.md`) :
+A **detection rule** then composes on top of it **without knowing the vendor** (see `docs/CIM.md`):
 `search category=firewall action=deny | stats count by src_ip | where count > 20`.
 
 ---
 
-## 4. Catégories & vocabulaire
+## 4. Categories & vocabulary
 
-`map.category` **devrait** cibler une catégorie de la taxonomie CIM (`docs/CIM.md` §2). Une valeur
-hors-taxonomie est **acceptée mais signalée** (`warn` au chargement) — ENRICH, jamais SUPPRESS.
-`map.action` **devrait** réutiliser le vocabulaire neutre d'outcome (`success/failure/allowed/blocked/…`).
+`map.category` **should** target a category of the CIM taxonomy (`docs/CIM.md` §2). An
+out-of-taxonomy value is **accepted but flagged** (`warn` at load time) — ENRICH, never SUPPRESS.
+`map.action` **should** reuse the neutral outcome vocabulary (`success/failure/allowed/blocked/…`).

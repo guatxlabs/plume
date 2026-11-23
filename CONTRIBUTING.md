@@ -336,33 +336,34 @@ une garde qui l'exigerait aujourd'hui accuserait presque tout le corpus, donc el
 c'est la convention qui doit d'abord faire sa population, ligne neuve après ligne neuve. Un chiffre
 sans témoin n'est pas faux ; il est invérifiable, et il vieillit sans que rien ne le dise.
 
-## Parité des traductions
+## Translation parity
 
-Un document traduit garde les faits de son original : mêmes titres (nombre et niveaux), mêmes blocs
-de code et mêmes commandes hors commentaires, mêmes tableaux, mêmes cibles de liens — un lien vers
-`Y.md` vise `Y.en.md` côté anglais quand ce fichier existe —, mêmes nombres et mêmes identifiants
-entre accents graves (un segment de code replié sur deux lignes reste un seul segment, la fin de
-ligne y valant une espace). Les deux fichiers portent le sélecteur de langue sur la première ligne
-non vide sous leur titre de niveau 1, la même ligne des deux côtés, qui nomme l'original puis la
-traduction : `[Français](X.md) | [English](X.en.md)`, ou `[English](X.md) | [Français](X.fr.md)`
-pour un original anglais ; absent, inversé ou visant un autre fichier, c'est un écart. Dans la
-traduction, une ancre `#…` vers un document Markdown de l'arbre désigne un titre qui existe dans le
-fichier visé, par son slug GitHub (minuscules, ponctuation retirée, espaces en tirets, accents
-conservés, `-1`, `-2` pour un titre en double) : une ancre restée sur le titre de l'original est
-nommée comme telle ; les ancres de l'original ne sont pas jugées. `.github/scripts/parite_des_langues.py`
-le compare et nomme chaque écart par `fichier:ligne` :
+A translation keeps the facts of its original: same headings (count and levels), same code blocks
+and same commands outside comments, same tables, same link targets — a link to `Y.md` points to
+`Y.fr.md` on the French side when that file exists —, same numbers and same identifiers between
+backticks (a code span folded over two lines stays one span, the line end counting as a space).
+Both files carry the language selector on the first non-empty line under their level 1 heading,
+the same line on both sides, naming the original then the translation:
+`[English](X.md) | [Français](X.fr.md)`; missing, inverted or pointing at another file, it is a
+gap. In the translation, an anchor `#…` to a Markdown document of the tree designates a heading
+that exists in the target file, by its GitHub slug (lower case, punctuation removed, spaces as
+hyphens, accents kept, `-1`, `-2` for a duplicate heading): an anchor left on the heading of the
+original is named as such; the anchors of the original are not judged.
+`.github/scripts/parite_des_langues.py` compares all of it and names each gap by file and line:
 
 ```sh
-python3 .github/scripts/parite_des_langues.py                      # toutes les paires suivies
-python3 .github/scripts/parite_des_langues.py --paire X.md X.en.md # une seule paire
-python3 .github/scripts/parite_des_langues.py --inventaire         # documents sans traduction
-python3 .github/scripts/test_parite_des_langues.py                 # épreuves de l'outil
+python3 .github/scripts/parite_des_langues.py                      # every tracked pair
+python3 .github/scripts/parite_des_langues.py --paire X.md X.fr.md # a single pair
+python3 .github/scripts/parite_des_langues.py --inventaire         # documents without their pair
+python3 .github/scripts/test_parite_des_langues.py                 # the tool's own tests
 ```
 
-La convention de suffixe est un paramètre (`--suffixe-original`, `--suffixe-traduction`, par défaut
-`X.md` / `X.en.md`), pour basculer plus tard en `X.fr.md` / `X.md`. L'inventaire rend vert tant que
-`--strict` n'est pas passé. En comparaison, l'outil rend 1 dès qu'un écart est nommé, même si une
-autre paire n'a pas pu être lue (elle est nommée) ; il rend 2 quand il n'y a aucun écart et que
-quelque chose n'a pas été lu (zéro document suivi, zéro paire, fichier illisible, y compris un
-fichier visé par une ancre de la traduction). L'outil n'est pas encore une porte de l'intégration continue : il se joue
-à la main, avant de proposer une traduction.
+The suffix convention is a parameter (`--suffixe-original`, `--suffixe-traduction`, by default
+`X.md` / `X.fr.md`). The documents kept in a single language are a named set, `UNE_SEULE_LANGUE`,
+each with its reason: `docs/ROADMAP.md`, the work log kept in French, and `docs/BENCHMARK.md`,
+rendered by `bench/report.py` while its bilingual version is under way. The inventory names any
+other tracked document without its pair, and any entry of the set that has found its pair again or
+is no longer tracked; it stays green until `--strict` is passed. In comparison, the tool returns 1
+as soon as a gap is named, even if another pair could not be read (it is named); it returns 2 when
+there is no gap and something was not read (zero tracked document, zero pair, unreadable file,
+including a file targeted by an anchor of the translation).

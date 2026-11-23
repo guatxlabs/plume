@@ -1,72 +1,72 @@
-# Plume SDK — le modèle *bring-your-own-vendor*
+# Plume SDK — the *bring-your-own-vendor* model
 
-[Français](SDK.md) | [English](SDK.en.md)
+[English](SDK.md) | [Français](SDK.fr.md)
 
-> **Statut : document ombrelle.** Il ne définit PAS un nouveau mécanisme : il rend **cohérents et
-> découvrables** les *seams* d'extension qui existent déjà. Chaque seam a sa page de référence détaillée
-> (liens ci-dessous) ; ici on donne **l'unique modèle mental**, la règle de décision, et un exemple concret
-> par seam. **Aucun comportement runtime n'est modifié par ce document.**
+> **Status: umbrella document.** It does NOT define a new mechanism: it makes the extension *seams* that
+> already exist **consistent and discoverable**. Each seam has its own detailed reference page
+> (links below); here we give **the single mental model**, the decision rule, and one concrete example
+> per seam. **No runtime behavior is changed by this document.**
 
-Le SDK de Plume, ce sont **les seams**, pas une bibliothèque à lier. La promesse produit est celle de la
-directive *vendor-agnostic / sur-ensemble* (mémoire projet) : **zéro vendeur codé en dur**, et **ajouter un
-vendeur ne doit jamais exiger de toucher au cœur** (`guatx-core`) ni, dans le cas nominal, de **recompiler**.
+Plume's SDK is **the seams**, not a library to link against. The product promise is that of the
+*vendor-agnostic / superset* directive (project memory): **zero hard-coded vendor**, and **adding a
+vendor must never require touching the core** (`guatx-core`) nor, in the nominal case, **recompiling**.
 
 ---
 
-## 0. Le pivot — le contrat CIM (`core::cim`)
+## 0. The pivot — the CIM contract (`core::cim`)
 
-Tout part du **CIM** (Common Information Model, [`docs/CIM.md`](CIM.md), miroir machine
-[`config.d/cim/cim.v1.json`](../config.d/cim/cim.v1.json)). C'est le **vocabulaire neutre** sur lequel toute
-la chaîne compose. Deux champs portent toute la charge de l'agnosticisme vendeur :
+Everything starts from the **CIM** (Common Information Model, [`docs/CIM.md`](CIM.md), machine mirror
+[`config.d/cim/cim.v1.json`](../config.d/cim/cim.v1.json)). It is the **neutral vocabulary** on which the whole
+chain composes. Two fields carry the entire weight of vendor agnosticism:
 
-| champ | rôle | exemple |
+| field | role | example |
 |---|---|---|
-| `source` | identité du **PRODUCTEUR / vendeur** — **jamais** la sémantique | `fortigate`, `defender`, `suricata` |
-| `category` | **sémantique INTER-vendeur** — le contrat sur lequel les règles composent | `firewall`, `malware`, `ids`, `web`, `auth` |
+| `source` | identity of the **PRODUCER / vendor** — **never** the semantics | `fortigate`, `defender`, `suricata` |
+| `category` | **CROSS-vendor semantics** — the contract on which rules compose | `firewall`, `malware`, `ids`, `web`, `auth` |
 
-> **Règle d'or.** Une détection filtre sur `category` (`search category=firewall action=blocked …`),
-> **jamais** sur un `source` vendeur particulier. Conséquence : une règle écrite une fois marche pour
-> **tout** vendeur qui *mappe* sa `category` — c'est ça, le sur-ensemble. Le rôle de chaque seam ci-dessous
-> est **exactement** de traduire un dialecte vendeur vers cette ligne canonique (`EventRow`), en
-> **ENRICHISSANT jamais en supprimant** (une `category` hors-taxonomie est acceptée telle quelle + signalée,
-> jamais rejetée — cf. CIM §0).
+> **Golden rule.** A detection filters on `category` (`search category=firewall action=blocked …`),
+> **never** on a particular vendor `source`. Consequence: a rule written once works for
+> **every** vendor that *maps* its `category` — that is what the superset means. The role of each seam below
+> is **exactly** to translate a vendor dialect into this canonical row (`EventRow`), by
+> **ENRICHING, never suppressing** (an out-of-taxonomy `category` is accepted as is + flagged,
+> never rejected — see CIM §0).
 
 ---
 
-## 1. Les seams en un coup d'œil
+## 1. The seams at a glance
 
-Trois **idiomes** seulement, par ordre de préférence :
+Only three **idioms**, in order of preference:
 
-1. **Overlay déclaratif** (config, *aucun rebuild*) — le cas nominal. Un fichier JSON/YAML posé dans
-   `config.d/`, ou une `config` de connecteur. C'est le chemin par défaut pour 90 % des vendeurs.
-2. **Adaptateur hors-process** (config + processus tiers) — pour *agir* sur des systèmes externes
-   (enforcers réseau, IdP) sans coupler leur code au daemon.
-3. **Trait Rust compilé** (*rebuild*) — réservé aux formats que le déclaratif ne peut pas exprimer
-   (binaire/positionnel haut débit). Contrat minimal, un point d'enregistrement unique.
+1. **Declarative overlay** (config, *no rebuild*) — the nominal case. A JSON/YAML file placed in
+   `config.d/`, or a connector `config`. It is the default path for 90% of vendors.
+2. **Out-of-process adapter** (config + third-party process) — to *act* on external systems
+   (network enforcers, IdP) without coupling their code to the daemon.
+3. **Compiled Rust trait** (*rebuild*) — reserved for formats the declarative layer cannot express
+   (high-throughput binary/positional). Minimal contract, a single registration point.
 
-| Seam | Ce qu'on ajoute | Idiome | Emplacement / point d'enregistrement | Rebuild ? | Référence |
+| Seam | What you add | Idiom | Location / registration point | Rebuild? | Reference |
 |---|---|---|---|:--:|---|
-| **Parser** (log vendeur → `EventRow`) | extraction de champs | overlay déclaratif (DSL) | `config.d/parsers/*.json` → tables `parser`/`dparser` | **non** | [PARSER-DSL.md](PARSER-DSL.md) |
-| **Parser** haut débit | dialecte binaire/positionnel | trait compilé | `collector-syslog` : `impl VendorParser` + `parser::select()` | oui | code |
-| **Source pull** (API REST/JSON) | une source d'events | descripteur connecteur | `POST /api/connectors` type `http_pull`, champ `config` | **non** | [connector-presets](connector-presets/README.md) |
-| **Source push** (SIEM/agent) | flux entrant | endpoint HTTP | `POST /services/collector` (HEC), `/api/ingest*` | **non** | code (`server/groupes_de_routes.rs`) |
-| **Détection** | règle | overlay déclaratif | `config.d/rules/*.json` (GXQL) + `config.d/sigma/*.yml` | **non** | [SIGMA-IMPORTER.md](SIGMA-IMPORTER.md) |
-| **Threat-intel** | flux d'IOC | descripteur connecteur / import | connecteur `taxii2`, `POST /api/threat-intel/import` (STIX 2.1) | **non** | `core::ti` |
-| **Réponse / enforcer** | exécuteur d'action | adaptateur hors-process | `PLUME_BAN_BACKEND` (nft/fail2ban/…), engagement `adapter` | **non** | code (`actions.rs`) |
-| **Dimensions de rollup** | pré-agrégat requêtable | variable d'env | `PLUME_ROLLUP_DIMS` | **non** | [config.d/README](../config.d/README.md) |
+| **Parser** (vendor log → `EventRow`) | field extraction | declarative overlay (DSL) | `config.d/parsers/*.json` → tables `parser`/`dparser` | **no** | [PARSER-DSL.md](PARSER-DSL.md) |
+| High-throughput **parser** | binary/positional dialect | compiled trait | `collector-syslog`: `impl VendorParser` + `parser::select()` | yes | code |
+| **Pull source** (REST/JSON API) | an event source | connector descriptor | `POST /api/connectors` type `http_pull`, `config` field | **no** | [connector-presets](connector-presets/README.md) |
+| **Push source** (SIEM/agent) | inbound stream | HTTP endpoint | `POST /services/collector` (HEC), `/api/ingest*` | **no** | code (`server/groupes_de_routes.rs`) |
+| **Detection** | rule | declarative overlay | `config.d/rules/*.json` (GXQL) + `config.d/sigma/*.yml` | **no** | [SIGMA-IMPORTER.md](SIGMA-IMPORTER.md) |
+| **Threat intel** | IOC feed | connector descriptor / import | `taxii2` connector, `POST /api/threat-intel/import` (STIX 2.1) | **no** | `core::ti` |
+| **Response / enforcer** | action executor | out-of-process adapter | `PLUME_BAN_BACKEND` (nft/fail2ban/…), engagement `adapter` | **no** | code (`actions.rs`) |
+| **Rollup dimensions** | queryable pre-aggregate | environment variable | `PLUME_ROLLUP_DIMS` | **no** | [config.d/README](../config.d/README.md) |
 
-Point d'entrée commun des overlays `config.d/` : `load_overlays` (au boot, après migrations/seeds) fait un
-**UPSERT keyé par `name`**, posé `managed=1`. Idempotent et durable (survit au re-seed des builtins). Le
-chemin est `PLUME_CONFIG_DIR` (défaut baké dans l'image), donc l'overlay est **agnostique au runtime**
-(k3s ConfigMap / bind-mount docker / répertoire hôte).
+Common entry point for the `config.d/` overlays: `load_overlays` (at boot, after migrations/seeds) performs an
+**UPSERT keyed by `name`**, set `managed=1`. Idempotent and durable (survives the re-seed of the builtins). The
+path is `PLUME_CONFIG_DIR` (default baked into the image), so the overlay is **runtime-agnostic**
+(k3s ConfigMap / docker bind mount / host directory).
 
 ---
 
-## 2. Ajouter un **parser** de vendeur (sans toucher au cœur)
+## 2. Adding a vendor **parser** (without touching the core)
 
-**Cas nominal — overlay déclaratif (aucun rebuild).** On dépose un fichier dans `config.d/parsers/`. Un
-parser regex nommé, ou un parser DSL déclaratif (voir [PARSER-DSL.md](PARSER-DSL.md)) qui **mappe vers la
-`category` CIM**. Exemple (extraction + mapping firewall) :
+**Nominal case — declarative overlay (no rebuild).** You drop a file into `config.d/parsers/`. Either a
+named regex parser, or a declarative DSL parser (see [PARSER-DSL.md](PARSER-DSL.md)) that **maps to the
+CIM `category`**. Example (firewall extraction + mapping):
 
 ```json
 {
@@ -77,13 +77,13 @@ parser regex nommé, ou un parser DSL déclaratif (voir [PARSER-DSL.md](PARSER-D
 }
 ```
 
-> Registration : le fichier est chargé au boot par `load_overlays`, UPSERT sur `name`, `managed=1`.
-> **Garantie no-rebuild** : rien à recompiler ni redéployer d'image — un `git commit` dans `config.d/` (ou
-> une ConfigMap) suffit ; un CRUD UI (`managed=2`) fait la même chose à chaud. Un fichier invalide est
-> **ignoré avec un warning**, jamais un crash de boot.
+> Registration: the file is loaded at boot by `load_overlays`, UPSERT on `name`, `managed=1`.
+> **No-rebuild guarantee**: nothing to recompile and no image to redeploy — a `git commit` in `config.d/` (or
+> a ConfigMap) is enough; a UI CRUD (`managed=2`) does the same thing live. An invalid file is
+> **skipped with a warning**, never a boot crash.
 
-**Cas haut débit — trait compilé (rebuild).** Pour un dialecte binaire/positionnel où le regex/DSL ne
-suffit pas (ex. syslog structuré Fortinet), le collecteur syslog expose un trait :
+**High-throughput case — compiled trait (rebuild).** For a binary/positional dialect where regex/DSL is not
+enough (e.g. Fortinet structured syslog), the syslog collector exposes a trait:
 
 ```rust
 // collector-syslog/src/parser.rs
@@ -93,17 +93,17 @@ pub trait VendorParser: Send + Sync {
 }
 ```
 
-> Registration : `impl VendorParser for MonVendeur` puis **une ligne** dans `parser::select()` (sélection
-> par `PLUME_SYSLOG_PARSER`). C'est tout. Contrat : `source`=vendeur, `category`=sémantique CIM, `src_ip`/
-> `dst_ip` en top-level, le reste dans `fields` ; **ne panique jamais** (ligne malformée → event de repli).
+> Registration: `impl VendorParser for MonVendeur` then **one line** in `parser::select()` (selected
+> by `PLUME_SYSLOG_PARSER`). That is all. Contract: `source`=vendor, `category`=CIM semantics, `src_ip`/
+> `dst_ip` at top level, the rest in `fields`; **never panics** (malformed line → fallback event).
 
 ---
 
-## 3. Ajouter une **source** (faire entrer les events)
+## 3. Adding a **source** (getting events in)
 
-**Pull — descripteur `http_pull` (aucun rebuild).** N'importe quelle API REST/JSON devient une source **par
-configuration seule** : URL, auth, pagination, watermark, et un `field_map` qui projette la réponse vendeur
-vers les champs `EventRow`/`fields`. Exemple (squelette) :
+**Pull — `http_pull` descriptor (no rebuild).** Any REST/JSON API becomes a source **through
+configuration alone**: URL, auth, pagination, watermark, and a `field_map` that projects the vendor response
+onto the `EventRow`/`fields` fields. Example (skeleton):
 
 ```json
 {
@@ -117,81 +117,81 @@ vers les champs `EventRow`/`fields`. Exemple (squelette) :
 }
 ```
 
-> Registration : `POST /api/connectors` (type `http_pull`), coller la `config`, le **credential dans le
-> champ `secret`** (jamais dans `config`), **Tester** (`/api/connectors/{id}/test` — 1 page, n'ingère pas,
-> renvoie un échantillon mappé), puis activer. Le poll périodique (`run_due_connectors` →
-> `poll_one_connector` → `poll_http_pull`) ingère et avance le watermark.
-> **Garantie no-rebuild** : ajouter un vendeur = écrire un JSON comme ceux de
-> [`docs/connector-presets`](connector-presets/README.md) (Falcon, SentinelOne, REST générique sont de
-> *pures docs*, pas du code par-vendeur). Les events pullés passent par **le même pipeline
-> d'enrichissement** que le natif (parsers, extracteur générique, **match TI on-ingest**).
+> Registration: `POST /api/connectors` (type `http_pull`), paste the `config`, the **credential in the
+> `secret` field** (never in `config`), **Test** (`/api/connectors/{id}/test` — 1 page, does not ingest,
+> returns a mapped sample), then enable. The periodic poll (`run_due_connectors` →
+> `poll_one_connector` → `poll_http_pull`) ingests and advances the watermark.
+> **No-rebuild guarantee**: adding a vendor = writing a JSON like those in
+> [`docs/connector-presets`](connector-presets/README.md) (Falcon, SentinelOne, generic REST are
+> *pure docs*, not per-vendor code). Pulled events go through **the same enrichment
+> pipeline** as native ones (parsers, generic extractor, **on-ingest TI match**).
 
-**Presets compilés (defender / taxii2).** Deux `ctype` ont un normaliseur dédié (`poll_defender`,
-`poll_taxii`) parce que leur schéma (Graph Security, TAXII 2.1) est stable et vaut un adaptateur de première
-classe — mais ils restent dispatchés par `ctype` dans `poll_one_connector`, sans rien coder « en dur » côté
-détection (ils convergent sur `EventRow`/`Ioc`).
+**Compiled presets (defender / taxii2).** Two `ctype` values have a dedicated normalizer (`poll_defender`,
+`poll_taxii`) because their schema (Graph Security, TAXII 2.1) is stable and deserves a first-class
+adapter — but they are still dispatched by `ctype` in `poll_one_connector`, with nothing "hard-coded" on the
+detection side (they converge on `EventRow`/`Ioc`).
 
-**Push — endpoints HTTP (aucun rebuild).** Un SIEM/agent externe pousse directement :
-`POST /services/collector` (**HEC** — compatible Splunk), `/api/ingest`, `/api/ingest/journal`,
-`/api/ingest/minio`. Tous convergent sur le même `EventRow` + `EVENT_INSERT_SQL` figé.
-
----
-
-## 4. Ajouter une **détection** (règle)
-
-Overlay déclaratif, aucun rebuild. Deux formats, **une** table `rule` :
-
-- **GXQL natif** — `config.d/rules/*.json` : `{"name","query":"search category=firewall action=blocked | stats count","op":">","threshold":0,"mitre":"T1190",…}`.
-- **Sigma** (standard ouvert) — `config.d/sigma/*.yml` : traduit en règle GXQL au boot (`load_overlay_sigma`),
-  mapping `logsource → category` **via le CIM**. Un construit non exprimable en GXQL est **signalé + ignoré**
-  (jamais une règle silencieusement fausse) — cf. matrice dans [SIGMA-IMPORTER.md](SIGMA-IMPORTER.md).
-
-> Registration : `load_overlays`/`load_overlay_sigma`, UPSERT sur `name`, `managed=1` ; validation au boot
-> (la `query` doit **compiler**). Import ponctuel hors-git : `POST /api/sigma/import` (admin), ou
-> `plume-daemon sigma-import <path> [--dry-run]` sur le central — en hôte natif
-> `sudo env PLUME_CONFIG=/etc/plume/soc.conf /usr/local/bin/plume-daemon sigma-import <path>`, en Docker et
-> k3s par `docker compose exec soc …` / `kubectl -n soc exec deploy/soc -- …`. Sans `--dry-run`, elle
-> écrit dans la base : démon démarré une fois avant
-> ([`INSTALLER-SANS-OUVRIR-DE-BRECHE.md` §1.1](INSTALLER-SANS-OUVRIR-DE-BRECHE.md#11-démarrer-le-démon-une-fois-avant-toute-sous-commande-qui-écrit-dans-la-base)). **Écris la règle par `category`**, elle marchera pour tout vendeur.
+**Push — HTTP endpoints (no rebuild).** An external SIEM/agent pushes directly:
+`POST /services/collector` (**HEC** — Splunk-compatible), `/api/ingest`, `/api/ingest/journal`,
+`/api/ingest/minio`. All converge on the same `EventRow` + the frozen `EVENT_INSERT_SQL`.
 
 ---
 
-## 5. Ajouter un **flux threat-intel**
+## 4. Adding a **detection** (rule)
 
-Le parse/normalize STIX est **pur** dans `core::ti` (`stix_bundle_to_iocs`, `normalize_ioc`) — vendor-agnostic,
-partagé. Trois entrées, aucune touchant le cœur :
+Declarative overlay, no rebuild. Two formats, **one** `rule` table:
 
-- **TAXII 2.1** — un connecteur `ctype=taxii2` PULL périodiquement la collection, traduit les objets STIX en
-  IOC (`taxii_upsert_iocs`).
-- **Import STIX ponctuel** — `POST /api/threat-intel/import` (bundle STIX 2.1) ; un pattern non supporté est
-  *skippé-avec-raison*, jamais un IOC qui sous/sur-matche en silence.
-- **Ajout manuel / bulk** — `POST /api/threat-intel/iocs`.
+- **Native GXQL** — `config.d/rules/*.json`: `{"name","query":"search category=firewall action=blocked | stats count","op":">","threshold":0,"mitre":"T1190",…}`.
+- **Sigma** (open standard) — `config.d/sigma/*.yml`: translated into a GXQL rule at boot (`load_overlay_sigma`),
+  `logsource → category` mapping **via the CIM**. A construct that cannot be expressed in GXQL is **flagged + skipped**
+  (never a silently wrong rule) — see the matrix in [SIGMA-IMPORTER.md](SIGMA-IMPORTER.md).
 
-Les IOC alimentent le **match-on-ingest** (`ti_match_event`) : un `src_ip`/`dst_ip`/hash qui matche reçoit
-`fields.threat_intel` + `ti_match=1` et contribue au risk-based alerting. (Le pré-filtre d'appartenance
-`IocIndex` — #30 — passe ce match à l'échelle sans changer le contrat.)
-
----
-
-## 6. Ajouter un **enforcer / une réponse** (agir vers l'extérieur)
-
-Idiome **adaptateur hors-process** : Plume ne réimplémente pas les enforcers, il **délègue** à ceux qui
-existent déjà chez le client, sélectionnés par configuration.
-
-- **Backend de ban** — `PLUME_BAN_BACKEND` (`auto` par défaut) route `ban_ip`/`unban_ip` vers
-  `fail2ban` / `nft` (fallback) / CrowdSec. Ajouter un enforcer = ajouter une branche de **commande**
-  (l'action reste `ban_ip`, agnostique au backend) ; le vocabulaire d'action (`ban_ip | unban_ip |
-  kill_pid | stop_service`) est le contrat stable (`action_kind_valid`).
-- **Mode Engagement** — chaque engagement porte un champ **`adapter`** (l'IdP/enforcer hors-process qui
-  applique le périmètre du pentest) : l'enforcement vit **hors du daemon**, le daemon ne fait que publier le
-  scope compilé (`ENGAGEMENT_SCOPE`, byte-identique quand aucun engagement actif).
-
-> **Garantie** : l'exécuteur est une **frontière de processus** (une `Command` / un adaptateur), pas un
-> couplage de code. Un nouveau backend n'entre jamais dans le chemin chaud d'ingest.
+> Registration: `load_overlays`/`load_overlay_sigma`, UPSERT on `name`, `managed=1`; validation at boot
+> (the `query` must **compile**). One-off import outside git: `POST /api/sigma/import` (admin), or
+> `plume-daemon sigma-import <path> [--dry-run]` on the central — on a native host
+> `sudo env PLUME_CONFIG=/etc/plume/soc.conf /usr/local/bin/plume-daemon sigma-import <path>`, under Docker and
+> k3s through `docker compose exec soc …` / `kubectl -n soc exec deploy/soc -- …`. Without `--dry-run`, it
+> writes to the database: start the daemon once beforehand
+> ([`INSTALLER-SANS-OUVRIR-DE-BRECHE.md` §1.1](INSTALLER-SANS-OUVRIR-DE-BRECHE.md#11-start-the-daemon-once-before-any-subcommand-that-writes-to-the-database)). **Write the rule by `category`**, and it will work for every vendor.
 
 ---
 
-## 7. Règle de décision (quel idiome ?)
+## 5. Adding a **threat-intel feed**
+
+STIX parsing/normalization is **pure** in `core::ti` (`stix_bundle_to_iocs`, `normalize_ioc`) — vendor-agnostic,
+shared. Three entry points, none touching the core:
+
+- **TAXII 2.1** — a `ctype=taxii2` connector periodically PULLS the collection and translates the STIX objects into
+  IOCs (`taxii_upsert_iocs`).
+- **One-off STIX import** — `POST /api/threat-intel/import` (STIX 2.1 bundle); an unsupported pattern is
+  *skipped with a reason*, never an IOC that silently under- or over-matches.
+- **Manual / bulk addition** — `POST /api/threat-intel/iocs`.
+
+The IOCs feed the **match-on-ingest** (`ti_match_event`): a `src_ip`/`dst_ip`/hash that matches receives
+`fields.threat_intel` + `ti_match=1` and contributes to risk-based alerting. (The `IocIndex` membership
+pre-filter — #30 — scales this match without changing the contract.)
+
+---
+
+## 6. Adding an **enforcer / a response** (acting outward)
+
+**Out-of-process adapter** idiom: Plume does not reimplement enforcers, it **delegates** to those that
+already exist at the customer's, selected by configuration.
+
+- **Ban backend** — `PLUME_BAN_BACKEND` (`auto` by default) routes `ban_ip`/`unban_ip` to
+  `fail2ban` / `nft` (fallback) / CrowdSec. Adding an enforcer = adding a **command** branch
+  (the action stays `ban_ip`, backend-agnostic); the action vocabulary (`ban_ip | unban_ip |
+  kill_pid | stop_service`) is the stable contract (`action_kind_valid`).
+- **Engagement mode** — each engagement carries an **`adapter`** field (the out-of-process IdP/enforcer that
+  applies the pentest scope): enforcement lives **outside the daemon**, the daemon only publishes the
+  compiled scope (`ENGAGEMENT_SCOPE`, byte-identical when no engagement is active).
+
+> **Guarantee**: the executor is a **process boundary** (a `Command` / an adapter), not a
+> code coupling. A new backend never enters the hot ingest path.
+
+---
+
+## 7. Decision rule (which idiom?)
 
 ```
 Le vendeur expose-t-il ses données via un log texte ou une API REST/JSON ?
@@ -205,7 +205,7 @@ Faut-il une sémantique nouvelle non couverte par la taxonomie CIM ?
   → proposer une évolution du CONTRAT CIM (docs/CIM.md, SemVer) — c'est le SEUL cas « cœur »
 ```
 
-**Le fil rouge** : le cœur (`guatx-core`) porte le *contrat* (CIM, GXQL, TI pur) ; les seams portent la
-*traduction* de chaque vendeur vers ce contrat. Tant qu'un vendeur peut être **décrit** (parser/connecteur/
-règle par `category`) plutôt que **codé**, l'ajout est un fichier de config, pas un rebuild — et Plume reste
-un **sur-ensemble** de l'existant client, jamais une perte de capacité.
+**The common thread**: the core (`guatx-core`) carries the *contract* (CIM, GXQL, pure TI); the seams carry the
+*translation* of each vendor into that contract. As long as a vendor can be **described** (parser/connector/
+rule by `category`) rather than **coded**, adding it is a config file, not a rebuild — and Plume remains
+a **superset** of what the customer already has, never a loss of capability.

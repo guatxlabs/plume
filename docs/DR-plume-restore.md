@@ -1,389 +1,389 @@
-# DR — Restauration des backups Plume (SQLCipher)
+# DR — Restoring Plume backups (SQLCipher)
 
-[Français](DR-plume-restore.md) | [English](DR-plume-restore.en.md)
+[English](DR-plume-restore.md) | [Français](DR-plume-restore.fr.md)
 
-Ce runbook couvre la restauration d'un backup Plume `plume-<TS>.db.age` (enveloppe
-`age(zstd(…))`) depuis votre stockage objet (`<votre-bucket>/plume/`), et les **deux
-modes** de chiffrement de backup proposés par le produit.
+This runbook covers restoring a Plume backup `plume-<TS>.db.age` (envelope
+`age(zstd(…))`) from your object storage (`<votre-bucket>/plume/`), and the **two
+backup encryption modes** the product offers.
 
-## D'abord : quel backup avez-vous ? Le produit en écrit DEUX formats différents
+## First: which backup do you have? The product writes TWO different formats
 
-Ne suivez pas ce runbook avant d'avoir identifié le format entre vos mains — ils ne se restaurent pas
-de la même façon.
+Do not follow this runbook before you have identified the format in your hands — they are not restored
+the same way.
 
-| Produit par | Nom du fichier | Format | Restauration |
+| Produced by | File name | Format | Restore |
 |---|---|---|---|
-| **Scheduler natif in‑daemon** (`PLUME_BACKUP_INTERVAL` > 0 — activé par le `docker-compose.yml` et `deploy/k3s.yaml` livrés) | `plume-<TS>.db.age` | enveloppe `age(zstd(…))` — pour la CHARGE qu'elle contient, voir « quelle charge dans le `.age` ? » plus bas | **ce runbook** (`plume-daemon restore`) |
-| **Timer hôte** `plume-backup.timer` (installé par `bootstrap.sh`, quotidien 04:00) | `plume-<TS>.db` | **copie SQLite compacte** (`VACUUM INTO`), *chiffrée SQLCipher si et seulement si la base l'était* — **jamais** d'enveloppe age | *voir ci‑dessous*, pas `restore` |
+| **Native in‑daemon scheduler** (`PLUME_BACKUP_INTERVAL` > 0 — enabled by the shipped `docker-compose.yml` and `deploy/k3s.yaml`) | `plume-<TS>.db.age` | `age(zstd(…))` envelope — for the PAYLOAD it carries, see "which payload in the `.age`?" below | **this runbook** (`plume-daemon restore`) |
+| **Host timer** `plume-backup.timer` (installed by `bootstrap.sh`, daily at 04:00) | `plume-<TS>.db` | **compact SQLite copy** (`VACUUM INTO`), *SQLCipher-encrypted if and only if the database was* — **never** an age envelope | *see below*, not `restore` |
 
-**Restaurer une copie du timer hôte** (`.db`, sans `.age`) : c'est un fichier SQLite ordinaire, donc
-la restauration est une **copie de fichier**, daemon arrêté — n'utilisez pas `plume-daemon restore`,
-qui attend une enveloppe age.
+**Restoring a host-timer copy** (`.db`, no `.age`): it is an ordinary SQLite file, so restoring it is a
+**file copy**, with the daemon stopped — do not use `plume-daemon restore`, which expects an age
+envelope.
 
 ```sh
 sudo systemctl stop plume-daemon
 sudo install -o soc -g soc -m 0600 /var/lib/plume/backups/plume-<TS>.db /var/lib/plume/db/soc.db
-sudo rm -f /var/lib/plume/db/soc.db-wal /var/lib/plume/db/soc.db-shm   # WAL de l'ancienne base
+sudo rm -f /var/lib/plume/db/soc.db-wal /var/lib/plume/db/soc.db-shm   # WAL of the old database
 sudo systemctl start plume-daemon
 ```
-La copie n'est lisible qu'avec la **même clé SQLCipher** que la base d'origine : si vous aviez posé
-`PLUME_DB_KEY`/`PLUME_DB_KEY_FILE`, il faut la même valeur au redémarrage. Si la base était **en
-clair**, cette copie est **en clair** — traitez-la comme la base elle‑même.
+The copy can only be read with the **same SQLCipher key** as the original database: if you had set
+`PLUME_DB_KEY`/`PLUME_DB_KEY_FILE`, the same value is needed at restart. If the database was **in
+plaintext**, this copy is **in plaintext** — treat it like the database itself.
 
-**Sink local vs stockage objet.** Le scheduler natif écrit par défaut dans un **répertoire local**
-(`PLUME_BACKUP_DEST`, défaut `<dir(PLUME_DB)>/backups`) : les `mc cp` de ce runbook ne s'appliquent
-qu'à un déploiement qui pousse ensuite vers un stockage objet. Le sink `s3://` natif **n'est pas
-implémenté** — le daemon le **refuse explicitement** et se désactive plutôt que d'écrire un faux
-backup local. **Un backup qui reste sur le même volume que la base ne protège que de la corruption
-logique, pas de la perte du volume** : copiez-le hors de la machine.
+**Local sink vs object storage.** By default the native scheduler writes to a **local directory**
+(`PLUME_BACKUP_DEST`, default `<dir(PLUME_DB)>/backups`): the `mc cp` commands in this runbook only apply
+to a deployment that then pushes to object storage. The native `s3://` sink **is not
+implemented** — the daemon **explicitly refuses** it and disables itself rather than write a fake
+local backup. **A backup that stays on the same volume as the database only protects against logical
+corruption, not against losing the volume**: copy it off the machine.
 
-## Ensuite : quelle CHARGE dans le `.age` ? (reconnue au marqueur, jamais au nom du fichier)
+## Next: which PAYLOAD in the `.age`? (recognized by its marker, never by the file name)
 
-Distinction **indépendante** de la précédente : celle du dessus dit *quel outil* a produit l'artefact,
-celle-ci dit *ce qu'il y a dedans*. Deux charges différentes voyagent sous la même enveloppe et sous le
-**même nom de fichier** `plume-<TS>.db.age` — il n'existe **aucun suffixe, aucune convention de nom** qui
-les distingue. C'est le **marqueur en tête de la charge décompressée** qui tranche, et
-`plume-daemon restore` le lit tout seul : **vous n'avez ni à savoir lequel vous tenez, ni à passer
-d'option.**
+A distinction **independent** of the previous one: the one above says *which tool* produced the artifact,
+this one says *what is inside it*. Two different payloads travel under the same envelope and under the
+**same file name** `plume-<TS>.db.age` — there is **no suffix, no naming convention** that
+tells them apart. The **marker at the head of the decompressed payload** decides, and
+`plume-daemon restore` reads it on its own: **you need neither to know which one you hold, nor to pass
+an option.**
 
-| Marqueur en tête de charge | Ce que c'est | D'où il vient |
+| Marker at the head of the payload | What it is | Where it comes from |
 |---|---|---|
-| `PLUMEDUMP1\n` | **dump typé streaming** (DDL + lignes) — le **défaut** | sauvegarde qui n'écrit **aucun fichier en clair sur disque** |
-| `SQLite format 3\0` | **copie SQLite complète en clair** | chemin **historique** : sauvegardes antérieures au streaming, schémas hors de son périmètre (FTS5 *contentless*), ou `PLUME_BACKUP_FORCE_PLAINTEXT_EXPORT=1` |
+| `PLUMEDUMP1\n` | **streaming typed dump** (DDL + rows) — the **default** | a backup that writes **no plaintext file to disk** |
+| `SQLite format 3\0` | **full plaintext SQLite copy** | **legacy** path: backups older than streaming, schemas outside its scope (FTS5 *contentless*), or `PLUME_BACKUP_FORCE_PLAINTEXT_EXPORT=1` |
 
-Pour lire le marqueur à la main, si vous voulez savoir avant de restaurer :
+To read the marker by hand, if you want to know before restoring:
 
 ```sh
-age -d -p < plume-<TS>.db.age | zstd -d | head -c 16 | xxd    # mode passphrase
-# -> "PLUMEDUMP1."      = dump typé
-# -> "SQLite format 3." = copie SQLite complète
+age -d -p < plume-<TS>.db.age | zstd -d | head -c 16 | xxd    # passphrase mode
+# -> "PLUMEDUMP1."      = typed dump
+# -> "SQLite format 3." = full SQLite copy
 ```
 
-Conséquences pratiques, à connaître **avant** un DR chronométré :
+Practical consequences, to know **before** a timed DR:
 
-- **Les sauvegardes déjà en séquestre restent restaurables** — aucune migration, aucune conversion, le
-  basculement du défaut ne périme rien.
-- Le dump typé **n'emporte ni les index ni les tables shadow FTS5** : ils sont **reconstruits** à la
-  restauration. Le `.age` est donc nettement plus petit (mesuré : **×2,4** sur une base de test au schéma
-  réel ; l'écart grandit avec la masse d'index — index + FTS pesaient **43 %** du fichier de production
-  le 2026-08-08).
-- **En contrepartie, la restauration est plus longue** — et l'ampleur dépend de la charge de la machine,
-  parce que reconstruire index et FTS est du **CPU pur**. Mesuré sur la même base : **+12 %** machine au
-  repos, **+138 %** machine chargée. **Provisionnez dans le RTO un facteur pouvant approcher 2,5×**, et
-  restaurez sur une machine peu chargée si le temps compte. L'ordre, lui, ne s'inverse jamais.
+- **Backups already in escrow remain restorable** — no migration, no conversion; switching the
+  default makes nothing obsolete.
+- The typed dump **carries neither the indexes nor the FTS5 shadow tables**: they are **rebuilt** on
+  restore. The `.age` is therefore markedly smaller (measured: **×2.4** on a test database with the real
+  schema; the gap grows with the mass of indexes — indexes + FTS weighed **43%** of the production file
+  on 2026-08-08).
+- **In return, the restore takes longer** — and by how much depends on the machine's load,
+  because rebuilding indexes and FTS is **pure CPU**. Measured on the same database: **+12%** on an idle
+  machine, **+138%** on a loaded machine. **Provision a factor that can approach 2.5× in the RTO**, and
+  restore on a lightly loaded machine if time matters. The order, for its part, never flips.
 
-## Le tier froid : ce qu'une restauration du backup chaud ne rend PAS
+## The cold tier: what a restore of the hot backup does NOT give back
 
-Depuis l'aging Phase 2 (`daemon/src/cold_store/aging.rs`), une journée scellée en Parquet voit ses
-lignes `event` **supprimées de la base chaude**. La base chaude ne porte donc plus que la fenêtre
-`PLUME_COLD_HOT_WINDOW_DAYS` (**7 jours** par défaut) ; le reste de la rétention
-(`PLUME_COLD_RETENTION_DAYS=365`) vit **uniquement** sous `PLUME_COLD_DIR=/data/cold`.
+Since Phase 2 aging (`daemon/src/cold_store/aging.rs`), a day sealed into Parquet has its
+`event` rows **deleted from the hot database**. The hot database therefore only carries the
+`PLUME_COLD_HOT_WINDOW_DAYS` window (**7 days** by default); the rest of the retention
+(`PLUME_COLD_RETENTION_DAYS=365`) lives **only** under `PLUME_COLD_DIR=/data/cold`.
 
-**Il n'y a pas de perte de données.** Les fichiers-jour froids sont mis à l'abri par le démon lui-même
-(`P7.20-f`) : après chaque cycle du planificateur natif (`PLUME_BACKUP_INTERVAL` — conteneur et cluster) et
-par `plume-backup.timer` en mode hôte (`plume-daemon cold-escrow <destination>`), en copie verbatim
-incrémentale sous `<destination de sauvegarde>/cold/<tenant>/<env>/<AAAA-MM-JJ>-<NNNN>.parquet` — ce qui
-expédie la destination expédie aussi les jours froids. `cold-backup-plan` reste la forme lecture seule pour
-un exécutant externe. Ils sont déjà zstd+age-chiffrés et immuables : aucun re-wrap, aucun clair. Avec une
-destination OBJET (`s3://`, fonctionnalité `s3_backup`), chaque copie est ensuite déposée sous sa clé et
-confirmée par relecture ; une copie sans dépôt confirmé est retirée de la zone de préparation et rejouée
-au cycle suivant (`P7.20-m`).
+**There is no data loss.** The cold day-files are put in safekeeping by the daemon itself
+(`P7.20-f`): after each cycle of the native scheduler (`PLUME_BACKUP_INTERVAL` — container and cluster) and
+by `plume-backup.timer` in host mode (`plume-daemon cold-escrow <destination>`), as an incremental verbatim
+copy under `<destination de sauvegarde>/cold/<tenant>/<env>/<AAAA-MM-JJ>-<NNNN>.parquet` — whatever
+ships the destination also ships the cold days. `cold-backup-plan` remains the read-only form for
+an external executor. They are already zstd+age-encrypted and immutable: no re-wrap, no plaintext. With an
+OBJECT destination (`s3://`, `s3_backup` feature), each copy is then uploaded under its key and
+confirmed by reading it back; a copy without a confirmed upload is removed from the staging area and retried
+on the next cycle (`P7.20-m`).
 
-**Ce qu'il faut en retenir pour un DR :**
+**What to take away for a DR:**
 
-1. Restaurer `plume-<TS>.db.age` seul rend un SOC **fonctionnel mais amputé** : la recherche répondra,
-   et ne verra que les 7 derniers jours. Un incident daté d'il y a trois semaines sera **absent sans le
-   moindre message d'erreur**.
-2. Une restauration complète a **deux composants** : le `.db.age` chaud **et** l'arborescence `cold/` de
-   la même destination de sauvegarde, remise sous `PLUME_COLD_DIR` avant le démarrage du daemon.
-3. **L'ordre compte** : déposer les fichiers-jour froids *avant* le premier boot. Le daemon lit
-   `cold_seal` dans la base restaurée ; un jour scellé dont le fichier Parquet est absent est un trou
-   silencieux, pas une erreur de boot.
-4. **Le binaire doit porter la feature.** Un `plume-daemon` construit sans `--features cold_tier` ignore
-   `/data/cold` et déclare quand même les variables `PLUME_COLD_*` — c'est le défaut `P4.5-a`, resté trois
-   jours en production. **Contrôle, et c'est le binaire lui-même qui répond** — à jouer AVANT de déposer
-   les fichiers-jour, faute de quoi ils seraient ignorés en silence :
+1. Restoring `plume-<TS>.db.age` alone gives back a SOC that is **functional but truncated**: search will answer,
+   and will only see the last 7 days. An incident dated three weeks ago will be **absent without the
+   slightest error message**.
+2. A complete restore has **two components**: the hot `.db.age` **and** the `cold/` tree of
+   the same backup destination, put back under `PLUME_COLD_DIR` before the daemon starts.
+3. **Order matters**: drop the cold day-files *before* the first boot. The daemon reads
+   `cold_seal` in the restored database; a sealed day whose Parquet file is missing is a silent
+   hole, not a boot error.
+4. **The binary must carry the feature.** A `plume-daemon` built without `--features cold_tier` ignores
+   `/data/cold` and still declares the `PLUME_COLD_*` variables — that is the `P4.5-a` defect, which stayed three
+   days in production. **The check, and it is the binary itself that answers** — to run BEFORE dropping
+   the day-files, otherwise they would be silently ignored:
    ```sh
-   plume-daemon --help | grep cold-backup-plan     # hôte ; en conteneur : docker run --rm <image> --help | grep …
-   # ligne d'aide normale        -> la feature est là
-   # ligne portant INDISPONIBLE  -> bâti sans --features cold_tier
+   plume-daemon --help | grep cold-backup-plan     # host; in a container: docker run --rm <image> --help | grep …
+   # normal help line           -> the feature is there
+   # line carrying INDISPONIBLE -> built without --features cold_tier
    ```
-   L'image livrée est bâtie `ldap,cold_tier` (`ARG PLUME_FEATURES`, `Dockerfile`) ; **la recette hôte, elle,
-   compile nu** — un central installé par `bootstrap.sh` n'a donc pas le tier froid par défaut, et
-   `bootstrap.sh` le **mesure** en fin d'installation (verdict `>> Capacités optionnelles`), en refusant de
-   conclure plutôt qu'en annonçant une capacité non prouvée. *Ce dépôt ne livre **aucune** garde côté
-   déploiement qui comparerait les features du binaire à ce que le manifeste déclare : la vérification
-   ci-dessus est un **geste**, et l'incohérence binaire/manifeste de `P4.5-a` reste possible.*
-5. **Ce que le restore-test quotidien prouve, et ce qu'il ne prouve pas.** Il vérifie structurellement le
-   **dernier backup chaud** et refuse de conclure s'il est plus vieux que 3× la cadence observée. Il
-   **compte** les fichiers-jour froids de l'escrow et les nomme, mais **ne les vérifie pas** : quand il y
-   en a, son verdict est `SUCCES PARTIEL — PORTEE : base CHAUDE seule`. La vérification des deux étages
-   reste un **drill DR hors-cluster** avec l'identité age d'escrow.
-   Depuis le 2026-09-09 (`P8.10-l`), `restore`, `backup-verify` et `restore-drill status` le **disent en
-   situation** : « CETTE SAUVEGARDE NE PEUT PAS ÊTRE RESTAURÉE ICI … détenteur : … » — le détenteur est
-   le texte de `PLUME_BACKUP_ESCROW_HOLDER` (équipe, coffre, procédure) ; vide, il est dit « NON DÉCLARÉ »,
-   jamais inventé. Mesuré en production le 2026-09-09 : `restore-drill status` rend « jamais » (code 3) —
-   aucun exercice de restauration n'a encore été enregistré, donc aucune archive de séquestre n'a été
-   prouvée restaurable ; c'est un geste de l'exploitant, avec l'identité qu'il détient.
+   The shipped image is built `ldap,cold_tier` (`ARG PLUME_FEATURES`, `Dockerfile`); **the host recipe, on the
+   other hand, compiles bare** — a central installed by `bootstrap.sh` therefore does not have the cold tier by default, and
+   `bootstrap.sh` **measures** it at the end of the install (verdict `>> Capacités optionnelles`), refusing to
+   conclude rather than announcing an unproven capability. *This repository ships **no** guard on the
+   deployment side that would compare the binary's features with what the manifest declares: the check
+   above is an **operation**, and the binary/manifest mismatch of `P4.5-a` remains possible.*
+5. **What the daily restore-test proves, and what it does not.** It structurally checks the
+   **latest hot backup** and refuses to conclude if it is older than 3× the observed cadence. It
+   **counts** the cold day-files in escrow and names them, but **does not check them**: when there
+   are some, its verdict is `SUCCES PARTIEL — PORTEE : base CHAUDE seule`. Checking both tiers
+   remains an **out-of-cluster DR drill** with the escrow age identity.
+   Since 2026-09-09 (`P8.10-l`), `restore`, `backup-verify` and `restore-drill status` **say so in
+   context**: « CETTE SAUVEGARDE NE PEUT PAS ÊTRE RESTAURÉE ICI … détenteur : … » — the holder is
+   the text of `PLUME_BACKUP_ESCROW_HOLDER` (team, vault, procedure); when empty, it is reported as « NON DÉCLARÉ »,
+   never invented. Measured in production on 2026-09-09: `restore-drill status` returns « jamais » (code 3) —
+   no restore exercise has been recorded yet, so no escrow archive has been
+   proven restorable; that is an operation for the operator, with the identity they hold.
 
-**État mesuré le 2026-08-08 sur l'installation de référence** : tous les fichiers-jour présents sur le
-disque étaient **séquestrés** (témoin positif : les objets sous le préfixe `plume/` les couvrent tous ;
-témoin négatif : 0 sous un préfixe inexistant), sur plus d'un mois de profondeur.
+**State measured on 2026-08-08 on the reference installation**: all the day-files present on the
+disk were **escrowed** (positive witness: the objects under the `plume/` prefix cover them all;
+negative witness: 0 under a nonexistent prefix), covering more than a month of history.
 
-## Deux modes de chiffrement de backup
+## Two backup encryption modes
 
-| Mode | En-tête age | Déchiffré avec | Où vit la clé de lecture | Vérif automatisée in-cluster |
+| Mode | age header | Decrypted with | Where the read key lives | Automated in-cluster check |
 |---|---|---|---|---|
-| **Mode passphrase** (défaut) | stanza `scrypt` | passphrase = **clé SQLCipher** (`PLUME_DB_KEY`) | là où vit déjà `PLUME_DB_KEY` | **complète** (déchiffre + ouvre) |
-| **Mode destinataire age** (`PLUME_BACKUP_AGE_RECIPIENT`) | stanza `X25519` | **identité age PRIVÉE** (`AGE-SECRET-KEY-1…`) | **escrow hors-cluster uniquement** (jamais un Secret k8s) | **structurelle seule** |
+| **Passphrase mode** (default) | `scrypt` stanza | passphrase = **SQLCipher key** (`PLUME_DB_KEY`) | wherever `PLUME_DB_KEY` already lives | **full** (decrypts + opens) |
+| **age recipient mode** (`PLUME_BACKUP_AGE_RECIPIENT`) | `X25519` stanza | **PRIVATE age identity** (`AGE-SECRET-KEY-1…`) | **out-of-cluster escrow only** (never a k8s Secret) | **structural only** |
 
-Le **mode destinataire** découple la lecture des backups de la clé de la base : la clé qui déchiffre
-l'historique n'est plus présente là où tourne le daemon. C'est le mode recommandé dès que vous pouvez
-tenir un escrow hors-ligne.
+**Recipient mode** decouples reading the backups from the database key: the key that decrypts the
+history is no longer present where the daemon runs. It is the recommended mode as soon as you can
+keep an offline escrow.
 
-- `plume-daemon backup-verify <obj>` affiche `kind=Symmetric|Asymmetric` : c'est la façon fiable de
-  savoir avec quel mode un objet donné a été produit (le mode peut changer au cours de la vie d'un
-  déploiement).
-- `plume-daemon restore` **auto-détecte** : il présente à age **les deux** identités (passphrase +
-  identité privée si fournie) et age apparie selon le stanza de l'en-tête. Aucune option à choisir
-  manuellement.
+- `plume-daemon backup-verify <obj>` prints `kind=Symmetric|Asymmetric`: it is the reliable way to
+  know which mode a given object was produced with (the mode can change over the life of a
+  deployment).
+- `plume-daemon restore` **auto-detects**: it presents **both** identities to age (passphrase +
+  private identity if provided) and age matches according to the header's stanza. No option to choose
+  by hand.
 
-### Le facteur de travail scrypt du mode passphrase (à lire AVANT un DR sur une vieille archive)
+### The scrypt work factor of passphrase mode (read this BEFORE a DR on an old archive)
 
-Depuis le **2026-08-09** (P8.6-b) plume écrit un facteur **FIXE**, `log_n = 12` → **4 194 304 octets**
-de tampon, et accepte à la lecture jusqu'à **`log_n = 20` → 1 073 741 824 octets**.
+Since **2026-08-09** (P8.6-b) plume writes a **FIXED** factor, `log_n = 12` → **4 194 304 bytes**
+of buffer, and accepts on read up to **`log_n = 20` → 1 073 741 824 bytes**.
 
-**Avant cette date, `age` choisissait ce facteur par un étalonnage au chronomètre à chaque
-sauvegarde.** Mesuré le 2026-08-09 sur une machine 12 cœurs, trois appels de suite : `13, 14, 14` en
-binaire *debug* mais **`19, 19, 20` en *release*** — soit **512 Mio à 1 Gio** de RAM réclamés par le
-seul KDF, sous un budget de 2 Gio, et tirés au sort d'une sauvegarde à l'autre.
+**Before that date, `age` picked this factor through a stopwatch calibration on every
+backup.** Measured on 2026-08-09 on a 12-core machine, three calls in a row: `13, 14, 14` in a
+*debug* binary but **`19, 19, 20` in *release*** — that is **512 MiB to 1 GiB** of RAM claimed by the
+KDF alone, under a budget of 2 GiB, and drawn at random from one backup to the next.
 
-Ce que ça change pour un DR :
+What this changes for a DR:
 
-- **Vos archives symétriques d'avant le 2026-08-09 restent restaurables** — le plafond de 20 est
-  précisément dimensionné pour elles — mais la restauration **allouera jusqu'à 1 Gio** le temps du
-  KDF. Prévoyez la RAM sur la machine de restauration.
-- Un `.age` exigeant **plus** de `log_n = 20` est **refusé**, et le refus le dit : facteur exigé,
-  octets exigés, plafond, octets du plafond, et le fait que **la passphrase n'est pas en cause**.
-  Recours : déchiffrer hors-ligne avec l'outil `age` sur une machine dotée de la RAM, puis
-  re-sauvegarder avec la version courante.
-- Le refus symétrique était auparavant **fonction de la machine de restauration** : `age` plafonnait
-  à `target_scrypt_work_factor() + 4`, recalculé au chrono là où l'on déchiffre. Mesuré : une archive
-  à `log_n = 19` était **REFUSÉE** (`Excessive work parameter for passphrase`) par un binaire debug et
-  **ACCEPTÉE** par le même code avec le plafond fixe. La restaurabilité est désormais une propriété
-  du **fichier**, plus de la machine.
-- `PLUME_BACKUP_SCRYPT_LOG_N` (borné `[10, 20]`) permet de remonter ce facteur. **Ce n'est utile que
-  si vous savez que votre `PLUME_DB_KEY` est une phrase tapée par un humain** : le même secret protège
-  déjà le tier froid à `log_n = 12` (et ses fichiers-jour partent à l'escrow **en copie verbatim**),
-  donc monter le seul backup ne relève aucun plancher d'attaque.
-- Le **mode destinataire age n'a aucun terme KDF** : c'est aussi pour ça qu'il reste le mode recommandé.
+- **Your symmetric archives from before 2026-08-09 remain restorable** — the ceiling of 20 is
+  sized precisely for them — but the restore **will allocate a maximum of 1 GiB** for the duration of the
+  KDF. Plan for the RAM on the restore machine.
+- A `.age` requiring **more** than `log_n = 20` is **refused**, and the refusal says so: factor required,
+  bytes required, ceiling, bytes of the ceiling, and the fact that **the passphrase is not at fault**.
+  Recourse: decrypt offline with the `age` tool on a machine that has the RAM, then
+  back up again with the current version.
+- The symmetric refusal used to be **a function of the restore machine**: `age` capped
+  at `target_scrypt_work_factor() + 4`, recomputed by stopwatch wherever decryption happens. Measured: an archive
+  at `log_n = 19` was **REFUSED** (`Excessive work parameter for passphrase`) by a debug binary and
+  **ACCEPTED** by the same code with the fixed ceiling. Restorability is now a property
+  of the **file**, no longer of the machine.
+- `PLUME_BACKUP_SCRYPT_LOG_N` (bounded to `[10, 20]`) lets you raise this factor. **It is only useful
+  if you know that your `PLUME_DB_KEY` is a phrase typed by a human**: the same secret already protects
+  the cold tier at `log_n = 12` (and its day-files go to escrow **as a verbatim copy**),
+  so raising the backup alone does not lift any attack floor.
+- **age recipient mode has no KDF term**: that is another reason it remains the recommended mode.
 
-## Pré-requis d'escrow (HORS-cluster — responsabilité opérateur)
+## Escrow prerequisites (OUT-of-cluster — operator's responsibility)
 
-1. **Clé SQLCipher** (`PLUME_DB_KEY`) — à escrow. Requise pour **tout** restore (le restore
-   re-chiffre la DB cible en SQLCipher avec cette clé), et pour déchiffrer les backups produits en
-   **mode passphrase**.
-2. **Identité age privée** — requise seulement en **mode destinataire** ; générée par l'opérateur,
-   escrow **hors-ligne** (jamais en cluster) :
+1. **SQLCipher key** (`PLUME_DB_KEY`) — to escrow. Required for **any** restore (the restore
+   re-encrypts the target DB in SQLCipher with this key), and to decrypt backups produced in
+   **passphrase mode**.
+2. **Private age identity** — required only in **recipient mode**; generated by the operator,
+   escrowed **offline** (never in the cluster):
    ```sh
-   age-keygen -o plume-backup-identity.key      # AGE-SECRET-KEY-1... (PRIVÉ, escrow hors-ligne)
+   age-keygen -o plume-backup-identity.key      # AGE-SECRET-KEY-1... (PRIVATE, offline escrow)
    grep 'public key' plume-backup-identity.key   # age1...  (PUBLIC -> PLUME_BACKUP_AGE_RECIPIENT)
    ```
-   La **clé publique** (`age1…`) va dans le déploiement (`PLUME_BACKUP_AGE_RECIPIENT`, non-secret). La
-   **clé privée** ne quitte JAMAIS l'escrow ; elle n'est fournie qu'au moment d'un restore/drill.
+   The **public key** (`age1…`) goes into the deployment (`PLUME_BACKUP_AGE_RECIPIENT`, non-secret). The
+   **private key** NEVER leaves the escrow; it is provided only at the time of a restore/drill.
 
-## ⛔ GATE d'activation du mode destinataire (ORDRE IMPÉRATIF)
+## ⛔ Recipient mode activation GATE (MANDATORY ORDER)
 
-**NE PAS** poser `PLUME_BACKUP_AGE_RECIPIENT` **AVANT** d'avoir généré la paire ET escrow la clé
-**privée** hors-ligne. Sinon les nouveaux backups deviennent **indéchiffrables** (aucune identité pour
-les lire). Tant que `PLUME_BACKUP_AGE_RECIPIENT` est absent, les backups restent en **mode
-passphrase** (comportement par défaut, byte-pour-byte inchangé). Séquence :
+**DO NOT** set `PLUME_BACKUP_AGE_RECIPIENT` **BEFORE** having generated the pair AND escrowed the
+**private** key offline. Otherwise new backups become **undecryptable** (no identity to
+read them). As long as `PLUME_BACKUP_AGE_RECIPIENT` is absent, backups stay in **passphrase
+mode** (default behavior, byte-for-byte unchanged). Sequence:
 
-1. `age-keygen` → escrow la clé **privée** hors-ligne (+ copie de secours). Vérifier qu'elle est lisible.
-2. Poser `PLUME_BACKUP_AGE_RECIPIENT: age1…` (clé **publique**) dans le déploiement (conteneur/sidecar
-   qui exécute le backup) — ou, en **systemd host-natif**, dans `/etc/plume/soc.conf` : depuis le
-   **2026-08-09** (P8.7-a) tous les réglages `PLUME_BACKUP_*` suivent la même précédence
-   `env > PLUME_CONFIG > défaut`. *Avant cette date, ce destinataire écrit dans `soc.conf` était ignoré
-   en silence et les archives repartaient en mode passphrase* : si vous exploitez un hôte configuré ainsi,
-   vos archives antérieures sont **symétriques** — vérifiez-les avec `backup-verify` avant de compter
-   dessus. Le démon nomme les clés concernées à son démarrage.
-3. Appliquer (votre dépôt GitOps → redémarrage du pod). Le prochain backup est chiffré au destinataire
-   (vérifier `backup-verify` → `Asymmetric`).
-4. Faire un **DR drill** (ci-dessous) avec la clé privée escrow pour PROUVER que le nouveau backup se
-   restaure. **Notez la date de bascule** dans votre propre documentation d'exploitation : les objets
-   antérieurs restent en mode passphrase.
+1. `age-keygen` → escrow the **private** key offline (+ backup copy). Check that it is readable.
+2. Set `PLUME_BACKUP_AGE_RECIPIENT: age1…` (**public** key) in the deployment (the container/sidecar
+   that runs the backup) — or, on a **native-host systemd** install, in `/etc/plume/soc.conf`: since
+   **2026-08-09** (P8.7-a) every `PLUME_BACKUP_*` setting follows the same precedence
+   `env > PLUME_CONFIG > défaut`. *Before that date, this recipient written in `soc.conf` was silently
+   ignored and archives went out in passphrase mode again*: if you run a host configured that way,
+   your earlier archives are **symmetric** — check them with `backup-verify` before relying
+   on them. The daemon names the keys concerned at startup.
+3. Apply (your GitOps repository → pod restart). The next backup is encrypted to the recipient
+   (check `backup-verify` → `Asymmetric`).
+4. Run a **DR drill** (below) with the escrowed private key to PROVE that the new backup
+   restores. **Write down the switchover date** in your own operations documentation: earlier
+   objects remain in passphrase mode.
 
-## Restaurer un backup (DR réel)
+## Restoring a backup (real DR)
 
 ```sh
-# 1) Récupérer l'objet depuis le stockage objet (ici avec le client MinIO `mc`)
+# 1) Fetch the object from object storage (here with the MinIO client `mc`)
 mc cp <votre-bucket>/plume/plume-<TS>.db.age /restore/plume-<TS>.db.age
 
-# 2a) Backup en MODE PASSPHRASE : seule la clé SQLCipher suffit
-export PLUME_DB_KEY_FILE=/etc/plume/db/db.key            # ou PLUME_DB_KEY=<clé> (escrow)
+# 2a) Backup in PASSPHRASE MODE: the SQLCipher key alone is enough
+export PLUME_DB_KEY_FILE=/etc/plume/db/db.key            # or PLUME_DB_KEY=<key> (escrow)
 plume-daemon restore /restore/plume-<TS>.db.age /data/soc.db --force
 
-# 2b) Backup en MODE DESTINATAIRE : clé SQLCipher (cible) + identité age PRIVÉE (source)
+# 2b) Backup in RECIPIENT MODE: SQLCipher key (target) + PRIVATE age identity (source)
 export PLUME_DB_KEY_FILE=/etc/plume/db/db.key
-export PLUME_BACKUP_AGE_IDENTITY_FILE=/escrow/plume-backup-identity.key   # depuis l'escrow, JAMAIS en cluster
+export PLUME_BACKUP_AGE_IDENTITY_FILE=/escrow/plume-backup-identity.key   # from the escrow, NEVER in the cluster
 plume-daemon restore /restore/plume-<TS>.db.age /data/soc.db --force
 ```
 
-La destination est la base que le démon ouvrira, son `PLUME_DB` : `/data/soc.db` dans l'image livrée
-(`Dockerfile`), `/var/lib/plume/db/soc.db` sur un hôte installé par `bootstrap.sh` (`/etc/plume/soc.conf`).
-Une autre destination laisse le démon sur son ancienne base. Restaurez démon arrêté, comme pour la copie
-du timer hôte. `restore` refuse d'écraser une DB existante sans `--force`. La DB restaurée est byte-rejouable
-(round-trip prouvé par les tests).
+The destination is the database the daemon will open, its `PLUME_DB`: `/data/soc.db` in the shipped image
+(`Dockerfile`), `/var/lib/plume/db/soc.db` on a host installed by `bootstrap.sh` (`/etc/plume/soc.conf`).
+Any other destination leaves the daemon on its old database. Restore with the daemon stopped, as for the
+host-timer copy. `restore` refuses to overwrite an existing DB without `--force`. The restored DB is byte-replayable
+(round-trip proven by the tests).
 
-> ⚠️ **Lisez le code de sortie de `plume-daemon restore` LUI-MÊME, jamais celui d'un tube** (`P8.10-k`,
-> mesuré le 2026-09-09 sur le binaire : un déchiffrement qui échoue — passphrase ou identité absente —
-> rend **1**, imprime « déchiffrement age … No matching keys found », et **ne crée pas** la destination ;
-> avec `--force` sur une base existante, l'ancienne base reste **intacte**). Le code **zéro** et le fichier
-> **vide** vus pendant un incident viennent d'une forme de shell, pas de la commande : à travers un tube
-> (`… | tee`, `… | zstd -d > fichier`), `$?` est celui du DERNIER programme, et une redirection crée le
-> fichier avant que quiconque n'ait déchiffré quoi que ce soit. `set -o pipefail`, ou lisez `${PIPESTATUS[0]}`,
-> et ne relancez jamais le démon sur une destination que `restore` n'a pas annoncée en sortie standard.
+> ⚠️ **Read the exit code of `plume-daemon restore` ITSELF, never that of a pipe** (`P8.10-k`,
+> measured on 2026-09-09 on the binary: a decryption that fails — passphrase or identity missing —
+> returns **1**, prints « déchiffrement age … No matching keys found », and **does not create** the destination;
+> with `--force` on an existing database, the old database stays **intact**). The **zero** code and the **empty**
+> file seen during an incident come from a shell construct, not from the command: through a pipe
+> (`… | tee`, `… | zstd -d > fichier`), `$?` is that of the LAST program, and a redirection creates the
+> file before anyone has decrypted anything. `set -o pipefail`, or read `${PIPESTATUS[0]}`,
+> and never restart the daemon on a destination that `restore` has not announced on standard output.
 
 
-## Vérification automatisée (restore-test) et sa dégradation assumée
+## Automated check (restore-test) and its accepted degradation
 
-Le restore-test **in-cluster** ne peut PAS détenir l'identité privée (la mettre en cluster ruinerait le
-modèle du mode destinataire). Comportement de `plume-daemon backup-verify <obj>` :
+The **in-cluster** restore-test can NOT hold the private identity (putting it in the cluster would ruin the
+recipient mode's model). Behavior of `plume-daemon backup-verify <obj>`:
 
-- **Mode passphrase** : `PLUME_DB_KEY` est disponible → **vérif COMPLÈTE** : déchiffre, rejoue dans une
-  base jetable, **la rouvre avec sa clé et en compte le contenu** (tables de données et lignes). Une
-  archive qui se déchiffre et se rejoue mais ne rend **aucune ligne** est un **ÉCHEC** — c'est
-  précisément le cas qu'un contrôle « pas d'erreur » laissait passer.
-- **Mode destinataire** : identité privée **absente** → **vérif STRUCTURELLE** : valide l'en-tête
-  age v1, le stanza destinataire (`X25519`), et une taille plausible — **sans déchiffrer**. Sortie 0 =
-  structurellement sain ; le log indique clairement que la vérif complète exige l'identité escrow.
+- **Passphrase mode**: `PLUME_DB_KEY` is available → **FULL check**: decrypts, replays into a
+  throwaway database, **reopens it with its key and counts its content** (data tables and rows). An
+  archive that decrypts and replays but returns **no row** is a **FAILURE** — it is
+  precisely the case that a "no error" check let through.
+- **Recipient mode**: private identity **absent** → **STRUCTURAL check**: validates the age v1
+  header, the recipient stanza (`X25519`), and a plausible size — **without decrypting**. Exit 0 =
+  structurally sound; the log clearly states that the full check requires the escrow identity.
 
-En mode destinataire, la **vérif complète** devient donc un **DRILL DR périodique** (mensuel
-recommandé), exécuté hors-ligne / dans un pod jetable avec l'identité privée escrow :
+In recipient mode, the **full check** therefore becomes a **periodic DR DRILL** (recommended:
+monthly), run offline / in a throwaway pod with the escrowed private identity:
 
 ```sh
 export PLUME_DB_KEY=<clé-escrow>
 export PLUME_BACKUP_AGE_IDENTITY_FILE=/escrow/plume-backup-identity.key
-plume-daemon backup-verify /restore/plume-<TS>.db.age   # -> full_decrypt_verified=true attendu
+plume-daemon backup-verify /restore/plume-<TS>.db.age   # -> full_decrypt_verified=true expected
 ```
 
-**NE JAMAIS** stocker l'identité privée dans un Secret k8s pour automatiser ce drill : c'est
-précisément l'exposition que le mode destinataire élimine.
+**NEVER** store the private identity in a k8s Secret to automate this drill: that is
+precisely the exposure recipient mode eliminates.
 
-## L'exercice de restauration : sa trace, et ce qui rend son absence visible
+## The restore exercise: its trace, and what makes its absence visible
 
-Une sauvegarde dont **aucune ligne n'a jamais été restaurée** est une garantie non éprouvée. Le drill
-ci-dessus a lieu hors ligne, sur une machine que la production ne voit pas : sans trace, rien ne
-distingue « exercice fait le mois dernier » de « jamais fait depuis l'installation ».
+A backup of which **no row has ever been restored** is an untested guarantee. The drill
+above takes place offline, on a machine that production does not see: without a trace, nothing
+tells "exercise done last month" apart from "never done since the install".
 
-**Une vérification complète réussie émet une ATTESTATION** — une ligne sur la sortie standard, qui ne
-porte que des faits produits par l'exercice (archive, taille, mode de chiffrement, tables et lignes
-restaurées) et **aucun secret** :
+**A successful full check emits an ATTESTATION** — a line on standard output, which
+carries only facts produced by the exercise (archive, size, encryption mode, tables and rows
+restored) and **no secret**:
 
 ```
 PLUME-EXERCICE-RESTAURATION-1 {"ts":…,"archive":"plume-<TS>.db.age","archive_octets":…,
                                "chiffrement":"asymmetric","tables":…,"lignes":…}
 ```
 
-Cette ligne se ramène sur le nœud — copier-coller, clé USB, `ssh` — **sans qu'aucune identité privée ne
-fasse le voyage inverse** :
+This line is brought back to the node — copy-paste, USB key, `ssh` — **without any private identity
+making the reverse trip**:
 
 ```sh
-# sur la machine d'exercice (isolée, avec l'identité d'escrow)
+# on the exercise machine (isolated, with the escrow identity)
 plume-daemon backup-verify /restore/plume-<TS>.db.age > /media/attestation.txt
 
-# sur le nœud (qui n'a jamais vu l'identité privée) — forme hôte natif
+# on the node (which has never seen the private identity) — native host form
 sudo env PLUME_CONFIG=/etc/plume/soc.conf /usr/local/bin/plume-daemon restore-drill record < /media/attestation.txt
-sudo env PLUME_CONFIG=/etc/plume/soc.conf /usr/local/bin/plume-daemon restore-drill status     # sortie 0 = éprouvé récemment ; 3 = un exercice est DÛ
+sudo env PLUME_CONFIG=/etc/plume/soc.conf /usr/local/bin/plume-daemon restore-drill status     # exit 0 = tested recently; 3 = an exercise is DUE
 ```
 
-En Docker et en k3s, les deux se lancent dans le conteneur du démon, l'attestation arrivant par l'entrée
-standard (`-T` pour Docker, `-i` pour k3s) :
+In Docker and in k3s, both run in the daemon's container, the attestation arriving on standard
+input (`-T` for Docker, `-i` for k3s):
 
 ```sh
 docker compose exec -T soc plume-daemon restore-drill record < /media/attestation.txt
 kubectl -n soc exec -i deploy/soc -- plume-daemon restore-drill record < /media/attestation.txt
 ```
 
-et de même `restore-drill status`, sans redirection. En hôte natif, `sudo` ne transmet pas le
-`PLUME_CONFIG` de l'unité : sans lui, `record` écrit l'attestation dans `/var/lib/plume/db/plume.db` et
-`status` lit cette même base, qui n'est pas celle du démon. `record` écrit dans la base : sur un nœud
-neuf, démarrez le démon une fois avant, sinon il la crée en clair
-([`INSTALLER-SANS-OUVRIR-DE-BRECHE.md` §1.1](INSTALLER-SANS-OUVRIR-DE-BRECHE.md#11-démarrer-le-démon-une-fois-avant-toute-sous-commande-qui-écrit-dans-la-base)).
+and likewise `restore-drill status`, without redirection. On a native host, `sudo` does not pass on the
+unit's `PLUME_CONFIG`: without it, `record` writes the attestation into `/var/lib/plume/db/plume.db` and
+`status` reads that same database, which is not the daemon's. `record` writes to the database: on a fresh
+node, start the daemon once beforehand, otherwise it creates it in plaintext
+([`INSTALLER-SANS-OUVRIR-DE-BRECHE.md` §1.1](INSTALLER-SANS-OUVRIR-DE-BRECHE.md#11-start-the-daemon-once-before-any-subcommand-that-writes-to-the-database)).
 
-`record` **refuse** une attestation datée dans le futur (au-delà d'une heure de tolérance d'horloge),
-une attestation plus ancienne que celle déjà enregistrée, et une attestation qui n'atteste rien
-(zéro table ou zéro ligne).
+`record` **refuses** an attestation dated in the future (beyond one hour of clock tolerance),
+an attestation older than the one already recorded, and an attestation that attests nothing
+(zero tables or zero rows).
 
-**Ce que l'exploitant lit sans rien lancer**, une fois l'attestation posée :
+**What the operator reads without running anything**, once the attestation is recorded:
 
-| Où | Quoi |
+| Where | What |
 |---|---|
-| `/api/system/health`, panneau Système | composant `restauration` — `jamais` / `frais` / `perime` / `mode_non_eprouve`, avec l'âge |
-| `/metrics` | `plume_restore_drill_overdue` (1 = un exercice est dû), `plume_restore_drill_age_seconds` et `plume_restore_drill_last_success_timestamp_seconds` — **absentes tant qu'aucun exercice n'a eu lieu**, parce qu'un âge de 0 se lirait « restauré à l'instant » |
-| SOC | événement `health` **non purgeable** émis par tout chemin qui publie une archive — la sous-commande `backup` et le cycle natif du démon (dédup quotidienne) — tant qu'un exercice est dû |
+| `/api/system/health`, System panel | `restauration` component — `jamais` / `frais` / `perime` / `mode_non_eprouve`, with the age |
+| `/metrics` | `plume_restore_drill_overdue` (1 = an exercise is due), `plume_restore_drill_age_seconds` and `plume_restore_drill_last_success_timestamp_seconds` — **absent as long as no exercise has taken place**, because an age of 0 would read as "restored just now" |
+| SOC | **non-purgeable** `health` event emitted by every path that publishes an archive — the `backup` subcommand and the daemon's native cycle (daily dedup) — as long as an exercise is due |
 
-Deux règles portées par le mécanisme, et pas par une phrase :
+Two rules carried by the mechanism, and not by a sentence:
 
-1. **`PLUME_RESTORE_DRILL_MAX_AGE_DAYS`** (défaut **31**, `0` = suivi désactivé et affiché comme tel)
-   fixe à partir de quand un exercice est périmé. L'état **vieillit** : il passe seul de `frais` à
+1. **`PLUME_RESTORE_DRILL_MAX_AGE_DAYS`** (default **31**, `0` = tracking disabled and shown as such)
+   sets when an exercise goes stale. The state **ages**: it moves on its own from `frais` to
    `perime`.
-2. **Un exercice mené sur le chemin symétrique ne clôt pas l'obligation d'une installation qui
-   séquestre en asymétrique** (`PLUME_BACKUP_AGE_RECIPIENT` posé) : l'état est alors
-   `mode_non_eprouve`, parce que le chemin qui servira au sinistre — l'identité privée hors cluster —
-   n'a pas été emprunté.
+2. **An exercise carried out on the symmetric path does not close the obligation of an installation that
+   escrows asymmetrically** (`PLUME_BACKUP_AGE_RECIPIENT` set): the state is then
+   `mode_non_eprouve`, because the path that will serve in a disaster — the private identity outside the cluster —
+   has not been taken.
 
-**Ce que cela ne prouve pas**, et c'est dit ici pour être opposable : l'attestation défend contre
-l'**oubli**, pas contre une falsification délibérée — une ligne peut être recopiée à la main. Le
-séquestre, lui, reste intact : aucune identité privée ne vit dans le dépôt, dans un test, ni dans
-l'intégration continue.
+**What this does not prove**, and it is stated here so that it can be held to: the attestation defends against
+**forgetting**, not against deliberate falsification — a line can be copied by hand. The
+escrow, for its part, stays intact: no private identity lives in the repository, in a test, or in
+continuous integration.
 
-## La copie hors site : ce que plume en sait, et ce qu'il avoue
+## The off-site copy: what plume knows about it, and what it admits
 
-Le magasin des sauvegardes peut vivre sur le même disque que la base : perdre ce disque perd alors
-la base ET ses sauvegardes. La copie hors site est **tirée** par un poste extérieur (la production
-n'a aucun accès vers lui). Après chaque copie vérifiée, ce poste demande au nœud, par une commande
-forcée, d'écrire un fichier d'attestation d'**une ligne**, daté à l'horloge du nœud :
+The backup store can live on the same disk as the database: losing that disk then loses
+the database AND its backups. The off-site copy is **pulled** by an outside desktop (production
+has no access to it). After each verified copy, that desktop asks the node, through a forced
+command, to write an attestation file of **one line**, dated by the node's clock:
 
 ```
 <horodatage unix> plume-AAAAMMJJTHHMMSSZ.db.age <sha256 hexadécimal, 64 caractères>
 ```
 
-plume lit ce fichier à chaque calcul de santé (lecture bornée, aucune base ouverte) et en publie
-l'âge. Le chemin du fichier n'est jamais servi : le détail nomme le réglage, pas sa valeur.
+plume reads this file on every health computation (bounded read, no database opened) and publishes
+its age. The file's path is never served: the detail names the setting, not its value.
 
-| Réglage | Défaut | Effet |
+| Setting | Default | Effect |
 |---|---|---|
-| `PLUME_COPIE_HORS_SITE_ATTESTATION` | vide | chemin du fichier d'attestation (montable en lecture seule) ; vide = copie **non déclarée** |
-| `PLUME_COPIE_HORS_SITE_MAX_AGE_HEURES` | `48` | âge au-delà duquel la copie est **périmée** ; `0` = suivi désactivé et dit ; une valeur qui n'est pas un entier positif ou nul est **refusée** et nommée, jamais remplacée par le défaut |
+| `PLUME_COPIE_HORS_SITE_ATTESTATION` | empty | path of the attestation file (mountable read-only); empty = copy **not declared** |
+| `PLUME_COPIE_HORS_SITE_MAX_AGE_HEURES` | `48` | age beyond which the copy is **stale**; `0` = tracking disabled and said so; a value that is not a non-negative integer is **refused** and named, never replaced by the default |
 
-| État (`copy_state`) | Couleur | Ce qu'il dit |
+| State (`copy_state`) | Color | What it says |
 |---|---|---|
-| `non_declaree` | jaune | aucun fichier déclaré : plume ne sait pas si les sauvegardes quittent le disque. Jaune et non `idle`, parce que `idle` compte comme un vert dans `plume_component_up` et dans la posture, alors que c'est exactement le risque que ce composant existe pour dire ; pas rouge, parce qu'aucun sous-système n'est en panne maintenant |
-| `non_suivi` | `idle` | `PLUME_COPIE_HORS_SITE_MAX_AGE_HEURES=0`, et le détail le nomme |
-| `refusee` | jaune | une attestation attendue n'a pas pu être établie ; la cause est dans `refusal` et le détail dit que ce n'est **pas** « jamais copiée » |
-| `fraiche` | vert | dernière copie dans l'âge maximal (bord compris) : âge, nom d'archive, empreinte |
-| `perimee` | jaune | dernière copie plus vieille que l'âge maximal |
+| `non_declaree` | yellow | no file declared: plume does not know whether the backups leave the disk. Yellow and not `idle`, because `idle` counts as a green in `plume_component_up` and in the posture, whereas this is exactly the risk this component exists to state; not red, because no subsystem is down right now |
+| `non_suivi` | `idle` | `PLUME_COPIE_HORS_SITE_MAX_AGE_HEURES=0`, and the detail names it |
+| `refusee` | yellow | an expected attestation could not be established; the cause is in `refusal` and the detail says this is **not** "never copied" |
+| `fraiche` | green | latest copy within the maximum age (boundary included): age, archive name, fingerprint |
+| `perimee` | yellow | latest copy older than the maximum age |
 
-Causes d'un refus (`refusal`) : `reglage_age_illisible`, `attestation_absente`,
-`attestation_illisible` (errno), `attestation_pas_un_fichier`, `attestation_trop_grande` (taille au-delà de
-la borne de lecture, fichier non lu), `ligne_hors_forme` (pas exactement une ligne de trois champs séparés
-par une espace, `\n` final admis), `horodatage_hors_forme`, `nom_d_archive_hors_forme`,
-`empreinte_hors_forme`, `datee_dans_le_futur` (au-delà d'une heure d'avance).
+Causes of a refusal (`refusal`): `reglage_age_illisible`, `attestation_absente`,
+`attestation_illisible` (errno), `attestation_pas_un_fichier`, `attestation_trop_grande` (size beyond
+the read bound, file not read), `ligne_hors_forme` (not exactly one line of three fields separated
+by a space, final `\n` allowed), `horodatage_hors_forme`, `nom_d_archive_hors_forme`,
+`empreinte_hors_forme`, `datee_dans_le_futur` (more than one hour ahead).
 
-`/metrics` en dérive `plume_offsite_copy_overdue` (1 = périmée) et `plume_offsite_copy_age_seconds`,
-**absentes tant que rien n'est établi** (non déclarée, refusée, non suivie) : une alerte se câble sur
-`plume_offsite_copy_overdue == 1` **et** sur `plume_component_up{component="copie_hors_site"} < 1`.
+`/metrics` derives `plume_offsite_copy_overdue` (1 = stale) and `plume_offsite_copy_age_seconds` from it,
+**absent as long as nothing is established** (not declared, refused, not tracked): an alert is wired on
+`plume_offsite_copy_overdue == 1` **and** on `plume_component_up{component="copie_hors_site"} < 1`.
 
-**Ce que cela ne prouve pas** : l'attestation dit qu'une copie a eu lieu, pas qu'elle se restaure
-(c'est l'objet de l'exercice ci-dessus), et elle défend contre l'**oubli** (une tâche qui ne tourne
-plus), pas contre une ligne écrite à la main.
+**What this does not prove**: the attestation says that a copy took place, not that it restores
+(that is the purpose of the exercise above), and it defends against **forgetting** (a job that no longer
+runs), not against a line written by hand.
 
 ## Rotation
 
-- **Clé SQLCipher** : rotation = re-chiffrer la DB live ; les backups en mode passphrase restent
-  lisibles avec l'**ancienne** clé (escrow historisé).
-- **Identité age de backup** : générer une nouvelle paire, poser la nouvelle clé **publique**, escrow
-  la nouvelle **privée** ; conserver l'ancienne privée tant que des backups chiffrés avec l'ancienne
-  clé sont dans la rétention (fenêtre `PLUME_BACKUP_KEEP`). Découplé de la clé SQLCipher : les deux
-  rotations sont indépendantes.
+- **SQLCipher key**: rotation = re-encrypt the live DB; passphrase-mode backups remain
+  readable with the **old** key (versioned escrow).
+- **Backup age identity**: generate a new pair, set the new **public** key, escrow
+  the new **private** one; keep the old private one as long as backups encrypted with the old
+  key are within retention (`PLUME_BACKUP_KEEP` window). Decoupled from the SQLCipher key: the two
+  rotations are independent.

@@ -1,126 +1,126 @@
-# Ce qu'un capteur émet — les valeurs, et ce qu'elles veulent dire
+# What a sensor emits — the values, and what they mean
 
-[Français](VALEURS-DES-CAPTEURS.md) | [English](VALEURS-DES-CAPTEURS.en.md)
+[English](VALEURS-DES-CAPTEURS.md) | [Français](VALEURS-DES-CAPTEURS.fr.md)
 
-**État : 📐 conception.** Le contrat décrit ici est **partiellement présent dans les producteurs
-livrés** et **n'est câblé nulle part** : aucune de ces déclarations n'atteint le fil ni l'écran. Ce
-document dit ce qui existe, ce qui manque, et pourquoi l'écart ne se comble pas à la main. Clés de
-feuille de route : `P11.19-a` (rien ne DÉCLARE ce qu'un capteur émet) et `P11.19-b` (les
-déclarations Rust ne sont TENUES que hors de l'artefact livré).
-
----
-
-## Le problème, tel qu'il se mesure
-
-Un exploitant lit dans la console des valeurs abrégées — `collection-reducing`, `subsystem-absent`,
-`illisible`, `@status` — qu'aucune surface n'explique. L'explication ne peut pas être écrite à la
-main, et ce n'est pas une question de courage : elle serait **fausse d'emblée**.
-
-**La clé n'est pas le champ, c'est le couple (source, champ).** Mesuré sur l'arbre du dépôt le
-2026-08-26 : onze fichiers livrés de la surface d'extraction inventoriée écrivent un champ étendu du
-même nom — `fields.type` — avec **cinq espaces de valeurs disjoints** : réduction de collecte,
-disponibilité d'un capteur, couverture de règles, genre d'hôte, genre de fichier. Trois producteurs
-Rust de plus l'écrivent hors de cette surface. Une explication indexée par le **nom** du champ serait
-donc juste pour un producteur et fausse pour les dix autres.
-
-**L'ensemble se dérive du prédicat du producteur, pas de l'alphabet de son outil.** Le capteur
-d'ACL de données classe des entrées de système de fichiers avec `find -printf %y`, dont l'alphabet
-compte huit lettres ; son propre prédicat de sélection n'en laisse passer que **deux**. Publier
-l'alphabet de l'outil au lieu de l'ensemble du capteur, c'est promettre à l'analyste des valeurs qui
-n'arriveront jamais.
-
-**Le modèle commun ne déclare qu'un vocabulaire, et il est plus large que chaque capteur.**
-`config.d/cim/cim.v1.json` déclare un `action_vocab` neutre de onze mots ; le producteur Windows de
-l'agent, lui, n'écrit `fields.action` que sur quatre issues (les autres cas sont soit résolus depuis
-l'enregistrement, soit **déclarés sans issue**). Le vocabulaire commun est un **sur-ensemble** : il
-dit ce qu'un champ peut valoir dans le produit, jamais ce que **ce** capteur peut écrire.
+**State: 📐 design.** The contract described here is **partly present in the shipped
+producers** and **wired nowhere**: none of these declarations reaches the wire or the screen. This
+document says what exists, what is missing, and why the gap cannot be closed by hand. Roadmap
+keys: `P11.19-a` (nothing DECLARES what a sensor emits) and `P11.19-b` (the Rust
+declarations are only HELD outside the shipped artifact).
 
 ---
 
-## Ce qui existe déjà dans les producteurs livrés
+## The problem, as it is measured
 
-Le geste n'est pas absent — il est **partiel et non dérivable**. Plusieurs capteurs livrés déclarent
-déjà l'ensemble fermé d'un champ qu'ils émettent, chacun dans la forme de son langage :
+An operator reads abbreviated values in the console — `collection-reducing`, `subsystem-absent`,
+`illisible`, `@status` — that no surface explains. The explanation cannot be written by
+hand, and it is not a matter of effort: it would be **wrong from the start**.
 
-| Forme | Où elle vit | Le contrôle est-il dans l'artefact **livré** ? |
+**The key is not the field, it is the (source, field) pair.** Measured on the repository tree on
+2026-08-26: eleven shipped files of the inventoried extraction surface write an extended field with the
+same name — `fields.type` — with **five disjoint value spaces**: collection reduction,
+sensor availability, rule coverage, host kind, file kind. Three more Rust
+producers write it outside that surface. An explanation indexed by the field's **name** would
+therefore be right for one producer and wrong for the ten others.
+
+**The set derives from the producer's predicate, not from its tool's alphabet.** The data
+ACL sensor classifies file system entries with `find -printf %y`, whose alphabet
+has eight letters; its own selection predicate lets only **two** through. Publishing
+the tool's alphabet instead of the sensor's set promises the analyst values that
+will never arrive.
+
+**The common model declares only one vocabulary, and it is broader than each sensor.**
+`config.d/cim/cim.v1.json` declares a neutral `action_vocab` of eleven words; the agent's Windows
+producer, for its part, writes `fields.action` for only four outcomes (the other cases are either resolved from
+the record, or **declared without an outcome**). The common vocabulary is a **superset**: it
+says what values a field can take in the product, never what **this** sensor can write.
+
+---
+
+## What already exists in the shipped producers
+
+The operation is not absent — it is **partial and not derivable**. Several shipped sensors already
+declare the closed set of a field they emit, each in the form of its own language:
+
+| Form | Where it lives | Is the check in the **shipped** artifact? |
 |---|---|---|
-| Table de mots + `debug_assert!` | producteurs Rust (agent d'endpoint, collecteurs mail et syslog) | **non** — voir ci-dessous : le contrôle est effacé par la compilation de release |
-| Table `@(…)` + `-notcontains` + `throw` | collecteur Windows | **oui** — le script EST l'artefact ; une valeur inventée lève, elle ne se glisse pas dans la base |
-| Bloc de commentaire « vocabulaire fermé de `<champ>` » | bibliothèque shell des capteurs | **non** — c'est de la prose : un script POSIX n'offre pas de site d'échec bon marché |
+| Word table + `debug_assert!` | Rust producers (endpoint agent, mail and syslog collectors) | **no** — see below: the check is erased by the release build |
+| `@(…)` table + `-notcontains` + `throw` | Windows collector | **yes** — the script IS the artifact; an invented value throws, it does not slip into the database |
+| Comment block "closed vocabulary of `<champ>`" | the sensors' shell library | **no** — it is prose: a POSIX script offers no cheap failure site |
 
-**CE DOCUMENT AFFIRMAIT LE CONTRAIRE POUR LA LIGNE RUST, ET C'ÉTAIT FAUX.** Il écrivait « une valeur
-hors table fait tomber le site ». Mesuré le 2026-08-26 : les six déclarations Rust sont tenues par
-`debug_assert!`, et les trois `[profile.release]` des caisses productrices ne posent pas
-`debug-assertions` — `cargo build --release` efface donc ces contrôles, et c'est en `--release` que
-les binaires sont bâtis. **Le producteur livré n'a aucun contrôle sur ces valeurs.** Le code le
-disait déjà à sa manière (« en production le contrôle s'efface ») ; c'est le document et la garde qui
-présentaient l'effacement comme une garantie. Ce n'est pas un correctif d'écriture : ce qu'un
-producteur doit FAIRE d'un mot étranger en production — tomber, le remplacer par une sentinelle, ou
-l'avouer dans un champ — est une décision de produit, prise dans les caisses Rust. Elle porte sa clé
-ouverte : `P11.19-b`.
+**THIS DOCUMENT CLAIMED THE OPPOSITE FOR THE RUST ROW, AND IT WAS WRONG.** It said "a value
+outside the table brings the site down". Measured on 2026-08-26: the six Rust declarations are held by
+`debug_assert!`, and the three `[profile.release]` of the producing crates do not set
+`debug-assertions` — `cargo build --release` therefore erases these checks, and it is with `--release` that
+the binaries are built. **The shipped producer has no check on these values.** The code
+already said so in its own way ("in production the check is erased"); it was the document and the guard that
+presented the erasure as a guarantee. This is not a wording fix: what a
+producer must DO with a foreign word in production — fail, replace it with a sentinel, or
+admit it in a field — is a product decision, taken in the Rust crates. It carries its open
+key: `P11.19-b`.
 
-Ces déclarations sont **dérivées, pas listées** : la garde
+These declarations are **derived, not listed**: the guard
 [`check_a_producer_declares_the_values_it_emits.py`](../.github/scripts/check_a_producer_declares_the_values_it_emits.py)
-les reconnaît à leur forme, les exige **attachées à une clé que le producteur écrit réellement** dans
-le sac `fields`, et **NOMME la portée de chaque contrôle** — `livrée`, `développement`, ou refusée
-quand le site d'échec ne se lit pas. Cette portée est elle-même dérivée : la garde lit le
-`[profile.release]` de la caisse, si bien qu'y poser `debug-assertions = true` demain la fait
-reclasser sans que personne ne réécrive un nombre. Deux cliquets, disjoints, qui ne peuvent que
-descendre : la prose shell ne peut pas croître, et le nombre de contrôles qui n'atteignent pas
-l'artefact livré non plus. Un producteur ajouté demain entre d'office dans sa portée.
+recognizes them by their form, requires them to be **attached to a key the producer actually writes** into
+the `fields` bag, and **NAMES the scope of each check** — `livrée` (shipped), `développement` (development), or refused
+when the failure site cannot be read. That scope is itself derived: the guard reads the crate's
+`[profile.release]`, so that setting `debug-assertions = true` there tomorrow makes it
+reclassify without anyone rewriting a number. Two disjoint ratchets that can only
+go down: the shell prose cannot grow, and neither can the number of checks that do not reach the
+shipped artifact. A producer added tomorrow falls into its scope out of the box.
 
-**Elles ne s'accordent pas entre elles, et c'est délibéré.** Le même champ `fields.reason` est
-déclaré par cinq fichiers livrés avec **trois cardinalités différentes** : la bibliothèque shell et
-le collecteur Windows portent le vocabulaire complet ; l'agent en retire le mot qui désigne un
-interrupteur d'opérateur, qu'aucune de ses sources ne porte ; les collecteurs mail et syslog n'en
-gardent que les deux mots que leur lecture peut produire. Chacun a raison **pour lui**. C'est la
-démonstration la plus courte que la clé doit être le couple : une explication unique de `reason`
-serait fausse pour trois producteurs sur cinq.
+**They do not agree with each other, and that is deliberate.** The same field `fields.reason` is
+declared by five shipped files with **three different cardinalities**: the shell library and
+the Windows collector carry the full vocabulary; the agent removes from it the word that denotes an
+operator switch, which none of its sources carries; the mail and syslog collectors keep only
+the two words their reading can produce. Each one is right **for itself**. It is the
+shortest demonstration that the key must be the pair: a single explanation of `reason`
+would be wrong for three producers out of five.
 
-**Et même la meilleure d'entre elles est un sur-ensemble.** La table d'issues du collecteur Windows
-contient deux **sentinelles** — « pas d'issue à porter » et « issue à lire dans l'enregistrement » —
-qui ne sont jamais écrites dans le sac : le champ n'est posé que pour les mots restants. Déclarer un
-ensemble fermé ne suffit donc pas ; il faut déclarer **celui qui est émis**.
-
----
-
-## Ce qui manque, et où exactement
-
-1. **Rien ne relie une déclaration à sa source.** Les déclarations vivent dans les fichiers des
-   producteurs ; le nom de source sous lequel leurs événements arrivent est décidé ailleurs (au
-   moment de l'appel). Le couple (source, champ) n'est reconstitué nulle part.
-2. **Rien ne sert ces ensembles.** La route de schéma de complétion sert déjà un objet `values` —
-   c'est **exactement** la surface qu'une couverture lirait — mais ses clés sont des **noms de
-   champ** (`category`, `action`, `severity`, `source`), pas des couples. Les champs étendus n'y
-   figurent pas du tout, faute d'amont qui les déclare.
-3. **L'inventaire des champs collectés ne parle pas de valeurs.** Il associe un champ étendu à **un**
-   fichier livré qui l'émet — sa question est « plume collecte-t-il ce champ ? », pas « que peut-il
-   valoir ? ». Sur les onze producteurs de `fields.type`, il n'en cite qu'un : c'est correct pour son
-   usage, et inutilisable pour celui-ci.
-4. **La console ne peut pas distinguer ce qu'un capteur a vu de ce que l'ingestion a estampillé.**
-   Le démon pose lui-même une clé de version de contrat dans le sac de **chaque** événement, et les
-   voies de réception en posent d'autres (métadonnées d'enveloppe de protocole). À l'écran, elles
-   s'affichent au même rang qu'une observation de capteur. Le mécanisme voisin qui écarte certaines
-   clés d'une liste de facettes est une **liste littérale** : y ajouter le marqueur suivant à la main
-   est précisément le geste à ne pas faire.
+**And even the best of them is a superset.** The Windows collector's outcome table
+contains two **sentinels** — "no outcome to carry" and "outcome to be read from the record" —
+which are never written into the bag: the field is only set for the remaining words. Declaring a
+closed set is therefore not enough; one must declare **the one that is emitted**.
 
 ---
 
-## La forme visée
+## What is missing, and exactly where
 
-* **Le capteur déclare**, dans son propre fichier, à côté du site d'émission : pour chaque champ
-  qu'il écrit, l'ensemble **fermé** des valeurs qu'il peut prendre **et le sens de chacune**. Cet
-  ensemble se dérive du prédicat du capteur, jamais de l'alphabet de l'outil employé.
-* **La déclaration est tenue DANS L'ARTEFACT LIVRÉ** : une valeur hors ensemble ne se glisse pas dans
-  la base, et le contrôle qui l'en empêche est celui que le binaire de production exécute — pas
-  celui qu'une compilation de développement seule aurait gardé. C'est l'écart mesuré aujourd'hui,
-  porté par `P11.19-b`.
-* **Le démon la sert** à côté du vocabulaire existant, **indexée par le couple (source, champ)** —
-  la même surface que `values`, un cran plus précis. Il y déclare aussi, distinctement, les clés
-  qu'il **estampille lui-même**, dérivées des sites d'écriture de l'ingestion et non d'une liste.
-* **La console porte l'explication en un seul endroit** : la boîte de valeur que la fabrique de
-  cellules pose déjà sur chaque cellule. Là où la déclaration manque, l'écran **le dit** — un blanc
-  se lirait comme une valeur évidente.
+1. **Nothing links a declaration to its source.** The declarations live in the producers'
+   files; the source name under which their events arrive is decided elsewhere (at
+   call time). The (source, field) pair is reconstructed nowhere.
+2. **Nothing serves these sets.** The completion schema route already serves a `values` object —
+   it is **exactly** the surface that coverage would read — but its keys are **field
+   names** (`category`, `action`, `severity`, `source`), not pairs. Extended fields do not
+   appear there at all, for lack of an upstream that declares them.
+3. **The inventory of collected fields does not talk about values.** It associates an extended field with **one**
+   shipped file that emits it — its question is "does plume collect this field?", not "what values
+   can it take?". Of the eleven producers of `fields.type`, it cites only one: that is correct for its
+   purpose, and unusable for this one.
+4. **The console cannot tell what a sensor saw from what ingestion stamped.**
+   The daemon itself sets a contract version key in the bag of **every** event, and the
+   reception paths set others (protocol envelope metadata). On screen, they
+   are displayed at the same rank as a sensor observation. The neighboring mechanism that keeps certain
+   keys out of a facet list is a **literal list**: adding the next marker to it by hand
+   is precisely the operation not to perform.
 
-Tant que ce chemin n'existe pas, **aucune explication de valeur n'est écrite** dans la console : une
-explication devinée est pire qu'une absence, parce qu'elle fait cesser de chercher.
+---
+
+## The target shape
+
+* **The sensor declares**, in its own file, next to the emission site: for each field
+  it writes, the **closed** set of values it can take **and the meaning of each**. That
+  set derives from the sensor's predicate, never from the alphabet of the tool it uses.
+* **The declaration is held IN THE SHIPPED ARTIFACT**: a value outside the set does not slip into
+  the database, and the check that prevents it is the one the production binary runs — not
+  the one that only a development build would have kept. This is the gap measured today,
+  carried by `P11.19-b`.
+* **The daemon serves it** next to the existing vocabulary, **indexed by the (source, field) pair**
+  — the same surface as `values`, one notch more precise. It also declares there, separately, the keys
+  it **stamps itself**, derived from the ingestion's write sites and not from a list.
+* **The console carries the explanation in a single place**: the value box that the cell
+  factory already places on every cell. Where the declaration is missing, the screen **says so** — a blank
+  would read as an obvious value.
+
+Until this path exists, **no value explanation is written** in the console: a
+guessed explanation is worse than none, because it makes people stop looking.

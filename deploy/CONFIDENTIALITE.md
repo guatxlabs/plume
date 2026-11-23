@@ -1,116 +1,116 @@
-# Confidentialité (P4)
+# Confidentiality (P4)
 
-[Français](CONFIDENTIALITE.md) | [English](CONFIDENTIALITE.en.md)
+[English](CONFIDENTIALITE.md) | [Français](CONFIDENTIALITE.fr.md)
 
 ## Transport — TLS
-Le daemon sert en HTTP sur la boucle locale par défaut (bind configurable par `PLUME_ADDR`). Pour le réseau, deux voies :
-- **TLS natif** : `PLUME_TLS_CERT` + `PLUME_TLS_KEY` (chemins PEM lisibles par l'utilisateur du démon). Un PEM illisible
-  arrête le démon au lieu de le faire retomber en HTTP ; HSTS et l'attribut `Secure` des cookies sont émis avec ce TLS, ou derrière un mandataire (ci-dessous).
-  Aucun certificat client n'est vérifié : un mTLS se pose sur un mandataire.
-- **une terminaison TLS devant** (le cookie de session n'y est marqué `Secure`, avec HSTS, que si `PLUME_TLS_TERMINATED_UPSTREAM=1`, ou si le mandataire figure dans `PLUME_TRUSTED_PROXIES` et envoie `X-Forwarded-Proto: https` ; sinon, ne servez pas le même nom en clair) :
-  - **Caddy** : `soc.tondomaine.tld { reverse_proxy 127.0.0.1:7000 }` (TLS auto Let's Encrypt).
-  - **nginx / traefik** : `proxy_pass http://127.0.0.1:7000;` + certificat.
-- **k3s** : l'Ingress livré est en TLS seul (entrée `websecure`, certificat du `Secret` `soc-tls`, cf. `deploy/k3s.yaml`), `Host` = `PLUME_HOST`.
-- Cert auto-signé rapide : `openssl req -x509 -newkey rsa:2048 -keyout key.pem -out cert.pem -days 365 -nodes -subj /CN=soc.local`.
+The daemon serves HTTP on the loopback by default (bind configurable through `PLUME_ADDR`). For the network, two ways:
+- **Native TLS**: `PLUME_TLS_CERT` + `PLUME_TLS_KEY` (PEM paths readable by the daemon's user). An unreadable PEM
+  stops the daemon instead of letting it fall back to HTTP; HSTS and the `Secure` attribute of cookies are emitted with this TLS, or behind a proxy (below).
+  No client certificate is verified: mTLS is set up on a proxy.
+- **TLS termination in front** (the session cookie is only marked `Secure` there, with HSTS, if `PLUME_TLS_TERMINATED_UPSTREAM=1`, or if the proxy is listed in `PLUME_TRUSTED_PROXIES` and sends `X-Forwarded-Proto: https`; otherwise, do not serve the same name in plaintext):
+  - **Caddy**: `soc.tondomaine.tld { reverse_proxy 127.0.0.1:7000 }` (automatic Let's Encrypt TLS).
+  - **nginx / traefik**: `proxy_pass http://127.0.0.1:7000;` + certificate.
+- **k3s**: the shipped Ingress is TLS only (entrypoint `websecure`, certificate from the `Secret` `soc-tls`, see `deploy/k3s.yaml`), `Host` = `PLUME_HOST`.
+- Quick self-signed cert: `openssl req -x509 -newkey rsa:2048 -keyout key.pem -out cert.pem -days 365 -nodes -subj /CN=soc.local`.
 
-## Auth des agents — tokens (recommandé)
-Sur le central, crée un token par machine (révocable, ≠ mot de passe partagé). **La portée se DÉCLARE** :
+## Agent authentication — tokens (recommended)
+On the central, create one token per machine (revocable, ≠ shared password). **The scope is DECLARED**:
 ```
-sudo env PLUME_CONFIG=/etc/plume/soc.conf /usr/local/bin/plume-daemon token agent-example agent.example.org   # MACHINE : lié à cet hôte (hôte attesté à l'écriture)
-sudo env PLUME_CONFIG=/etc/plume/soc.conf /usr/local/bin/plume-daemon token relais-siem --relais             # RELAIS  : forwarder multi-hôtes (hôte NON attesté)
+sudo env PLUME_CONFIG=/etc/plume/soc.conf /usr/local/bin/plume-daemon token agent-example agent.example.org   # MACHINE: bound to this host (host attested on write)
+sudo env PLUME_CONFIG=/etc/plume/soc.conf /usr/local/bin/plume-daemon token relais-siem --relais             # RELAY: multi-host forwarder (host NOT attested)
 ```
-C'est la forme hôte natif : `sudo` ne transmet pas le `PLUME_CONFIG` de l'unité, et sans lui le jeton
-s'écrit dans une autre base que celle du démon. En Docker et en k3s, la sous-commande se lance dans le
-conteneur du démon (`docker compose exec soc plume-daemon token …`,
-`kubectl -n soc exec deploy/soc -- plume-daemon token …`). Sur un central neuf, le démon démarre **avant** toute sous-commande
-([`../docs/INSTALLER-SANS-OUVRIR-DE-BRECHE.md` §1.1](../docs/INSTALLER-SANS-OUVRIR-DE-BRECHE.md#11-démarrer-le-démon-une-fois-avant-toute-sous-commande-qui-écrit-dans-la-base)).
-La forme à deux arguments (`plume-daemon token <nom>`) est **refusée** : elle produisait un jeton non lié,
-avec lequel une enveloppe `{"host":"CONTROLEUR-DE-DOMAINE-USURPE"}` était acceptée (202) et stockée sous ce
-nom-là (mesuré le 2026-08-02). Le token s'affiche **une seule fois**.
+This is the native host form: `sudo` does not pass on the unit's `PLUME_CONFIG`, and without it the token
+is written into another database than the daemon's. In Docker and in k3s, the subcommand runs in the
+daemon's container (`docker compose exec soc plume-daemon token …`,
+`kubectl -n soc exec deploy/soc -- plume-daemon token …`). On a new central, the daemon starts **before** any subcommand
+([`../docs/INSTALLER-SANS-OUVRIR-DE-BRECHE.md` §1.1](../docs/INSTALLER-SANS-OUVRIR-DE-BRECHE.md#11-start-the-daemon-once-before-any-subcommand-that-writes-to-the-database)).
+The two-argument form (`plume-daemon token <nom>`) is **refused**: it produced an unbound token,
+with which an envelope `{"host":"CONTROLEUR-DE-DOMAINE-USURPE"}` was accepted (202) and stored under that
+very name (measured on 2026-08-02). The token is displayed **only once**.
 
-Puis sur l'agent, dans `/etc/plume/plume.conf` : `PLUME_TOKEN=<token>`. **Ne le passez jamais sur une ligne
-de commande** : `sudo` journalise sa commande complète, et le capteur `journal` expédie ces lignes au SOC —
-le jeton y arriverait en clair (cf. l'avertissement du `README.md`).
+Then on the agent, in `/etc/plume/plume.conf`: `PLUME_TOKEN=<token>`. **Never pass it on a command
+line**: `sudo` logs its full command, and the `journal` sensor ships those lines to the SOC —
+the token would arrive there in plaintext (see the warning in `README.md`).
 
-**Portée réelle d'un token d'agent** — un Bearer d'agent n'établit une identité que sur les **9 chemins
-machine** ci-dessous (défaut fermé : partout ailleurs → 401, jamais d'accès UI/admin) — cf.
-`agent_bearer_path`, `daemon/src/auth.rs` :
+**Real scope of an agent token** — an agent Bearer only establishes an identity on the **9 machine
+paths** below (closed by default: everywhere else → 401, never any UI/admin access) — see
+`agent_bearer_path`, `daemon/src/auth.rs`:
 
-| Usage | Chemins |
+| Use | Paths |
 |---|---|
 | Ingestion | `/api/ingest` · `/api/ingest/minio` · `/api/ingest/journal` |
-| Métriques / logs / traces | `/api/metrics/prom` · `/api/metrics/write` · `/loki/api/v1/push` · `/v1/traces` |
+| Metrics / logs / traces | `/api/metrics/prom` · `/api/metrics/write` · `/loki/api/v1/push` · `/v1/traces` |
 | Responder (actions) | `/api/actions/pending` · `/api/actions/result` |
-| Mode Engagement (pull enforcer) | `/api/engagements/active` |
+| Engagement mode (enforcer pull) | `/api/engagements/active` |
 
-S'authentifier n'est pas être autorisé : l'autorisation reste `route_min_role` **plus** un re-contrôle
-`role=='agent'` **lié à l'hôte** dans le handler (un agent ne peut agir que sur les actions de son hôte).
+Being authenticated is not being authorized: authorization remains `route_min_role` **plus** a
+**host-bound** `role=='agent'` re-check in the handler (an agent can only act on its own host's actions).
 
-## Au repos — chiffrement de la base
-- **Natif (SQLCipher) — aucune recompilation nécessaire.** SQLCipher est **déjà compilé** dans le binaire
-  livré (`rusqlite` avec `bundled-sqlcipher-vendored-openssl`, cf. `daemon/Cargo.toml`) ; il ne manque
-  que la **clé**. Posez `PLUME_DB_KEY_FILE=/chemin/vers/la/cle` (préféré : fichier monté en lecture seule,
-  **fail-closed** si absent → le daemon refuse de démarrer plutôt que d'ouvrir la base en clair) ou
-  `PLUME_DB_KEY=<passphrase>` (lisible via `/proc/<pid>/environ`), **avant le premier démarrage**.
-  **Sans clé fournie, une base NEUVE naît chiffrée quand même** (`P9.6-a`) : le démon engendre une clé
-  `0600` à `PLUME_DB_KEY_AUTO_PATH`, sinon `<PLUME_DB>.key`, et l'annonce ; à mettre à l'abri hors de la
-  machine, puis `PLUME_DB_KEY_ESCROWED=1`. Elle protège du vol du disque, pas d'une machine compromise.
-  **Une base EXISTANTE en clair n'est jamais convertie par un démarrage** : une clé posée dessus fait
-  refuser le démarrage, qui nomme le geste explicite `plume-daemon chiffrer-au-repos` (irréversible) ; une
-  base mise en service avant `P9.6-a` sans clé reste donc en clair tant que ce geste n'a pas eu lieu.
-  **Perte de la clé = perte de la base.**
-  Les deux variables se lisent **dans l'environnement OU dans `PLUME_CONFIG`** (`/etc/plume/soc.conf`,
-  0640, sur un hôte systemd) — l'environnement gagne. **P8.7-b, 2026-08-09** : avant cette date la voie
-  qui OUVRE la base ne lisait que l'environnement, alors que le tier froid lisait aussi le fichier ; une
-  clé posée dans `soc.conf` seul chiffrait donc les jours-files Parquet et laissait la base chaude — les
-  derniers jours, donc les incidents récents — **en clair sur le disque, sans un mot**. Une seule voie
-  désormais, et la bascule est annoncée au démarrage sur les hôtes concernés.
-- **Complémentaire** : placer `/var/lib/plume` sur un volume chiffré (LUKS, gocryptfs) protège aussi les
-  fichiers *autour* de la base (spool, backups en clair, journaux). Les deux se combinent.
+## At rest — database encryption
+- **Native (SQLCipher) — no recompilation needed.** SQLCipher is **already compiled** into the shipped
+  binary (`rusqlite` with `bundled-sqlcipher-vendored-openssl`, see `daemon/Cargo.toml`); only the
+  **key** is missing. Set `PLUME_DB_KEY_FILE=/chemin/vers/la/cle` (preferred: file mounted read-only,
+  **fail-closed** if absent → the daemon refuses to start rather than open the database in plaintext) or
+  `PLUME_DB_KEY=<passphrase>` (readable via `/proc/<pid>/environ`), **before the first start**.
+  **With no key supplied, a NEW database is born encrypted anyway** (`P9.6-a`): the daemon generates a
+  `0600` key at `PLUME_DB_KEY_AUTO_PATH`, otherwise `<PLUME_DB>.key`, and announces it; to be stored safely off the
+  machine, then `PLUME_DB_KEY_ESCROWED=1`. It protects against theft of the disk, not against a compromised machine.
+  **An EXISTING plaintext database is never converted by a start**: a key set on it makes the start
+  refuse, naming the explicit operation `plume-daemon chiffrer-au-repos` (irreversible); a
+  database put into service before `P9.6-a` without a key therefore stays in plaintext until that operation has taken place.
+  **Losing the key = losing the database.**
+  Both variables are read **from the environment OR from `PLUME_CONFIG`** (`/etc/plume/soc.conf`,
+  0640, on a systemd host) — the environment wins. **P8.7-b, 2026-08-09**: before that date the path
+  that OPENS the database only read the environment, whereas the cold tier also read the file; a
+  key set in `soc.conf` alone therefore encrypted the Parquet day-files and left the hot database — the
+  latest days, hence the recent incidents — **in plaintext on disk, without a word**. A single path
+  now, and the switch is announced at startup on the hosts concerned.
+- **Complementary**: putting `/var/lib/plume` on an encrypted volume (LUKS, gocryptfs) also protects the
+  files *around* the database (spool, plaintext backups, logs). The two combine.
 
-> **Le backup compressé n'écrit PAS de clair sur disque.** `plume-daemon backup --compress` et le
-> scheduler natif sérialisent un **dump typé** directement dans `zstd` → `age` → fichier `.age` : la base
-> est déchiffrée **en mémoire** par SQLCipher, ligne par ligne, et aucun fichier intermédiaire n'est créé.
-> Le répertoire de staging reste vide pendant toute la sauvegarde — c'est une garde **mesurée**, pas une
-> intention (`backup_streaming_leaves_the_staging_dir_empty_under_watch` surveille le répertoire en continu
-> pendant un backup réel, et le même test échoue si on force le chemin historique).
+> **The compressed backup does NOT write plaintext to disk.** `plume-daemon backup --compress` and the
+> native scheduler serialize a **typed dump** straight into `zstd` → `age` → `.age` file: the database
+> is decrypted **in memory** by SQLCipher, row by row, and no intermediate file is created.
+> The staging directory stays empty for the whole backup — this is a **measured** guard, not an
+> intention (`backup_streaming_leaves_the_staging_dir_empty_under_watch` watches the directory continuously
+> during a real backup, and the same test fails if the historical path is forced).
 >
-> ⚠️ **Deux cas rouvrent la fenêtre de clair transitoire**, et il faut les connaître : (1) un **schéma hors
-> périmètre** du dump typé (FTS5 *contentless* — donc `PLUME_FTS_FIELDS=1` — ou toute autre table virtuelle
-> non représentable) déclenche un **repli automatique** sur `sqlcipher_export`, qui matérialise la base
-> **entière en clair** dans le staging le temps du cycle ; (2) l'échappatoire explicite
-> `PLUME_BACKUP_FORCE_PLAINTEXT_EXPORT=1`. Dans ces deux cas le clair est effacé par un garde RAII en fin de
-> cycle (avec balayage des orphelins au backup suivant), mais la fenêtre existe : orientez alors
-> `PLUME_BACKUP_STAGING_DIR` vers un volume **éphémère**, hors stockage durable.
+> ⚠️ **Two cases reopen the transient plaintext window**, and you need to know them: (1) a **schema outside
+> the scope** of the typed dump (*contentless* FTS5 — hence `PLUME_FTS_FIELDS=1` — or any other virtual table
+> that cannot be represented) triggers an **automatic fallback** to `sqlcipher_export`, which materializes the
+> **entire database in plaintext** in the staging directory for the duration of the cycle; (2) the explicit escape hatch
+> `PLUME_BACKUP_FORCE_PLAINTEXT_EXPORT=1`. In both cases the plaintext is erased by a RAII guard at the end of the
+> cycle (with a sweep of orphans at the next backup), but the window exists: then point
+> `PLUME_BACKUP_STAGING_DIR` to an **ephemeral** volume, outside durable storage.
 >
-> Dans tous les cas, le répertoire de destination (`PLUME_BACKUP_DEST`) contient des sauvegardes chiffrées
-> mais doit rester aussi protégé que la base. Le mode `plume-daemon backup <fichier>` (sans `--compress`,
-> celui du timer hôte) fait un `VACUUM INTO` et reste chiffré de bout en bout si la base l'est.
+> In all cases, the destination directory (`PLUME_BACKUP_DEST`) holds encrypted backups
+> but must remain as protected as the database. The `plume-daemon backup <fichier>` mode (without `--compress`,
+> the one used by the host timer) does a `VACUUM INTO` and stays encrypted end to end if the database is.
 
 ## Secrets
-Creds notifier / tokens stockés en base ou config `0640`. En multi-hôte : tokens révocables + volume chiffré. La clé de signature du ledger est en `0600` (hors base).
+Notifier creds / tokens stored in the database or in `0640` config. Multi-host: revocable tokens + encrypted volume. The ledger signing key is `0600` (outside the database).
 
-## Capteur mail — le destinataire local d'un virus ou d'une pièce bannie (`P10.33-f`)
-Le capteur des journaux du serveur mail (`collectors/mail.sh`) masque toute partie locale d'adresse qu'il émet
-(`*@domaine`, `P10.32-l`). Sur un verdict amavis INFECTED ou BANNED, l'analyste ne sait donc pas quelle boîte de
-ce serveur a été visée. Un réglage nommé la rend lisible, **masqué par défaut** :
+## Mail sensor — the local recipient of a virus or a banned attachment (`P10.33-f`)
+The mail server log sensor (`collectors/mail.sh`) masks every local part of an address it emits
+(`*@domaine`, `P10.32-l`). On an amavis INFECTED or BANNED verdict, the analyst therefore does not know which mailbox of
+this server was targeted. A named setting makes it readable, **masked by default**:
 
-| Réglage | Effet | Défaut | Risque |
+| Setting | Effect | Default | Risk |
 |---|---|---|---|
-| `PLUME_MAIL_DEMASQUER_DESTINATAIRE_LOCAL` | `1` : le champ `rcpt` d'un événement `malware` (INFECTED) ou `banned` (BANNED) sort **en clair** si son domaine est local. Rien d'autre : le message, `user`, `sender`, les domaines externes et tous les autres événements restent masqués. `0` ou vide : masqué ; toute autre valeur : masqué, et avoué (`collect_status=fallback`, `reason=unreadable-config`) | vide (masqué) | **des adresses de boîtes réelles de ce serveur entrent dans le SIEM** : tout rôle qui lit `source=mail` les voit, une base volée les porte, et elles durent ce que dure la rétention |
-| `PLUME_MAIL_DOMAINES_LOCAUX` | ce qui est « local » : une liste **explicite** de domaines, séparés par des espaces ou des virgules, comparés sans casse et **exactement** (`sous.example.org` n'est pas `example.org`). Rien n'est deviné : le capteur ne lit que des journaux, ni `mydestination` ni `virtual_mailbox_domains`. Sans liste lisible, **rien n'est démasqué**, et c'est avoué ; une entrée illisible est écartée et avouée | vide | une liste fausse démasque des boîtes qui ne sont pas de ce serveur : elle est **déclarée**, rien ne la vérifie |
+| `PLUME_MAIL_DEMASQUER_DESTINATAIRE_LOCAL` | `1`: the `rcpt` field of a `malware` (INFECTED) or `banned` (BANNED) event comes out **in plaintext** if its domain is local. Nothing else: the message, `user`, `sender`, external domains and all other events stay masked. `0` or empty: masked; any other value: masked, and admitted (`collect_status=fallback`, `reason=unreadable-config`) | empty (masked) | **real mailbox addresses of this server enter the SIEM**: every role that reads `source=mail` sees them, a stolen database carries them, and they last as long as retention lasts |
+| `PLUME_MAIL_DOMAINES_LOCAUX` | what is "local": an **explicit** list of domains, separated by spaces or commas, compared case-insensitively and **exactly** (`sous.example.org` is not `example.org`). Nothing is guessed: the sensor only reads logs, neither `mydestination` nor `virtual_mailbox_domains`. Without a readable list, **nothing is unmasked**, and that is admitted; an unreadable entry is discarded and admitted | empty | a wrong list unmasks mailboxes that do not belong to this server: it is **declared**, nothing verifies it |
 
-L'état s'affiche dans l'enveloppe de config du capteur (`destinataire_local` : `masque`, `demasque`,
-`masque-sans-liste` ; `domaines_locaux` : la liste retenue) :
-champ `filters` de `search source=mail category=config`.
+The state is shown in the sensor's config envelope (`destinataire_local`: `masque`, `demasque`,
+`masque-sans-liste`; `domaines_locaux`: the list retained):
+`filters` field of `search source=mail category=config`.
 
-**Où se pose le réglage, dans les trois modes.** `mail.sh` tourne **sur l'hôte**, sous `plume-mail.service`, dans
-les trois modes (la source est posée par `PLUME_MAIL_SRC`, ou détectée si elle ne l'est pas : `deploy/MAIL.md`) : il lit le journal par fichier (hôte natif, `PLUME_MAIL_SRC=file`), par `docker exec` (Docker)
-ou par `kubectl exec` dans le pod du serveur mail (k3s). Il ne tourne dans aucun conteneur de Plume : ni l'image
-ni `docker-compose.yml` ni `deploy/k3s.yaml` ne le portent. Le réglage se pose donc toujours dans le fichier
-d'environnement de l'unité, `/etc/plume/plume.conf` (`EnvironmentFile=` de `plume-mail.service`) :
+**Where the setting goes, in all three modes.** `mail.sh` runs **on the host**, under `plume-mail.service`, in
+all three modes (the source is set by `PLUME_MAIL_SRC`, or detected if it is not: `deploy/MAIL.md`): it reads the log by file (native host, `PLUME_MAIL_SRC=file`), by `docker exec` (Docker)
+or by `kubectl exec` in the mail server's pod (k3s). It runs in none of Plume's containers: neither the image
+nor `docker-compose.yml` nor `deploy/k3s.yaml` carries it. The setting therefore always goes in the unit's
+environment file, `/etc/plume/plume.conf` (`EnvironmentFile=` of `plume-mail.service`):
 ```sh
 PLUME_MAIL_DEMASQUER_DESTINATAIRE_LOCAL=1
 PLUME_MAIL_DOMAINES_LOCAUX="example.org example.net"
 ```
-Il vaut au passage suivant de la minuterie ; le retirer remet le masquage, sans effacer ce qui a déjà été émis.
+It takes effect at the timer's next run; removing it restores masking, without erasing what has already been emitted.

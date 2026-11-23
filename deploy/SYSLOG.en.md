@@ -217,8 +217,9 @@ vendor fields (`eventtime`, `level`) over the syslog header (lossy).
 
 The FortiGate parser **never panics**: missing/extra fields and quotes tolerated; an unreadable
 line -> **fallback event** (`source=fortigate`, `category=network`, `fields.parse_status=unparsed`,
-message = truncated raw) — never a silent drop. Syslog deframing is **UTF-8-safe** (no cut
-at the byte on a character boundary) and each dispatch is isolated under `catch_unwind`: **a single
+message = truncated raw) — never a silent drop. Syslog deframing is **UTF-8-safe** (the bytes
+are decoded with replacement: an invalid sequence, including a character cut by the `MAX_FRAME` bound,
+becomes U+FFFD; the header and the truncated message are never cut in the middle of a character) and each dispatch is isolated under `catch_unwind`: **a single
 malformed datagram cannot kill the receiving thread**. Hard bounds: `MAX_FRAME` (anti-DoS),
 `MAX_FIELDS=64` (cardinality/RAM), `MAX_CONNS`/`MAX_CONNS_PER_IP` + idle/max-lifetime timeout
 (anti-slowloris), bounded memory buffer (`QUEUE_MAX` -> no OOM), bounded spool (`SPOOL_MAX_BYTES` ->

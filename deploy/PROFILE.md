@@ -60,7 +60,7 @@ Principe : *moteur générique + spécifique-infra en CONFIG, jamais en dur* ; c
 | Variable | Rôle | Défaut |
 |---|---|---|
 | `PLUME_RETENTION_DAYS` | rétention des events | `30` |
-| `PLUME_QUERY_MAX` | plafond de lignes par requête | `10000` |
+| `PLUME_QUERY_MAX` | plafond de lignes par requête | `5000` |
 | `PLUME_USER` / `PLUME_PASS_HASH` | auth native (argon2) — sinon mode SETUP | — |
 | `PLUME_SSO_HEADER_SECRET` + `PLUME_SSO_GROUP_*` | SSO trusted-header (Authentik/forward-auth) | — |
 | `PLUME_GESTURE_SECRET_FILE` | fichier de l'**empreinte** argon2id (PHC) du secret des gestes — exigé, avec le droit, pour créer un compte, promouvoir un administrateur, réinitialiser un autre compte, frapper un jeton ou une clé de livraison, poser un fournisseur d'identité ou un droit (en-tête `x-plume-secret-des-gestes`). Engendrée par `plume-daemon secret-des-gestes --generer`. Relu à chaque geste (rotation = remplacer le fichier). Voir `docs/TROIS-MODES.md` §3.11 | **(vide)** — ces gestes sont alors **refusés**, nommés |

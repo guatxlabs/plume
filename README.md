@@ -789,7 +789,7 @@ ne cite, et **refuse qu'il augmente**. Elle applique le même critère aux ongle
 capteurs livrés et aux modes de déploiement — pour ceux-là, le plafond est **zéro** (`P9.7-b`).
 
 La section ci‑dessous documente donc **une sélection** : les leviers qu'un exploitant a une raison de
-toucher, groupés par usage. Elle ne couvre pas les 319, et un document qui prétendrait le contraire
+toucher, groupés par usage. Elle ne couvre pas les 321, et un document qui prétendrait le contraire
 serait pire que le silence. Le reste est porté par une clé ouverte de
 [`docs/ROADMAP.md`](docs/ROADMAP.md), et se dérive avec les commandes ci‑dessous.
 
@@ -856,7 +856,7 @@ poste et les objets ; le raisonnement reste le vôtre.
 ### Les leviers qu'on a une raison de toucher
 
 Les valeurs entre crochets sont les **défauts lus dans les sources** ; celles marquées *(dérivé)*
-viennent d'une constante — la commande `c` ci‑dessus la donne.
+viennent d'une constante — la commande 5 ci‑dessus la donne.
 
 **Identité et exposition du central**
 

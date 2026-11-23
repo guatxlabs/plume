@@ -789,7 +789,7 @@ cites, and **refuses to let it grow**. It applies the same criterion to the cons
 shipped sensors and to the deployment modes — for those, the ceiling is **zero** (`P9.7-b`).
 
 The section below therefore documents **a selection**: the levers an operator has a reason to
-touch, grouped by use. It does not cover the 319, and a document claiming otherwise
+touch, grouped by use. It does not cover the 321, and a document claiming otherwise
 would be worse than silence. The rest is carried by an open key of
 [`docs/ROADMAP.md`](docs/ROADMAP.md), and can be derived with the commands below.
 
@@ -856,7 +856,7 @@ item and the objects; the reasoning remains yours.
 ### The levers you have a reason to touch
 
 The values in brackets are the **defaults read from the sources**; those marked *(derived)*
-come from a constant — command `c` above gives it.
+come from a constant — command 5 above gives it.
 
 **Identity and exposure of the central**
 

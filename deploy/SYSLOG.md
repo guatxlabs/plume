@@ -217,8 +217,9 @@ champs vendeur (`eventtime`, `level`) a l'en-tete syslog (lossy).
 
 Le parser FortiGate **ne panique jamais** : champs manquants/en trop/quotes toleres ; une ligne
 illisible -> **event de repli** (`source=fortigate`, `category=network`, `fields.parse_status=unparsed`,
-message = brut tronque) — jamais un drop silencieux. Le decadrage syslog est **UTF-8-safe** (pas de coupe
-a l'octet sur une frontiere de caractere) et chaque dispatch est isole sous `catch_unwind` : **un seul
+message = brut tronque) — jamais un drop silencieux. Le decadrage syslog est **UTF-8-safe** (les octets
+sont decodes avec remplacement : une sequence invalide, dont un caractere coupe par la borne `MAX_FRAME`,
+devient U+FFFD ; l'en-tete et le message tronque ne sont jamais coupes au milieu d'un caractere) et chaque dispatch est isole sous `catch_unwind` : **un seul
 datagramme malforme ne peut pas tuer le thread de reception**. Bornes dures : `MAX_FRAME` (anti-DoS),
 `MAX_FIELDS=64` (cardinalite/RAM), `MAX_CONNS`/`MAX_CONNS_PER_IP` + timeout inactivite/vie-max
 (anti-slowloris), tampon memoire borne (`QUEUE_MAX` -> pas d'OOM), spool borne (`SPOOL_MAX_BYTES` ->

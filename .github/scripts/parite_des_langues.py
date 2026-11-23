@@ -74,7 +74,8 @@ Les titres soulignés (`===` / `---` sous une ligne) ne sont pas comptés parmi 
 les titres `#` ; leur ancre est tout de même admise. Ce que porte un segment de code replié (et le
 reste des lignes qu'il emporte) est rapporté à la ligne où il s'ouvre ; un accent grave que rien ne
 ferme avant la fin du paragraphe (ligne vide, titre, clôture, ligne de tableau, puce de liste ; la
-clôture et la puce à toute indentation, comme dans une liste imbriquée) est du texte. Le slug suit le texte affiché d'un titre au plus près sans le rendre vraiment : segments
+clôture et la puce à toute indentation, comme dans une liste imbriquée) est du texte. Le slug suit
+le texte affiché d'un titre au plus près sans le rendre vraiment : segments
 de code, liens, emphase et balises HTML sont ôtés, pas les entités HTML (`&amp;`). Une ancre dont
 seule la casse diffère d'un slug n'est pas accusée : ce que la page fait d'une majuscule n'a pas été
 mesuré. Une ancre vers un fichier absent, ou hors de l'arbre, n'est pas jugée. Un

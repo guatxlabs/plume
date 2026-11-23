@@ -308,6 +308,23 @@ class Paire(unittest.TestCase):
         self.assertEqual([(e.fichier, e.ligne, e.famille) for e in ecarts],
                          [("guide.md", 3, "sélecteur"), ("guide.en.md", 3, "sélecteur")])
 
+    def test_second_titre_1_ne_deplace_pas_le_selecteur(self):
+        # Le sélecteur se cherche sous le PREMIER titre de niveau 1 : un second titre de niveau 1,
+        # suivi d'une ligne qui n'est pas un sélecteur, ne fait pas d'écart.
+        original = ORIGINAL + "\n# Annexe\n\nTexte de l'annexe.\n"
+        juste = TRADUCTION + "\n# Appendix\n\nAppendix text.\n"
+        self.assertEqual(self.ecarts(juste, original), [])
+
+    def test_selecteur_sous_le_second_titre_1_seulement_rouge(self):
+        # Placé sous le second titre de niveau 1 et absent sous le premier, le sélecteur manque.
+        sans = SELECTEUR + "\n\n"
+        original = ORIGINAL.replace(sans, "") + "\n# Annexe\n\n" + SELECTEUR + "\n"
+        juste = TRADUCTION.replace(sans, "") + "\n# Appendix\n\n" + SELECTEUR + "\n"
+        ecarts = self.ecarts(juste, original)
+        self.assertEqual([(e.fichier, e.ligne, e.famille) for e in ecarts],
+                         [("guide.md", 3, "sélecteur"), ("guide.en.md", 3, "sélecteur")])
+        self.assertIn("absent sous le titre de niveau 1 (ligne 1)", ecarts[0].message)
+
     def test_segment_de_code_replie_lu_comme_un_seul(self):
         # CommonMark : dans un paragraphe, la fin de ligne d'un segment de code vaut une espace.
         original = ORIGINAL + "\nLancer `cargo test\n--locked` puis lire.\n"
@@ -349,6 +366,28 @@ class Paire(unittest.TestCase):
         ecarts = self.ecarts(juste.replace("42", "43"), original)
         self.assertEqual([(e.fichier, e.ligne, e.famille) for e in ecarts],
                          [("guide.md", 25, "nombres"), ("guide.en.md", 25, "nombres")])
+
+    def test_ligne_de_tableau_coupe_le_paragraphe(self):
+        # Un accent grave resté ouvert n'avale pas la ligne de tableau qui suit : elle reste une
+        # ligne du tableau, et le segment qu'elle porte reste le sien.
+        doc = pdl.analyser("Un accent ` seul\n| `x` | y |\n| --- | --- |\n", "a.md")
+        self.assertEqual(doc.tableaux, [(2, 2)])
+        self.assertEqual(doc.identifiants, {"x": 2})
+        original = ORIGINAL + "\nUn accent ` seul\n| `x` | y |\n| --- | --- |\n"
+        juste = TRADUCTION + "\nA lone ` accent\n| `x` | y |\n| --- | --- |\n"
+        self.assertEqual(self.ecarts(juste, original), [])
+        ecarts = self.ecarts(juste.replace("`x`", "`z`"), original)
+        self.assertEqual(self.familles(ecarts), ["identifiants"])
+
+    def test_puce_numerotee_coupe_le_paragraphe(self):
+        # Une puce numérotée (`1.` ou `1)`) ouvre une liste : un accent grave resté ouvert sur la
+        # ligne d'avant ne l'emporte pas.
+        for puce in ("1. ", "1) "):
+            doc = pdl.analyser(f"Un accent ` seul\n{puce}puis `z` fin\n", "a.md")
+            self.assertEqual(doc.identifiants, {"z": 2}, puce)
+            original = ORIGINAL + f"\nUn accent ` seul\n{puce}puis `z` fin\n"
+            juste = TRADUCTION + f"\nA lone ` accent\n{puce}then `z` end\n"
+            self.assertEqual(self.ecarts(juste, original), [], puce)
 
     def test_cloture_ou_puce_indentee_coupe_le_paragraphe(self):
         # Une clôture est une clôture à toute indentation pour l'outil (bloc dans une puce) ; une
@@ -430,12 +469,27 @@ class Paire(unittest.TestCase):
 
     def test_ancres_non_jugees(self):
         # L'original n'est pas jugé ; ni une cible qui n'est pas un document Markdown de l'arbre ;
-        # ni une ancre en majuscules (la casse n'est pas tranchée).
+        # ni une ancre en majuscules (la casse n'est pas tranchée). `script.sh` existe : c'est son
+        # extension qui le tait, pas la règle du fichier absent.
+        self.ecrire("script.sh", "#!/bin/sh\necho un\necho deux\n")
         original = ORIGINAL.replace("#sous-systemes", "#nulle-part") + (
             "\nVoir [s](script.sh#L3), [a](absent.md#x) et [e](https://example.org/a.md#z).\n")
         juste = TRADUCTION.replace("#subsystems", "#Subsystems") + (
             "\nSee [s](script.sh#L3), [a](absent.md#x) and [e](https://example.org/a.md#z).\n")
         self.assertEqual(self.ecarts(juste, original), [])
+
+    def test_ancre_vers_un_fichier_qui_n_est_pas_du_markdown_non_jugee(self):
+        # `script.sh` existe dans l'arbre et n'a aucun titre `L3` : seule son extension tait l'ancre.
+        self.ecrire("script.sh", "#!/bin/sh\necho un\necho deux\n")
+        original = ORIGINAL + "\nVoir [s](script.sh#L3).\n"
+        juste = TRADUCTION + "\nSee [s](script.sh#L3).\n"
+        self.assertEqual(self.ecarts(juste, original), [])
+        # Le même contenu sous un nom Markdown est jugé : c'est bien l'extension qui la tait.
+        self.ecrire("script.md", "#!/bin/sh\necho un\necho deux\n")
+        ecarts = self.ecarts(juste.replace("script.sh", "script.md"),
+                             original.replace("script.sh", "script.md"))
+        self.assertEqual([(e.fichier, e.ligne, e.famille) for e in ecarts],
+                         [("guide.en.md", 24, "ancres")])
 
     def test_ancre_vers_un_fichier_hors_de_l_arbre_non_jugee(self):
         # La racine est un sous-dossier ; `../dehors.md` existe à côté, hors de l'arbre, et n'a pas

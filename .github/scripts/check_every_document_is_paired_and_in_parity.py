@@ -129,38 +129,57 @@ def corpus_juste():
     guide_fr = "# Guide\n\n" + SELECTEUR.format(n="guide") + "\n\nVoir [la carte](carte.fr.md) et [le journal](JOURNAL.md).\n"
     carte = "# Map\n\n" + SELECTEUR.format(n="carte") + "\n"
     carte_fr = "# Carte\n\n" + SELECTEUR.format(n="carte") + "\n"
+    # Le document en une seule langue porte déjà le sélecteur de sa paire future : quand le témoin lui
+    # rend sa traduction, la paire est juste, et la seule faute qui reste est l'entrée périmée.
+    journal = "# Journal\n\n" + SELECTEUR.format(n="JOURNAL") + "\n"
     return {"guide.md": guide, "guide.fr.md": guide_fr, "carte.md": carte, "carte.fr.md": carte_fr,
-            "JOURNAL.md": "# Journal\n"}
+            "JOURNAL.md": journal}
 
 
 def valider_instrument():
-    """TÉMOINS : la décision de `juger`, jouée sur des dépôts fabriqués ; rend la liste des échecs."""
+    """TÉMOINS : la décision de `juger`, jouée sur des dépôts fabriqués ; rend la liste des échecs.
+
+    Chaque témoin exige son code ET la faute qui le fonde (un fragment de la ligne qui la nomme) : un
+    rouge rendu pour une autre raison que celle mise en scène laisserait la règle visée sans témoin."""
     seules = {"JOURNAL.md": "tenu en une seule langue"}
     juste = corpus_juste()
     cas = [
-        ("paire juste et document déclaré en une seule langue", juste, seules, 0),
-        ("document sans paire", dict(juste, **{"docs/neuf.md": "# Neuf\n"}), seules, 1),
-        ("traduction sans original", dict(juste, **{"docs/seule.fr.md": "# Seule\n"}), seules, 1),
+        ("paire juste et document déclaré en une seule langue", juste, seules, 0, "OK", 0),
+        ("document sans paire", dict(juste, **{"docs/neuf.md": "# Neuf\n"}), seules, 1,
+         "docs/neuf.md : document suivi sans sa traduction", 1),
+        ("traduction sans original", dict(juste, **{"docs/seule.fr.md": "# Seule\n"}), seules, 1,
+         "docs/seule.fr.md : traduction sans son original", 1),
         ("paire au lien divergent", dict(juste, **{"guide.fr.md": juste["guide.fr.md"].replace(
-            "(carte.fr.md)", "(carte.md)")}), seules, 1),
-        ("paire au sélecteur absent", dict(juste, **{"carte.fr.md": "# Carte\n"}), seules, 1),
+            "(carte.fr.md)", "(carte.md)")}), seules, 1, "[liens] lien non basculé", 1),
+        # Le sélecteur porte deux liens : leur absence est nommée aussi par la famille des liens.
+        ("paire au sélecteur absent", dict(juste, **{"carte.fr.md": "# Carte\n"}), seules, 1,
+         "[sélecteur] sélecteur de langue absent", 3),
+        # La paire retrouvée est juste, et la traduction du guide vise la version française du journal :
+        # l'entrée périmée est la seule faute.
         ("entrée périmée : le document a retrouvé sa paire",
-         dict(juste, **{"JOURNAL.fr.md": "# Journal\n"}), seules, 1),
+         dict(juste, **{"JOURNAL.fr.md": juste["JOURNAL.md"],
+                        "guide.fr.md": juste["guide.fr.md"].replace("(JOURNAL.md)", "(JOURNAL.fr.md)")}), seules, 1,
+         "JOURNAL.md : entrée périmée de UNE_SEULE_LANGUE (tenu en une seule langue) : a retrouvé sa traduction", 1),
         ("entrée périmée : le document n'est plus suivi",
-         {k: v for k, v in juste.items() if k != "JOURNAL.md"}, seules, 1),
-        ("document en une seule langue hors de l'ensemble", juste, {}, 1),
-        ("dépôt sans document", {}, seules, 2),
+         {k: v for k, v in juste.items() if k != "JOURNAL.md"}, seules, 1,
+         "JOURNAL.md : entrée périmée de UNE_SEULE_LANGUE (tenu en une seule langue) : n'est plus un document suivi", 1),
+        ("document en une seule langue hors de l'ensemble", juste, {}, 1,
+         "JOURNAL.md : document suivi sans sa traduction", 1),
+        ("dépôt sans document", {}, seules, 2, "aucun document suivi", 0),
     ]
     echecs = []
-    for nom, fichiers, une_seule_langue, attendu in cas:
+    for nom, fichiers, une_seule_langue, attendu, faute, fautes in cas:
         with tempfile.TemporaryDirectory() as racine:
             # Le lien vers JOURNAL.md vise un fichier absent dans le cas « n'est plus suivi » : sans
             # incidence, une cible absente reste telle quelle des deux côtés.
             fabriquer(racine, fichiers)
             code, lignes = juger(racine, une_seule_langue)
-        if code != attendu:
-            echecs.append(f"témoin « {nom} » : code {code}, attendu {attendu}"
+        if code != attendu or not any(faute in ligne for ligne in lignes):
+            echecs.append(f"témoin « {nom} » : code {code}, attendu {attendu} avec « {faute} »"
                           + (f" — {lignes[-1]}" if lignes else ""))
+        elif sum(1 for ligne in lignes if ligne.startswith("::error")) != fautes:
+            echecs.append(f"témoin « {nom} » : {sum(1 for l in lignes if l.startswith('::error'))} faute(s) "
+                          f"nommée(s), {fautes} attendue(s) — le témoin rougit aussi pour autre chose")
     with tempfile.TemporaryDirectory() as dehors:
         code, _ = juger(dehors, seules)
     if code != 2:

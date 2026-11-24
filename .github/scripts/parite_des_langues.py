@@ -20,7 +20,9 @@ CE QUI EST COMPARÉ, PAIRE PAR PAIRE
   existe, et rester tel quel sinon ; l'ancre (`#…`) est retirée avant comparaison, car elle dérive
   d'un titre, et un titre traduit change d'ancre. La cible se résout depuis le dossier du document,
   ou depuis la racine quand elle commence par `/`. Un lien vers le document lui-même ou vers sa
-  traduction ne bascule pas : c'est celui du sélecteur de langue ;
+  traduction ne bascule pas : c'est celui du sélecteur de langue. Comme en CommonMark, le texte d'un
+  lien peut passer à la ligne dans un paragraphe : le lien est lu entier, rapporté à la ligne où il
+  s'ouvre ;
 - le SÉLECTEUR DE LANGUE : la première ligne non vide sous le premier titre de niveau 1, la même des
   deux côtés, faite d'un lien vers l'original puis d'un lien vers la traduction et de séparateurs
   seulement (`[English](X.md) | [Français](X.fr.md)`). Absent d'un côté ou des deux, inversé, visant un autre fichier, ou
@@ -271,6 +273,28 @@ def rejoindre_les_segments(visible, suivantes, dans_commentaire):
             debut = p + len(SUITE_D_ACCENTS.match(visible, p).group())
 
 
+def rejoindre_les_liens(visible, suivantes, dans_commentaire):
+    """La ligne `visible` prolongée des lignes de `suivantes` que le texte d'un lien emporte : (texte
+    rejoint, lignes absorbées, état de commentaire HTML après elles).
+
+    CommonMark : le texte d'un lien peut passer à la ligne dans un paragraphe. Une ligne n'est absorbée
+    que si la jointure fait naître un lien qui commence avant la coupure et finit après ; sinon la ligne
+    reste seule, comme un crochet de texte qui n'ouvre rien."""
+    absorbees = 0
+    while absorbees < len(suivantes) and not dans_commentaire:
+        ligne = CITATION.sub("", suivantes[absorbees], count=1)
+        if COUPE_LE_PARAGRAPHE.match(ligne) or ouvre_un_bloc(ligne):
+            break
+        vue, etat = retirer_commentaires_html(ligne, dans_commentaire)
+        coupure = len(visible.rstrip())
+        essai = visible.rstrip() + " " + vue.strip()
+        sans_code = SEGMENT_DE_CODE.sub(lambda s: " " * len(s.group(0)), essai)
+        if not any(m.start() < coupure < m.end() for m in LIEN_EN_LIGNE.finditer(sans_code)):
+            break
+        visible, dans_commentaire, absorbees = essai, etat, absorbees + 1
+    return visible, absorbees, dans_commentaire
+
+
 def analyser(texte, chemin):
     doc = Document(chemin)
     # Une marque d'ordre d'octets en tête collerait au premier `#` et masquerait le premier titre.
@@ -338,6 +362,9 @@ def analyser(texte, chemin):
             ancrer(paragraphe)
         elif LIGNE_DE_TABLEAU.match(visible) is None and DEFINITION_DE_LIEN.match(visible) is None:
             visible, absorbees, dans_commentaire = rejoindre_les_segments(
+                visible, lignes[n:], dans_commentaire)
+            n += absorbees
+            visible, absorbees, dans_commentaire = rejoindre_les_liens(
                 visible, lignes[n:], dans_commentaire)
             n += absorbees
         # Lues après la jointure : un `id` posé sur une ligne absorbée existe tout autant.

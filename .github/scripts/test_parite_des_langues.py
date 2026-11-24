@@ -614,6 +614,28 @@ class Paire(unittest.TestCase):
         ecarts = self.ecarts(TRADUCTION + bloc.replace("Debug", "Clone"), original)
         self.assertEqual(self.familles(ecarts), ["blocs"])
 
+    def test_lien_au_texte_replie_lu_comme_un_seul(self):
+        # CommonMark : le texte d'un lien peut passer à la ligne ; replié ailleurs de chaque côté, c'est
+        # le même lien, et sa cible se compare comme les autres.
+        original = ORIGINAL + "\nVoir [la carte des\nsous-systèmes](carte.md#sous-systemes) ici.\n"
+        juste = TRADUCTION + "\nSee [the map of the subsystems](carte.fr.md#subsystems)\nhere.\n"
+        self.assertEqual(self.ecarts(juste, original), [])
+        replie = TRADUCTION + "\nSee [the map of\nthe subsystems](carte.fr.md#subsystems) here.\n"
+        self.assertEqual(self.ecarts(replie, original), [])
+        ecarts = self.ecarts(replie.replace("subsystems](carte.fr.md#", "subsystems](carte.md#"), original)
+        self.assertIn("non basculé", next(e for e in ecarts if e.famille == "liens").message)
+        self.assertEqual(next(e for e in ecarts if e.famille == "liens").ligne, 24)
+
+    def test_crochet_qui_n_ouvre_aucun_lien_n_emporte_pas_la_suite(self):
+        # Sans lien qui traverse la coupure, la ligne reste seule : ce que porte la suivante lui reste
+        # rapporté.
+        original = ORIGINAL + "\nUn crochet [seul\net puis 42 ici.\n"
+        juste = TRADUCTION + "\nA lone [bracket\nand then 42 here.\n"
+        self.assertEqual(self.ecarts(juste, original), [])
+        ecarts = self.ecarts(juste.replace("42", "43"), original)
+        self.assertEqual([(e.fichier, e.ligne, e.famille) for e in ecarts],
+                         [("guide.md", 25, "nombres"), ("guide.fr.md", 25, "nombres")])
+
     def test_point_barre_ne_change_pas_la_cible(self):
         juste = TRADUCTION.replace("(carte.fr.md#", "(./carte.fr.md#").replace("(schema.md)",
                                                                               "(./schema.md)")

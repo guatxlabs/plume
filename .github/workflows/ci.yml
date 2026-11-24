@@ -2499,6 +2499,16 @@ jobs:
         continue-on-error: true
         run: python3 .github/scripts/check_the_language_tools_pass_their_own_tests.py
 
+      # PRENDRE LE JETON DE TRAVAIL LOURD NE REND JAMAIS MUET LE SHELL QUI L'A PRIS. La sonde ouvrait le
+      # jeton par un `exec` sans commande suivi de `2>/dev/null` : la redirection restait posée sur le
+      # shell appelant, et les trois scripts qui la sourcent perdaient leur sortie d'erreur. La garde
+      # source la sonde sur un jeton jetable (libre, tenu par un autre, impossible à ouvrir) et vérifie
+      # le code, le verrou tenu, et qu'une ligne écrite ensuite sur la sortie d'erreur arrive.
+      - name: Prendre le jeton de travail lourd ne rend pas muet le shell appelant
+        id: garde_88
+        continue-on-error: true
+        run: python3 .github/scripts/check_the_heavy_work_token_never_silences_its_caller.py
+
       # `P11.18-z` — LA RECHERCHE D'UNE LISTE SURVIT AU RENDU QUI DÉTRUIT SON CHAMP. La garde tient que
       # chaque liste cherchable déclare l'identité stable sans laquelle la mémoire ne peut pas s'armer :
       # sans elle, le mécanisme est posé mais la vue se comporte comme avant, en silence.
@@ -2995,6 +3005,7 @@ jobs:
           total=$((total+1)); o="${{ steps.garde_85.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_an_advanced_module_is_engaged_by_what_the_tree_reads.py : $o"; }
           total=$((total+1)); o="${{ steps.garde_86.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_every_document_is_paired_and_in_parity.py : $o"; }
           total=$((total+1)); o="${{ steps.garde_87.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_the_language_tools_pass_their_own_tests.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_88.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_the_heavy_work_token_never_silences_its_caller.py : $o"; }
           echo "gardes jouées : $total ; en échec : $rouges"
           exit $rc
 

@@ -438,7 +438,12 @@ _sonde_jeton_fd=
 sonde_jeton_prendre() {
     local nom="${1:-travail}"
     [ "$sonde_jeton_a_moi" -eq 0 ] || return 0
-    exec {_sonde_jeton_fd}>"$sonde_jeton" 2>/dev/null || return 2
+    # LA REDIRECTION D'ERREUR PORTE SUR LE GROUPE, JAMAIS SUR L'`exec`. Un `exec` sans commande
+    # applique TOUTES ses redirections au shell courant, pour toujours : écrit
+    # `exec {fd}>"$jeton" 2>/dev/null`, il rendait muet le shell qui a sourcé cette sonde, et un
+    # échec ultérieur de l'appelant sortait rouge sans texte. Témoin :
+    # `check_the_heavy_work_token_never_silences_its_caller.py`.
+    { exec {_sonde_jeton_fd}>"$sonde_jeton"; } 2>/dev/null || return 2
     if ! flock -n "$_sonde_jeton_fd" 2>/dev/null; then
         exec {_sonde_jeton_fd}>&-
         _sonde_jeton_fd=

@@ -25,8 +25,14 @@ CE QUI EST COMPARÉ, PAIRE PAR PAIRE
   s'ouvre ;
 - le SÉLECTEUR DE LANGUE : la première ligne non vide sous le premier titre de niveau 1, la même des
   deux côtés, faite d'un lien vers l'original puis d'un lien vers la traduction et de séparateurs
-  seulement (`[English](X.md) | [Français](X.fr.md)`). Absent d'un côté ou des deux, inversé, visant un autre fichier, ou
-  différent d'un côté à l'autre : écart nommé ;
+  seulement, à la FORME EXACTE `[English](X.md) | [Français](X.fr.md)`, libellés compris, quand la
+  convention nomme les deux langues. Absent d'un côté ou des deux, inversé, visant un autre fichier,
+  d'une autre forme, ou différent d'un côté à l'autre : écart nommé ;
+- la LANGUE DE LA PROSE de chaque fichier : ses mots-outils français et anglais (`MOTS_FRANCAIS`,
+  `MOTS_ANGLAIS`), lus dans le texte courant hors blocs, segments de code, cibles et URL. La part des
+  mots-outils de l'autre langue doit rester sous `PART_ETRANGERE_MAX` ; un fichier qui en porte moins
+  de `MIN_MOTS_OUTILS` (un document presque tout en code) n'est pas jugé sur sa langue. Une paire
+  intervertie, texte français dans `X.md`, rougit ainsi des deux côtés sans attendre un lien croisé ;
 - les ANCRES DE LA TRADUCTION : un lien interne de la traduction dont l'ancre vise un document
   Markdown de l'arbre (elle-même comprise, pour `#…` seul) doit désigner un titre de ce fichier,
   par son slug GitHub — texte affiché en minuscules, ponctuation retirée, espaces en tirets, accents
@@ -43,6 +49,16 @@ CE QUI EST COMPARÉ, PAIRE PAR PAIRE
 Chaque écart est nommé par `fichier:ligne`, côté original quand il manque quelque chose à la
 traduction, côté traduction quand elle porte quelque chose en trop.
 
+CE QUE CHAQUE DOCUMENT JUGE SEUL
+--------------------------------
+Sur tout l'arbre suivi (pas sous `--paire`), chaque original de paire et chaque document sans paire :
+- la DIRECTION de ses liens : un lien vers un document qui existe dans les deux langues vise la
+  version de SA langue — celle de l'original vient de la convention, celle d'un document sans paire
+  de sa prose (pas jugée quand elle est indécise). La ligne du sélecteur est la seule exception ;
+- les ANCRES qu'il vise, dans un document Markdown de l'arbre (lui-même compris), comme pour la
+  traduction ci-dessus.
+La traduction d'une paire n'est pas relue ici : sa comparaison à l'original la tient déjà.
+
 LA CONVENTION DE SUFFIXE EST UN PARAMÈTRE
 -----------------------------------------
 L'anglais d'abord : l'original est `X.md` (anglais) et la traduction `X.fr.md`. L'outil ne code pas
@@ -53,8 +69,9 @@ LES DOCUMENTS EN UNE SEULE LANGUE SONT UN ENSEMBLE NOMMÉ
 --------------------------------------------------------
 `UNE_SEULE_LANGUE` nomme chaque document suivi qui n'a pas de traduction, avec sa raison écrite à
 côté. Un document suivi sans sa paire et hors de cet ensemble est un écart ; une entrée de
-l'ensemble qui a retrouvé sa paire, ou qui ne désigne plus un document suivi, en est un aussi : une
-exception qu'on ne retire pas devient une trappe où l'on range ce qu'on n'a pas traduit.
+l'ensemble sans raison écrite, qui a retrouvé sa paire, ou qui ne désigne plus un document suivi, en
+est un aussi : une exception qu'on ne retire pas devient une trappe où l'on range ce qu'on n'a pas
+traduit.
 
 DEUX MODES
 ----------
@@ -134,6 +151,26 @@ DIESE_DE_CODE = re.compile(
 
 # Documents suivis tenus en UNE seule langue, chacun avec sa raison. Tout autre document suivi a sa
 # paire ; une entrée qui retrouve la sienne, ou qui ne désigne plus un document suivi, est un écart.
+# LA LANGUE DE LA PROSE. Des mots-outils sans ambiguïté entre les deux langues (ni « a », ni « en », ni
+# « on », ni « de », que l'autre langue emploie aussi ou que les identifiants découpés produisent), lus
+# dans le texte courant seulement : hors blocs, segments de code, cibles de liens, URL et commentaires.
+MOTS_FRANCAIS = frozenset("le la les des du une est et pour dans qui que pas sur avec ce cette ces sont "
+                          "par au aux ne se sa ses son il elle ils mais plus où comme ou être peut sans "
+                          "leur tout très aussi donc quand même entre".split())
+MOTS_ANGLAIS = frozenset("the and is are of to in for with that this not by it be an as which from can "
+                         "when if what its has have was were only does but than then their they there "
+                         "these those will would into each any no so at".split())
+# Sous ce nombre de mots-outils, la prose est trop courte pour qu'une langue s'en dégage : un document
+# presque tout en code n'est pas jugé sur sa langue (il l'est sur tout le reste).
+MIN_MOTS_OUTILS = 20
+# Part de mots-outils de l'AUTRE langue à partir de laquelle un fichier n'est plus dans la sienne. Mesuré
+# à l'écriture : la part étrangère la plus haute d'un fichier juste est sous 0,1 ; un fichier interverti
+# la porte au-dessus de 0,9. La marge laisse les citations et les messages servis cités tels quels.
+PART_ETRANGERE_MAX = 0.4
+WORD = re.compile(r"[a-zà-öø-ÿ]+")
+LIBELLES = {"en": "English", "fr": "Français"}
+LANGUE_DU_SUFFIXE = {".en": "en", ".fr": "fr"}
+
 UNE_SEULE_LANGUE = {
     "docs/ROADMAP.md": "journal de travail tenu en français",
 }
@@ -151,6 +188,8 @@ class Document:
     titre_1: int = 0                                  # ligne du premier titre de niveau 1, 0 sans
     selecteur: tuple = None                           # (ligne, texte, [cibles]) sous ce titre
     ancres: set = field(default_factory=set)          # slugs des titres et `id`/`name` HTML
+    mots_fr: int = 0                                  # mots-outils français du texte courant
+    mots_en: int = 0                                  # mots-outils anglais du texte courant
 
 
 @dataclass(frozen=True)
@@ -276,21 +315,28 @@ def rejoindre_les_liens(visible, suivantes, dans_commentaire):
     """La ligne `visible` prolongée des lignes de `suivantes` que le texte d'un lien emporte : (texte
     rejoint, lignes absorbées, état de commentaire HTML après elles).
 
-    CommonMark : le texte d'un lien peut passer à la ligne dans un paragraphe. Une ligne n'est absorbée
-    que si la jointure fait naître un lien qui commence avant la coupure et finit après ; sinon la ligne
-    reste seule, comme un crochet de texte qui n'ouvre rien."""
+    CommonMark : le texte d'un lien peut passer à la ligne dans un paragraphe, autant de fois qu'il le
+    faut. Les lignes du paragraphe sont absorbées jusqu'à la PLUS COURTE jointure qui fait naître un lien
+    commençant avant la coupure courante et finissant après ; aucune jointure de ce genre jusqu'à la fin
+    du paragraphe, et la ligne reste seule, comme un crochet de texte qui n'ouvre rien."""
     absorbees = 0
-    while absorbees < len(suivantes) and not dans_commentaire:
-        ligne = CITATION.sub("", suivantes[absorbees], count=1)
-        if COUPE_LE_PARAGRAPHE.match(ligne) or ouvre_un_bloc(ligne):
-            break
-        vue, etat = retirer_commentaires_html(ligne, dans_commentaire)
+    while not dans_commentaire:
         coupure = len(visible.rstrip())
-        essai = visible.rstrip() + " " + vue.strip()
-        sans_code = SEGMENT_DE_CODE.sub(lambda s: " " * len(s.group(0)), essai)
-        if not any(m.start() < coupure < m.end() for m in LIEN_EN_LIGNE.finditer(sans_code)):
+        essai, etat, k, trouve = visible.rstrip(), dans_commentaire, absorbees, False
+        while k < len(suivantes) and not etat:
+            ligne = CITATION.sub("", suivantes[k], count=1)
+            if COUPE_LE_PARAGRAPHE.match(ligne) or ouvre_un_bloc(ligne):
+                break
+            vue, etat = retirer_commentaires_html(ligne, etat)
+            essai = essai + " " + vue.strip()
+            k += 1
+            sans_code = SEGMENT_DE_CODE.sub(lambda s: " " * len(s.group(0)), essai)
+            if any(m.start() < coupure < m.end() for m in LIEN_EN_LIGNE.finditer(sans_code)):
+                trouve = True
+                break
+        if not trouve:
             break
-        visible, dans_commentaire, absorbees = essai, etat, absorbees + 1
+        visible, dans_commentaire, absorbees = essai, etat, k
     return visible, absorbees, dans_commentaire
 
 
@@ -396,11 +442,45 @@ def analyser(texte, chemin):
         texte_courant = URL_NUE.sub(" ", texte_courant)
         for nombre in NOMBRE.findall(texte_courant):
             doc.nombres.setdefault(str(int(nombre)), ici)
+        for mot in WORD.findall(re.sub(r"<[^>]*>", " ", texte_courant).lower()):
+            doc.mots_fr += mot in MOTS_FRANCAIS
+            doc.mots_en += mot in MOTS_ANGLAIS
 
     fermer_tableau()
     if cloture:
         doc.blocs.append((cloture[2], cloture[3]))
     return doc
+
+
+def langue_de_la_prose(doc):
+    """« fr », « en », ou None quand la prose porte moins de MIN_MOTS_OUTILS mots-outils, ou que les deux
+    langues s'y mêlent sans que l'une passe sous PART_ETRANGERE_MAX."""
+    total = doc.mots_fr + doc.mots_en
+    if total < MIN_MOTS_OUTILS:
+        return None
+    if doc.mots_en / total < PART_ETRANGERE_MAX:
+        return "fr"
+    if doc.mots_fr / total < PART_ETRANGERE_MAX:
+        return "en"
+    return None
+
+
+def juger_la_langue(doc, attendue):
+    """Les écarts de langue d'un fichier dont la langue `attendue` est connue."""
+    if attendue not in LIBELLES:
+        return []
+    total = doc.mots_fr + doc.mots_en
+    if total < MIN_MOTS_OUTILS:
+        return []
+    etrangers = doc.mots_en if attendue == "fr" else doc.mots_fr
+    if etrangers / total < PART_ETRANGERE_MAX:
+        return []
+    autre = "anglais" if attendue == "fr" else "français"
+    nom = "français" if attendue == "fr" else "anglais"
+    return [Ecart(doc.chemin, 1, "langue",
+                  f"la prose n'est pas en {nom} : {etrangers} mots-outils {autre}s sur {total} (part "
+                  f"{etrangers / total:.2f}, plafond {PART_ETRANGERE_MAX}) — le fichier porte la version "
+                  f"{nom}e, son texte est-il celui de l'autre langue ?")]
 
 
 class Convention:
@@ -435,6 +515,17 @@ class Convention:
 
     def original_de(self, chemin):
         return self._tige(chemin, self.traduction) + self.original + ".md"
+
+    def langues(self):
+        """(langue de l'original, langue de la traduction) : un suffixe `.fr` ou `.en` nomme la sienne, le
+        suffixe vide prend l'autre ; (None, None) quand la convention ne les nomme pas."""
+        o, t = LANGUE_DU_SUFFIXE.get(self.original), LANGUE_DU_SUFFIXE.get(self.traduction)
+        autre = {"en": "fr", "fr": "en"}
+        if o is None and not self.original and t:
+            o = autre[t]
+        if t is None and not self.traduction and o:
+            t = autre[o]
+        return (o, t) if o and t else (None, None)
 
 
 def cible_sans_ancre(cible):
@@ -581,12 +672,17 @@ def comparer_identifiants(o, t):
     return comparer_ensembles(o.identifiants, t.identifiants, o, t, "identifiants", "identifiant")
 
 
-def comparer_selecteur(o, t):
+def comparer_selecteur(o, t, convention=None):
     """Sous le premier titre de niveau 1 de chaque côté, la même ligne de sélecteur : un lien vers
-    l'original, puis un lien vers la traduction, et rien d'autre que des séparateurs."""
+    l'original, puis un lien vers la traduction, et rien d'autre que des séparateurs. Quand la
+    convention nomme les deux langues, la ligne a une FORME EXACTE, la même des deux côtés :
+    `[English](X.md) | [Français](X.fr.md)` — libellés compris."""
     dossier = os.path.dirname(o.chemin)
     attendu = [os.path.normpath(o.chemin), os.path.normpath(t.chemin)]
-    noms = " puis ".join(f"« {os.path.relpath(c, dossier or '.')} »" for c in attendu)
+    relatifs = [os.path.relpath(c, dossier or '.') for c in attendu]
+    noms = " puis ".join(f"« {r} »" for r in relatifs)
+    lo, lt = convention.langues() if convention else (None, None)
+    forme = f"[{LIBELLES[lo]}]({relatifs[0]}) | [{LIBELLES[lt]}]({relatifs[1]})" if lo else None
     ecarts, justes = [], []
     for doc in (o, t):
         if not doc.titre_1:
@@ -605,9 +701,12 @@ def comparer_selecteur(o, t):
         elif vises != attendu:
             ecarts.append(Ecart(doc.chemin, ligne, "sélecteur",
                                 f"sélecteur qui vise {', '.join(cibles)} : attendu {noms}"))
+        elif forme and texte != forme:
+            ecarts.append(Ecart(doc.chemin, ligne, "sélecteur",
+                                f"forme du sélecteur « {texte} » : attendu exactement « {forme} »"))
         else:
             justes.append((ligne, texte))
-    if len(justes) == 2 and justes[0][1] != justes[1][1]:
+    if not forme and len(justes) == 2 and justes[0][1] != justes[1][1]:
         ecarts.append(Ecart(t.chemin, justes[1][0], "sélecteur",
                             f"sélecteur différent de celui de l'original ({o.chemin}:{justes[0][0]}), "
                             f"attendu la même ligne des deux côtés"))
@@ -655,7 +754,9 @@ def comparer(original, traduction, convention, existe, ancres_de=None):
     ecarts += comparer_liens(original, traduction, convention, existe)
     ecarts += comparer_nombres(original, traduction)
     ecarts += comparer_identifiants(original, traduction)
-    ecarts += comparer_selecteur(original, traduction)
+    ecarts += comparer_selecteur(original, traduction, convention)
+    lo, lt = convention.langues()
+    ecarts += juger_la_langue(original, lo) + juger_la_langue(traduction, lt)
     if ancres_de:
         ecarts += comparer_ancres(original, traduction, convention, ancres_de)
     return ecarts
@@ -695,6 +796,80 @@ def comparer_fichiers(racine, original, traduction, convention):
     return ecarts
 
 
+def comparer_documents(racine, documents, convention):
+    """Ce qu'un document juge SEUL : la DIRECTION de ses liens et les ANCRES qu'ils visent. Rend (écarts,
+    illisibles).
+
+    Elle juge chaque original de paire et chaque document sans paire ; la traduction d'une paire est déjà
+    tenue par sa comparaison à l'original (cibles basculées, ancres de la traduction). Un lien vers un
+    document qui existe dans les deux langues vise la version de la langue du document qui le porte : la
+    langue de l'original vient de la convention, celle d'un document sans paire de sa prose (non jugée
+    quand elle est indécise). La ligne du sélecteur de langue est la seule exception. Une ancre vers un
+    document Markdown de l'arbre désigne un titre ou un `id` de ce fichier."""
+    present = set(documents)
+    lo, lt = convention.langues()
+
+    def existe(rel):
+        return os.path.isfile(os.path.join(racine, rel))
+
+    cache, illisibles = {}, []
+
+    def lire(rel):
+        if rel not in cache:
+            try:
+                with open(os.path.join(racine, rel), encoding="utf-8") as f:
+                    cache[rel] = analyser(f.read(), rel)
+            except (OSError, UnicodeDecodeError) as e:
+                cache[rel] = None
+                illisibles.append(f"{rel} : {e}")
+        return cache[rel]
+
+    def versions(vise):
+        """(version originale, version traduite) d'un document qui existe dans les deux langues."""
+        if convention.est_traduction(vise):
+            o, t = convention.original_de(vise), vise
+        elif convention.est_original(vise):
+            o, t = vise, convention.traduction_de(vise)
+        else:
+            return None
+        return (o, t) if existe(o) and existe(t) else None
+
+    ecarts = []
+    for d in documents:
+        if convention.est_traduction(d) and convention.original_de(d) in present:
+            continue
+        doc = lire(d)
+        if doc is None:
+            continue
+        a_sa_paire = convention.est_original(d) and convention.traduction_de(d) in present
+        langue = lo if a_sa_paire else langue_de_la_prose(doc)
+        ligne_du_selecteur = doc.selecteur[0] if doc.selecteur else None
+        dossier = os.path.dirname(d)
+        for ligne, cible in doc.liens:
+            chemin, _, ancre = cible.partition("#")
+            chemin = cible_sans_ancre(chemin)
+            if est_externe(chemin):
+                continue
+            vise = resoudre(chemin, dossier) if chemin else os.path.normpath(d)
+            if not vise.endswith(".md") or vise.startswith(".."):
+                continue
+            paire_visee = versions(vise) if chemin else None
+            if paire_visee and langue and ligne != ligne_du_selecteur and lo:
+                langue_visee = lo if vise == paire_visee[0] else lt
+                if langue_visee != langue:
+                    juste = paire_visee[1] if langue == lt else paire_visee[0]
+                    nom = {"fr": "français", "en": "anglais"}
+                    ecarts.append(Ecart(d, ligne, "direction",
+                                        f"document {nom[langue]} qui vise la version {nom[langue_visee]}e "
+                                        f"« {chemin} » : viser « {os.path.relpath(juste, dossier or '.')} »"))
+            ancre = unquote(ancre)
+            if ancre and existe(vise):
+                cible_lue = lire(vise)
+                if cible_lue is not None and ancre not in cible_lue.ancres and ancre.lower() not in cible_lue.ancres:
+                    ecarts.append(Ecart(d, ligne, "ancres", f"ancre « #{ancre} » : aucun titre de {vise} n'a ce slug"))
+    return ecarts, illisibles
+
+
 class Illisible(Exception):
     """Un fichier n'a pas pu être lu. `ecarts` vaut None quand c'est un fichier de la paire (rien n'a
     été comparé), et la liste des écarts trouvés quand c'est un fichier visé par une ancre (la paire
@@ -719,8 +894,8 @@ def inventaire(documents, convention, une_seule_langue=None):
     seule langue), en chemins relatifs.
 
     Un original sans traduction nommé dans `une_seule_langue` n'est pas un écart. Une entrée de cet
-    ensemble en est un quand le document a sa traduction, ou quand il n'est plus suivi : la raison
-    écrite à côté ne vaut plus rien."""
+    ensemble en est un quand elle ne porte pas de raison écrite (vide, absente), quand le document a sa
+    traduction, ou quand il n'est plus suivi : la raison écrite à côté ne vaut plus rien."""
     seules = UNE_SEULE_LANGUE if une_seule_langue is None else une_seule_langue
     present = set(documents)
     sans_traduction = [d for d in documents
@@ -730,7 +905,10 @@ def inventaire(documents, convention, une_seule_langue=None):
                   if convention.est_traduction(d) and convention.original_de(d) not in present]
     perimees = []
     for d in sorted(seules):
-        if d not in present:
+        raison = seules[d]
+        if not isinstance(raison, str) or not raison.strip():
+            perimees.append((d, "n'a aucune raison écrite : une exception sans raison ne se retire plus"))
+        elif d not in present:
             perimees.append((d, "n'est plus un document suivi"))
         elif not convention.est_original(d):
             perimees.append((d, "n'est pas un original sous la convention"))
@@ -766,6 +944,7 @@ def main(argv=None):
         print(f"convention invalide : {e}", file=sys.stderr)
         return 2
 
+    documents = None
     if a.paire:
         a_comparer = [tuple(a.paire)]
     else:
@@ -810,19 +989,27 @@ def main(argv=None):
             else:
                 total += e.ecarts
                 partielles.append((original, traduction, e))
+    # Ce que chaque document juge seul (direction des liens, ancres de l'original et des documents sans
+    # paire), sur tout l'arbre suivi ; `--paire` ne lit que sa paire.
+    seuls_illisibles = []
+    if documents is not None:
+        en_plus, seuls_illisibles = comparer_documents(a.racine, documents, convention)
+        total += en_plus
     for e in total:
         print(e)
     for original, traduction, e in illisibles:
         print(f"{original} / {traduction} illisible, rien comparé pour cette paire : {e}", file=sys.stderr)
     for original, traduction, e in partielles:
         print(f"{original} / {traduction} lue en partie : {e}", file=sys.stderr)
+    for e in seuls_illisibles:
+        print(f"document illisible, direction et ancres non jugées : {e}", file=sys.stderr)
     print(f"{len(a_comparer) - len(illisibles) - len(partielles)} paire(s) comparée(s), "
           f"{len(total)} écart(s)"
           + (f", {len(partielles)} paire(s) lue(s) en partie" if partielles else "")
           + (f", {len(illisibles)} paire(s) illisible(s)" if illisibles else ""))
     if total:
         return 1
-    if illisibles or partielles:
+    if illisibles or partielles or seuls_illisibles:
         print("aucun écart, mais une paire au moins n'a pas été lue en entier : rien ne prouve la parité",
               file=sys.stderr)
         return 2

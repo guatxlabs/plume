@@ -367,11 +367,14 @@ de code et mêmes commandes hors commentaires, mêmes tableaux, mêmes cibles de
 entre accents graves (un segment de code replié sur deux lignes reste un seul segment, la fin de
 ligne y valant une espace). Les deux fichiers portent le sélecteur de langue sur la première ligne
 non vide sous leur titre de niveau 1, la même ligne des deux côtés, qui nomme l'original puis la
-traduction : `[English](X.md) | [Français](X.fr.md)` ; absent, inversé ou visant un autre fichier,
-c'est un écart. Dans la traduction, une ancre `#…` vers un document Markdown de l'arbre désigne un
-titre qui existe dans le fichier visé, par son slug GitHub (minuscules, ponctuation retirée, espaces
-en tirets, accents conservés, `-1`, `-2` pour un titre en double) : une ancre restée sur le titre de
-l'original est nommée comme telle ; les ancres de l'original ne sont pas jugées.
+traduction : `[English](X.md) | [Français](X.fr.md)`, exactement, libellés compris ; absent,
+inversé, d'une autre forme ou visant un autre fichier, c'est un écart. La prose de chaque fichier est
+dans sa langue, lue à ses mots-outils hors du code (un document presque tout en code n'est pas jugé
+sur sa langue). Chaque document vise, d'un document qui existe dans les deux langues, la version de
+sa propre langue — le sélecteur est la seule exception. Une ancre `#…` vers un document Markdown de
+l'arbre, dans tout document, désigne un titre qui existe dans le fichier visé, par son slug GitHub
+(minuscules, ponctuation retirée, espaces en tirets, accents conservés, `-1`, `-2` pour un titre en
+double) ; dans la traduction, une ancre restée sur le titre de l'original est nommée comme telle.
 `.github/scripts/parite_des_langues.py` compare le tout et nomme chaque écart par fichier et ligne :
 
 ```sh
@@ -380,6 +383,7 @@ python3 .github/scripts/parite_des_langues.py --paire X.md X.fr.md # une seule p
 python3 .github/scripts/parite_des_langues.py --inventaire         # documents sans leur paire
 python3 .github/scripts/test_parite_des_langues.py                 # épreuves de l'outil
 python3 .github/scripts/check_every_document_is_paired_and_in_parity.py # la garde
+python3 .github/scripts/check_the_language_tools_pass_their_own_tests.py # les épreuves, en garde
 ```
 
 La convention de suffixe est un paramètre (`--suffixe-original`, `--suffixe-traduction`, par défaut

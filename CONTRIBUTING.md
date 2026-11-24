@@ -350,11 +350,14 @@ and same commands outside comments, same tables, same link targets — a link to
 backticks (a code span folded over two lines stays one span, the line end counting as a space).
 Both files carry the language selector on the first non-empty line under their level 1 heading,
 the same line on both sides, naming the original then the translation:
-`[English](X.md) | [Français](X.fr.md)`; missing, inverted or pointing at another file, it is a
-gap. In the translation, an anchor `#…` to a Markdown document of the tree designates a heading
-that exists in the target file, by its GitHub slug (lower case, punctuation removed, spaces as
-hyphens, accents kept, `-1`, `-2` for a duplicate heading): an anchor left on the heading of the
-original is named as such; the anchors of the original are not judged.
+`[English](X.md) | [Français](X.fr.md)`, exactly, labels included; missing, inverted, of another
+form or pointing at another file, it is a gap. The prose of each file is in its own language,
+read from its function words outside code (a document that is almost all code is not judged on
+its language). Every document links the version of its own language of a document that exists in
+both — the selector is the only exception. An anchor `#…` to a Markdown document of the tree, in
+any document, designates a heading that exists in the target file, by its GitHub slug (lower case,
+punctuation removed, spaces as hyphens, accents kept, `-1`, `-2` for a duplicate heading); in the
+translation, an anchor left on the heading of the original is named as such.
 `.github/scripts/parite_des_langues.py` compares all of it and names each gap by file and line:
 
 ```sh
@@ -363,6 +366,7 @@ python3 .github/scripts/parite_des_langues.py --paire X.md X.fr.md # a single pa
 python3 .github/scripts/parite_des_langues.py --inventaire         # documents without their pair
 python3 .github/scripts/test_parite_des_langues.py                 # the tool's own tests
 python3 .github/scripts/check_every_document_is_paired_and_in_parity.py # the guard
+python3 .github/scripts/check_the_language_tools_pass_their_own_tests.py # the tests, as a guard
 ```
 
 The suffix convention is a parameter (`--suffixe-original`, `--suffixe-traduction`, by default

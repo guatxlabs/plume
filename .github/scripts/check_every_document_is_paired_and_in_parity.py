@@ -16,8 +16,12 @@ CE QUI EST JUGÉ
   est un écart ; une entrée de l'ensemble qui a retrouvé sa paire, ou qui ne désigne plus un document
   suivi, en est un aussi.
 - LA PARITÉ de chaque paire : titres, blocs de code et commandes, tableaux, cibles de liens (un lien
-  vers `Y.md` vise `Y.fr.md` côté français quand ce fichier existe), sélecteur de langue, ancres de la
-  traduction, nombres, identifiants entre accents graves — tout ce que l'outil compare.
+  vers `Y.md` vise `Y.fr.md` côté français quand ce fichier existe), sélecteur de langue à sa forme
+  exacte, langue de la prose de chaque fichier, ancres de la traduction, nombres, identifiants entre
+  accents graves — tout ce que l'outil compare.
+- CE QUE CHAQUE DOCUMENT JUGE SEUL : la direction de ses liens (un document anglais vise la version
+  anglaise, un document français la française ; le sélecteur seul fait exception) et les ancres qu'il
+  vise, originaux et documents sans paire compris.
 
 L'INSTRUMENT SE VALIDE AVANT DE RENDRE UN VERDICT
 --------------------------------------------------
@@ -90,6 +94,11 @@ def juger(racine, une_seule_langue, min_paires=1):
         for e in trouves:
             lignes.append(f"::error file={e.fichier},line={e.ligne}::{e}")
         ecarts += len(trouves)
+    seuls, seuls_illisibles = pdl.comparer_documents(racine, documents, convention)
+    for e in seuls:
+        lignes.append(f"::error file={e.fichier},line={e.ligne}::{e}")
+    ecarts += len(seuls)
+    illisibles += seuls_illisibles
     for i in illisibles:
         lignes.append(f"{ETIQUETTE} lue en partie ou illisible : {i}")
 
@@ -110,6 +119,15 @@ def juger(racine, une_seule_langue, min_paires=1):
 
 
 SELECTEUR = "[English]({n}.md) | [Français]({n}.fr.md)"
+# Une prose assez longue pour que sa langue se lise (plus de `MIN_MOTS_OUTILS` mots-outils).
+PROSE = {
+    "fr": ("\nLe capteur lit la file et le journal, puis il les envoie au central pour que la règle les juge "
+           "dans la fenêtre qui est la sienne ; ce n'est pas une copie, et elle ne garde rien sur le disque "
+           "quand le central est joignable par le réseau.\n"),
+    "en": ("\nThe sensor reads the queue and the log, then it sends them to the central so that the rule can "
+           "judge them in the window that is its own; this is not a copy, and it keeps nothing on the disk "
+           "when the central is reachable by the network.\n"),
+}
 
 
 def fabriquer(racine, fichiers):
@@ -127,8 +145,8 @@ def fabriquer(racine, fichiers):
 def corpus_juste():
     guide = "# Guide\n\n" + SELECTEUR.format(n="guide") + "\n\nSee [the map](carte.md) and [the log](JOURNAL.md).\n"
     guide_fr = "# Guide\n\n" + SELECTEUR.format(n="guide") + "\n\nVoir [la carte](carte.fr.md) et [le journal](JOURNAL.md).\n"
-    carte = "# Map\n\n" + SELECTEUR.format(n="carte") + "\n"
-    carte_fr = "# Carte\n\n" + SELECTEUR.format(n="carte") + "\n"
+    carte = "# Map\n\n" + SELECTEUR.format(n="carte") + "\n" + PROSE["en"]
+    carte_fr = "# Carte\n\n" + SELECTEUR.format(n="carte") + "\n" + PROSE["fr"]
     # Le document en une seule langue porte déjà le sélecteur de sa paire future : quand le témoin lui
     # rend sa traduction, la paire est juste, et la seule faute qui reste est l'entrée périmée.
     journal = "# Journal\n\n" + SELECTEUR.format(n="JOURNAL") + "\n"
@@ -165,6 +183,19 @@ def valider_instrument():
          "JOURNAL.md : entrée périmée de UNE_SEULE_LANGUE (tenu en une seule langue) : n'est plus un document suivi", 1),
         ("document en une seule langue hors de l'ensemble", juste, {}, 1,
          "JOURNAL.md : document suivi sans sa traduction", 1),
+        ("entrée sans raison écrite", juste, {"JOURNAL.md": ""}, 1,
+         "JOURNAL.md : entrée périmée de UNE_SEULE_LANGUE () : n'a aucune raison écrite", 1),
+        ("original anglais qui vise la version française", dict(juste, **{"guide.md": juste["guide.md"].replace(
+            "(carte.md)", "(carte.fr.md)")}), seules, 1, "[direction] document anglais qui vise la version française", 1),
+        ("ancre absente dans un original", dict(juste, **{"guide.md": juste["guide.md"].replace(
+            "(carte.md)", "(carte.md#mapp)"), "guide.fr.md": juste["guide.fr.md"].replace(
+            "(carte.fr.md)", "(carte.fr.md#carte)")}), seules, 1, "[ancres] ancre « #mapp »", 1),
+        ("sélecteur aux libellés inversés", dict(juste, **{n: juste[n].replace(
+            SELECTEUR.format(n="carte"), "[Français](carte.md) | [English](carte.fr.md)")
+            for n in ("carte.md", "carte.fr.md")}), seules, 1, "[sélecteur] forme du sélecteur", 2),
+        ("paire intervertie sans lien croisé", dict(juste, **{"carte.md": juste["carte.fr.md"] + PROSE["fr"],
+                                                             "carte.fr.md": juste["carte.md"] + PROSE["en"]}),
+         seules, 1, "[langue] la prose n'est pas en anglais", 2),
         ("dépôt sans document", {}, seules, 2, "aucun document suivi", 0),
     ]
     echecs = []

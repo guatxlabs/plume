@@ -23,7 +23,7 @@ Le compilo de recherche est **partagé** avec le crate public `guatx-core`.
 - **Recherche type Splunk** sur les logs sans Elastic : un langage **GXQL** (search-like) compilé en
   SQL read-only.
 - **Léger par conception** : un binaire `axum` + `rusqlite` (~4 Mo), confortable en peu de RAM.
-  Le profil de référence **mesure de l'ordre de trois cents Mio de RSS** et est borné à **2 Gi** (host comme k3s) — cf. §11
+  Le profil de référence **mesure quelques centaines de Mio de RSS** et est borné à **2 Gi** (host comme k3s) — cf. §11
   pour les conditions de mesure et la réserve (aucune garde CI ne défend ce plafond).
 - **Exposition maîtrisée** : le daemon ne s'expose **jamais** seul sur Internet — il vit derrière une
   chaîne reverse-proxy (Cloudflare → Traefik → Authentik forward-auth), et l'ingest agent passe par
@@ -251,8 +251,8 @@ dashboard(...)  panel(...)  rule(...)   -- + users, tokens, playbooks, cases, no
   count by <dim>`, `count by source,severity`) est réécrit vers les compteurs **pré-agrégés**
   d'`event_rollup`/`event_dim_rollup` → réponse en quelques millisecondes **parce qu'elle ne lit pas les
   events brutes** : les 92 panneaux semés répondent en **quelques millisecondes** en lisant **quelques dizaines de
-  milliers de lignes de rollup pré-agrégé**, pas le **million et plus d'événements** d'une base réelle (relevé du
-  2026-08-05 par `plume-daemon db-stats --par-objet`). Chaque réponse porte
+  milliers de lignes de rollup pré-agrégé**, pas le **million et plus d'événements** d'une base réelle (relevé par
+  `plume-daemon db-stats --par-objet`). Chaque réponse porte
   `served_from: rollup|raw` + `approx` +
   `truncated` — l'analyste voit **toujours** si le chiffre est exact ou agrégé.
   **Et quand il est tronqué, il porte DE COMBIEN** : le plafond top-N par dimension écarte de x1,0 à
@@ -263,14 +263,13 @@ dashboard(...)  panel(...)  rule(...)   -- + users, tokens, playbooks, cases, no
   Buckets sans ligne de reste (agrégés par un binaire antérieur) → l'ampleur est **avouée inconnue**,
   jamais remplacée par 0. **Ce qui n'est PAS routé
   l'est délibérément** : un `count by source,severity,action` (ou `host`, ou `src_ip`) retombe sur le
-  **scan brut**, mesuré à **une trentaine de secondes** sur une base réelle **au plus tard le 2026-07-23** (date du commit
-  `c784f75` qui consigne la mesure ; la date de la mesure elle-même n'est pas consignée) — sur une topologie
-  que la rétention a depuis purgée ; **le nombre de lignes que portait la base à cet instant n'a jamais été
-  relevé**, et la latence n'a **pas** été re-mesurée depuis (relevé du volume courant : 2026-08-05). Ce n'est
-  donc pas un coût courant, c'est une mesure datée. Le refus de router tient à la
+  **scan brut**, mesuré à **des dizaines de secondes** sur une base réelle, dans un relevé ancien dont la date n'est pas consignée
+  — sur une topologie que la rétention a depuis purgée ; **le nombre de lignes que portait la base à cet instant n'a jamais été
+  relevé**, et la latence n'a **pas** été re-mesurée depuis. Ce n'est
+  donc pas un coût courant, c'est une mesure ancienne. Le refus de router tient à la
   correction, pas à la latence : le rollup fusionne `NULL` et `''` sur ces
   dimensions et rendrait un group-by **faux** sous une étiquette « approximatif ». Nous refusons de servir
-  une réponse approchée comme si elle était exacte : **des dizaines de secondes (mesure ≤ 2026-07-23) exactes plutôt
+  une réponse approchée comme si elle était exacte : **des dizaines de secondes (mesure ancienne) exactes plutôt
   que des millisecondes fausses**. La route
   n'est jamais tentée quand un **masque de champ** est actif (`event_rollup` porte source/host/severity/
   action en clair) — tous les chiffres ci-dessus sont mesurés **masquage inactif**.
@@ -411,12 +410,12 @@ Trois cibles, **même binaire** (mode-aware) :
 
 | Cible | RAM | Échange |
 |---|---|---|
-| k3s (profil de référence « SMB », SQLCipher) | **de l'ordre de trois cents Mio de RSS mesurés** · requests 256Mi-768Mi selon la charge / **limit 2Gi** | désactivé par l'orchestrateur |
+| k3s (profil de référence « SMB », SQLCipher) | **quelques centaines de Mio de RSS mesurés** · requests 256Mi-768Mi selon la charge / **limit 2Gi** | désactivé par l'orchestrateur |
 | Conteneur (`docker-compose.yml`) | `mem_limit` — **même chiffre, 2 Gio**, réglable par `PLUME_MEM_LIMIT` ; `/tmp` borné (`PLUME_TMP_SIZE`) parce qu'un tmpfs est de la RAM comptée au même cgroup | `memswap_limit` **égal** à `mem_limit` → zéro octet |
 | Hôte nu (systemd) | même binaire, même budget : `MemoryMax=2G` / `MemoryHigh=1800M` (cf. `systemd/plume-daemon.service`). **256 Mo et 200 Mo OOM-aient le daemon au boot** — ne descendez pas sous ~512 Mo. | **non borné** : aucune unité livrée ne pose `MemorySwapMax=`, donc `MemoryMax=` y borne le RÉSIDENT et pas le total |
 
 Le profil de référence est **mesuré à quelques centaines de Mio de RSS** sur une installation réelle
-(**près de dix millions d'événements en base, 2 vCPU, plafond mémoire 2 Gio, masquage de champs inactif**), et le plafond
+(**plusieurs millions d'événements en base, 2 vCPU, plafond mémoire 2 Gio, masquage de champs inactif**), et le plafond
 de 2 Gio est **appliqué à l'exécution** dans les **trois** modes (`limits.memory: 2Gi` en k3s,
 `mem_limit` + `memswap_limit` en conteneur, `MemoryMax=2G` en systemd — le conteneur ne le posait pas,
 `P4.14-a`) — mais **le même chiffre n'y est pas la même borne** (colonne « Échange » ci-dessus), et
@@ -447,8 +446,8 @@ n'est pas ordonnée par un index fait **trier** SQLite. Sous `temp_store=MEMORY`
 mécanisme de déversement** — pas un réglage trop généreux, une absence de mécanisme : dans SQLite,
 `sqlite3VdbeSorterInit` ne renseigne `mxPmaSize` que si `temp_store=FILE`, et `sqlite3VdbeSorterWrite`
 enferme tout le calcul de déversement dans `if( mxPmaSize )`. Le trieur matérialisait donc un
-enregistrement **par ligne balayée**. Basculer sur `temp_store=FILE` fait exister un plafond. Mesuré sur
-3 648 003 événements, crête de RSS du processus (daemon neuf par cellule, `interactive:true`, moyenne de
+enregistrement **par ligne balayée**. Basculer sur `temp_store=FILE` fait exister un plafond. Mesuré au
+banc du dépôt (`bench/campagne-10m.sh`) sur 3 648 003 événements, crête de RSS du processus (daemon neuf par cellule, `interactive:true`, moyenne de
 2 tirs) :
 
 | requête | `MEMORY` (défaut) | `FILE` (opt-in) | déversé sur disque |

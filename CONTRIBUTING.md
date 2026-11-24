@@ -73,7 +73,7 @@ A pull request that weakens any of these will be **rejected**, no matter how use
   for alerts raised before that column existed. Left disabled, an admission is an event and nothing
   more.
 - **The 2 GB RAM budget is non-negotiable — optimise, don't grow.** The reference deployment
-  measures **~310 MiB RSS** (9,844,503 events, 2 vCPU, field masking off) and is **capped at
+  measures **a few hundred MiB of RSS** (several million events, 2 vCPU, field masking off) and is **capped at
   runtime** to **2 GiB** (`limits.memory: 2Gi` in k3s, `MemoryMax=2G` in systemd) — **no CI job
   asserts that ceiling**, so treat it as a budget you must re-measure, not a guarantee the
   pipeline defends. Keep the working set bounded: paginate (keyset),
@@ -155,9 +155,9 @@ TMPDIR=/path/on/disk cargo test --manifest-path daemon/Cargo.toml --features col
 # the count `EXPECTED_COLD_TESTS` asserts (= the default suite + what the feature adds)
 ```
 
-> **Why this matters more than it looks.** With a 7-day hot window and 365-day retention,
-> `cold_store` is the read path for ~358 of the 365 retained days. It is also the module whose
-> failure mode is *silent*: over-prune a Parquet file and a query spanning more than a week
+> **Why this matters more than it looks.** With a hot window of a few days and a retention
+> counted in months, `cold_store` is the read path for nearly all the retained days. It is also the module whose
+> failure mode is *silent*: over-prune a Parquet file and a query reaching past the hot window
 > returns a wrong count **without erroring**. Until this job existed, nothing in CI even
 > *compiled* the module — and it had gone red unnoticed: bumping guatx-core to v0.2.1
 > tightened GXQL field-name validation and broke the cold extractor-parity tests, while the

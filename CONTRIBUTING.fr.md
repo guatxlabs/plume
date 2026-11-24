@@ -81,7 +81,7 @@ Une demande de fusion qui affaiblit l'un d'eux sera **refusée**, si utile que s
   jetons `source=` ne reste qu'en repli pour les alertes levées avant que cette colonne n'existe. Laissé
   désactivé, un aveu est un événement et rien de plus.
 - **Le budget de 2 Go de RAM n'est pas négociable — optimiser, ne pas grossir.** Le déploiement de
-  référence mesure **~310 MiB de RSS** (9 844 503 événements, 2 vCPU, masquage des champs coupé) et est
+  référence mesure **quelques centaines de Mio de RSS** (plusieurs millions d'événements, 2 vCPU, masquage des champs coupé) et est
   **plafonné à l'exécution** à **2 GiB** (`limits.memory: 2Gi` sous k3s, `MemoryMax=2G` sous systemd) —
   **aucun job de CI n'asserte ce plafond**, traitez-le donc comme un budget à re-mesurer, pas comme une
   garantie que la chaîne défend. Gardez l'ensemble de travail borné : paginer (keyset), streamer
@@ -164,10 +164,10 @@ TMPDIR=/path/on/disk cargo test --manifest-path daemon/Cargo.toml --features col
 # le compte qu'asserte `EXPECTED_COLD_TESTS` (= la suite par défaut + ce que la feature ajoute)
 ```
 
-> **Pourquoi cela compte plus qu'il n'y paraît.** Avec une fenêtre chaude de 7 jours et une rétention
-> de 365 jours, `cold_store` est le chemin de lecture de ~358 des 365 jours retenus. C'est aussi le
+> **Pourquoi cela compte plus qu'il n'y paraît.** Avec une fenêtre chaude de quelques jours et une rétention
+> comptée en mois, `cold_store` est le chemin de lecture de presque tous les jours retenus. C'est aussi le
 > module dont le mode de défaillance est *silencieux* : élaguez trop un fichier Parquet et une requête
-> qui couvre plus d'une semaine rend un compte faux **sans erreur**. Jusqu'à l'existence de ce job, rien
+> qui dépasse la fenêtre chaude rend un compte faux **sans erreur**. Jusqu'à l'existence de ce job, rien
 > dans la CI ne *compilait* même le module — et il était passé au rouge sans que personne ne le voie :
 > monter guatx-core en v0.2.1 a resserré la validation des noms de champs GXQL et cassé les tests de
 > parité d'extracteur du tier froid, pendant que la suite par défaut restait verte — **752 verts le

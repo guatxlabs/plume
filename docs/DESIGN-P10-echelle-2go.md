@@ -27,8 +27,8 @@ lever:
 > ⚠ **THIS TABLE HAS ALREADY LIED ONCE, AND IT IS WORTH KNOWING WHY.** Its first version came from the
 > BENCH (3.65 M events, unencrypted database) and stated that "the PROPORTIONS are independent of
 > scale". Production contradicted it: **index 32.8% → 25.4%**, **FTS5 8.1% → 18.9%**. A
-> bench proportion is not a law. **And one reading does not make a series**: between 08-08
-> (FTS 18.9%) and 08-09 (FTS 10.7%) the gap could come from compaction `4ca6339`, from
+> bench proportion is not a law. **And one reading does not make a series**: between two readings
+> a day apart (FTS 18.9%, then 10.7%) the gap could come from compaction `4ca6339`, from
 > aging, or from a traffic dip — **two points do not say**. That is the gap that is
 > now closed: the SAME measurement is written every hour into `metric` by `ventilation_serie`, and
 > the table below is **re-derived without reading anything off by hand**:
@@ -41,9 +41,9 @@ lever:
 > closed accounting guarantees). When the measurement cannot be taken, the series carries a GAP and
 > `plume_db_ventilation_ok` drops to 0 with its cause — never a zero of bytes.
 
-**Real database** (`plume-daemon db-stats --par-objet`, live pod, read-only, **2026-08-09**): a database
-on the order of a GiB for a little under two million events ⇒ **on the order of a KiB per event**
-on disk · freelist **7.3%** · auto_vacuum=none · accounting CLOSED ✓ · walk in **about twenty
+**Real database** (`plume-daemon db-stats --par-objet`, live pod, read-only): a database
+on the order of a GiB for on the order of a million events ⇒ **on the order of a KiB per event**
+on disk · freelist **7.3%** · auto_vacuum=none · accounting CLOSED ✓ · walk in **tens of
 seconds per GiB**.
 
 | item | share | dominant objects |
@@ -77,7 +77,7 @@ hot→cold **aging** branch per day, **masked hot∪cold reader**, **bloom filte
 (`crypto.rs`/`reader.rs`/`planner.rs`/`vectorized.rs`), crypto seal per day,
 **vectorized** decoding (x2.7 measured, see OLAP horizon). **OPT-IN end to end**: compile gate
 `#[cfg(feature="cold_tier")]` + runtime gate `PLUME_COLD_TIER`. ~~**OFF in production.**~~
-**FALSE — corrected on 2026-08-10: it is ACTIVE on the reference installation** (`PLUME_COLD_TIER=1`,
+**FALSE — corrected afterwards: it is ACTIVE on the reference installation** (`PLUME_COLD_TIER=1`,
 dozens of Parquet day-files, hundreds of MiB, more than a month of depth). This sentence
 contradicted §3 of the SAME file twenty lines further
 down, and it survived the correction of lever A made that very morning: see `P10.10-a`. It is
@@ -91,12 +91,12 @@ pages.
 built. It is: (a) what PREVENTS enabling it by default, and (b) what is left for the
 hot tier, which does not move.**
 
-## 2 bis. RE-DERIVING THE ORDER FROM THE SHARES OF A REAL DATABASE (second reading of 2026-08-09)
+## 2 bis. RE-DERIVING THE ORDER FROM THE SHARES OF A REAL DATABASE (second reading, same day)
 
 The levers below were ordered on a **bench** breakdown (3.65 M events), published
 with the claim "the proportions are independent of scale". **A real database
 contradicted it.** Reading taken by `db-stats --par-objet` (verified read-only) on the live pod:
-a database on the order of a GiB, a little under two million events, accounting CLOSED. *(The first call REFUSED to publish — "gap of 1 page" under concurrent writing. The
+a database on the order of a GiB, on the order of a million events, accounting CLOSED. *(The first call REFUSED to publish — "gap of 1 page" under concurrent writing. The
 fail-closed behavior works, and it reveals that the CLI path does not have the `BEGIN DEFERRED` that
 `ventilation_serie.rs` gave itself.)*
 
@@ -154,23 +154,23 @@ dip. It is the breakdown series (`c4c20f4`) that will settle it.
 
 ## 3. THE FOUR LEVERS, ordered by (measured impact ÷ new code)
 
-### ~~Lever A — ENABLE cold aging (built, OFF)~~ → **CLOSED: IT WAS NEVER "OFF" BY DECISION, AND IT RUNS** *(re-measured 2026-08-10)*
+### ~~Lever A — ENABLE cold aging (built, OFF)~~ → **CLOSED: IT WAS NEVER "OFF" BY DECISION, AND IT RUNS** *(re-measured on the reference installation)*
 
 > **⚠ THE PREMISE OF THIS LEVER WAS FALSE ON THE DAY IT WAS WRITTEN — and the date proves it.**
-> This heading dates from `5de5ccd`, **2026-08-06 00:54**. The cold tier stopped writing only from
-> **2026-08-05 to 2026-08-06** inclusive, because of a `Dockerfile` built `--features ldap` instead of
+> This heading dates from `5de5ccd`, written **during** the outage. The cold tier stopped writing only for
+> **two consecutive days**, because of a `Dockerfile` built `--features ldap` instead of
 > `ldap,cold_tier`. Those two days are **the only moment in the whole history of the repository** when
 > the observation "the cold tier produces nothing" was true. **A three-day build defect was
 > promoted to a permanent design state, and the ORDER OF THE FOUR LEVERS was derived from it.**
-> The cause was measured and written down **the next day** (`6dac62e`, 2026-08-07 11:30); neither this document
+> The cause was measured and written down **the next day** (`6dac62e`); neither this document
 > nor the roadmap was corrected for four days.
 >
 > **NONE of the four hypotheses listed below ever had to be tested: none was
 > the cause.** They are kept as they are, struck through, because erasing a false hypothesis
 > would erase the lesson.
 >
-> **STATE MEASURED ON THE REFERENCE INSTALLATION ON 2026-08-10** (checked twice, independently):
-> `PLUME_COLD_TIER=1` + 4 other variables in the Deployment's `env:` (no ConfigMap carries them) ·
+> **STATE MEASURED ON THE REFERENCE INSTALLATION** (checked twice, independently):
+> `PLUME_COLD_TIER=1` + a few other variables in the Deployment's `env:` (no ConfigMap carries them) ·
 > banner `[cold] tier froid ACTIF — <n> fichier(s)-jour, <taille>` · symbols in the binary THAT
 > RUNS: `cold_store` **7**, `parquet` **32**, against a negative witness at **0** · dozens of
 > Parquet day-files, hundreds of MiB, more than a month of depth.
@@ -180,7 +180,7 @@ dip. It is the breakdown series (`c4c20f4`) that will settle it.
 > feature restored → catch-up the same day.
 >
 > **WHAT LEVER A BROUGHT IN, MEASURED AND NO LONGER HOPED FOR** (hourly breakdown series, N=1
-> aging observed, 2026-08-10): an aged day returns **on the order of a hundred MiB** to the
+> aging observed): an aged day returns **on the order of a hundred MiB** to the
 > freelist — data, indexes and **FTS5** in unequal shares (about 64 / 22 / 14%) · file **unchanged**.
 > Accounting closed at both ends. The day moved out weighs **a few MiB** in the cold tier. **One aged day =
 > a ratio of about 30x between bytes returned to the hot tier and bytes written to the cold tier** — and it does take
@@ -194,7 +194,7 @@ dip. It is the breakdown series (`c4c20f4`) that will settle it.
 > HOT EVENT — **lever B** — and not lever A.
 >
 > **WHAT REMAINS UNMEASURED, AND IT IS NAMED**: the RAM peak *attributable* to aging.
-> The cgroup's `memory.peak` is close to three quarters of the limit and `VmHWM` about a third, but these
+> The cgroup's `memory.peak` takes a large share of the limit and `VmHWM` stays well below it, but these
 > are **cumulative, untimestamped** maxima over nearly a day — nothing says whether they fall during aging or
 > during a query. Likewise for the duration, the CPU and the effect on hot latency: **aging
 > is completely SILENT** (a hundred MiB freed without a single log line), which is
@@ -283,7 +283,7 @@ delivered remedy that stops working.
 **AND WHAT IT BRINGS IN, MEASURED ON THE SAME BENCH** (300 000 SIEM-like rows, `content='event'`,
 after `optimize` + `VACUUM`, 4 KiB pages):
 
-| form | `event_fts_data` | `event_fts_docsize` | FTS total | gain vs shipped | **carried over to the production shares of 2026-08-09** (FTS 10.7%, of which `event_fts_data` 9.3% — the reading that publishes BOTH) |
+| form | `event_fts_data` | `event_fts_docsize` | FTS total | gain vs shipped | **carried over to the production shares** (FTS 10.7%, of which `event_fts_data` 9.3% — the reading that publishes BOTH) |
 |---|---:|---:|---:|---:|---|
 | `detail=full`, `columnsize=1` (**shipped**) | 17 412 096 B | 3 612 672 B | 21 045 248 B | — | — |
 | `detail=column` | 15 994 880 B | 3 612 672 B | 19 628 032 B | **−8.1%** of `_data` | **≈ −0.8% of the file** |
@@ -315,7 +315,7 @@ the conclusion "do not commit it")*. `columnsize=0` removes `event_fts_docsize`,
 `event_fts_data` is **identical to the byte** (column 1 of the table). The gain is therefore bounded by everything
 the FTS item contains OUTSIDE `_data`:
 
-* production reading of 2026-08-09 — the only one that publishes both: **FTS 10.7%** of the file, of which
+* first production reading of that day — the only one that publishes both: **FTS 10.7%** of the file, of which
   **`event_fts_data` 9.3%** ⇒ everything-but-`_data` = **1.4% of the file**, and that is the UPPER BOUND
   of the gain;
 * relative to `_data`, this bound is `1,4 / 9,3` = **15.1%** — that is exactly the "at most 15%",
@@ -347,7 +347,7 @@ DELETIONS.** An external-content FTS5 table cannot remove a posting in place —
 SEGMENT MERGE, which plume **never** triggered. That is part of the gap between the 8.1%
 of the bench above and the 17.9% read on a real database: **aging residue**, not growth.
 
-> **WHAT THE NEXT READING SAYS — AND WHAT IT DOES NOT.** On 2026-08-09, the day after
+> **WHAT THE NEXT READING SAYS — AND WHAT IT DOES NOT.** The day after
 > this lever was deployed, the real database measures **FTS5 = 10.7%** (`event_fts_data` 9.3% of the
 > file). That is consistent with a compaction gain. **It is not proof**: three manual readings
 > spaced days apart do not distinguish a compaction gain from an ingestion dip or
@@ -393,7 +393,7 @@ Decoded from the figures: **the hot tier must be small and indexed; the cold tie
 ## 5. RECOMMENDED ORDER OF ATTACK (each one validates on its own, none blocks the next)
 
 1. ~~**MEASURE why the cold tier is OFF** (lever A)~~ → **DONE, AND THE LEVER IS CLOSED**
-   *(2026-08-10)*. It was not OFF: the line above was written **during** a three-day build
+   *(re-measured on the reference installation)*. It was not OFF: the line above was written **during** a three-day build
    outage, the only window in which it was true. It runs, it returns **on the order of a
    hundred MiB per day** to the hot tier for a few MiB written to the cold tier, and **this gain is already IN the
    baseline read off** —

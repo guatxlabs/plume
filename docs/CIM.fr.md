@@ -192,7 +192,7 @@ action  user  owner  kind  ns  role  scope  verb  resource  operation  dir  risk
 > code mort quand le compilateur GXQL a migré dans `guatx-core` — et il a été retiré (P6.8‑b) ; sa
 > purge de fond a droppé les index `idx_ev_auto_dir` / `idx_ev_auto_risk` / `idx_ev_auto_vtype` qui,
 > eux, **existaient réellement en production** (relevés avec leur taille dans `bench/profile-prod.json`,
-> `provenance: measured`, 2026‑07‑30 : quelques Mio pour `dir`, quelques Kio pour `risk`). Le critère d'entrée
+> `provenance: measured` : quelques Mio pour `dir`, quelques Kio pour `risk`). Le critère d'entrée
 > dans cette liste est donc devenu explicite
 > et vérifiable : **une règle livrée filtre‑t‑elle sur ce champ ?** — `dir=outbound` : trois règles du
 > catalogue (`ex-egress-fanout-external`, `lm-conntrack-internal-ssh`, `di-conntrack-internal-sweep`) ;
@@ -211,7 +211,7 @@ success  failure  allowed  blocked  ban  read  modify  delete  sudo  session_ope
 
 **`action` EST UNE ISSUE — donc son absence n'est PAS uniforme, et ce document le disait mal.**
 Ce paragraphe listait un vocabulaire sans jamais dire **où** `action` s'applique, ni ce que son
-absence signifie. Deux relevés du 2026‑08‑02 montrent que la question n'est pas cosmétique :
+absence signifie. Deux relevés montrent que la question n'est pas cosmétique :
 
 - **Base réelle** (extraction lecture seule `bench/prod-profile.sql`, de l'ordre du million d'événements) :
   `fields.action` est présent sur **68,7 %** des lignes, cardinalité 18.
@@ -247,8 +247,8 @@ plus. Ce qui reste **exigible** :
 > **Ce que l'absence coûtait, mesuré.** Les deux règles de brute-force livrées compilent
 > `category=auth action=failure`, et **aucun** des deux émetteurs Windows livrés ne posait `action`.
 > Trois échecs d'ouverture de session Windows (4625) réellement ingérés : `search category=auth |
-> stats count by source` rendait `windows-security 2 · WinEventLog:Security 1 · sudo 366`, tandis que
-> `search category=auth action=failure | stats count by source` rendait **`sudo 17` et RIEN pour
+> stats count by source` rendait `windows-security 2 · WinEventLog:Security 1` à côté des événements `sudo`, tandis que
+> `search category=auth action=failure | stats count by source` rendait **seulement `sudo` et RIEN pour
 > Windows**. Une détection T1110 activée était aveugle sur l'OS où le brute-force est le plus courant.
 > Fermé côté émetteur : l'agent (`agent/src/source/windows.rs`) décide catégorie, sévérité **et**
 > issue en **une seule variante de type sans champ optionnel** — une branche qui oublierait l'issue ne
@@ -258,7 +258,7 @@ plus. Ce qui reste **exigible** :
 
 ### 4d. Champs à FORTE cardinalité — ne comptez pas les indexer
 
-Guidance de mapping, pas un réglage. Ces champs coûtent ~73 Mo d'index d'expression sur 2,6 M lignes,
+Guidance de mapping, pas un réglage. Ces champs coûtent ~73 Mo d'index d'expression sur 2,6 M lignes au banc firehose auditd (`daemon/src/soql_glue.rs`),
 hors budget RAM (2 Gio) : **leur agrégation passe par les rollups**, jamais par un index.
 
 ```

@@ -27,8 +27,8 @@ levier :
 > ⚠ **CE TABLEAU A DÉJÀ MENTI UNE FOIS, ET IL FAUT SAVOIR POURQUOI.** Sa première version venait du
 > BANC (3,65 M év., base non chiffrée) et annonçait que « les PROPORTIONS sont indépendantes de
 > l'échelle ». La production l'a contredit : **index 32,8 % → 25,4 %**, **FTS5 8,1 % → 18,9 %**. Une
-> proportion de banc n'est pas une loi. **Et un relevé ne fait pas une série** : entre le 08-08
-> (FTS 18,9 %) et le 08-09 (FTS 10,7 %) l'écart pourrait venir de la compaction `4ca6339`, de
+> proportion de banc n'est pas une loi. **Et un relevé ne fait pas une série** : entre deux relevés
+> à un jour d'écart (FTS 18,9 %, puis 10,7 %) l'écart pourrait venir de la compaction `4ca6339`, de
 > l'aging, ou d'un creux de trafic — **deux points ne le disent pas**. C'est ce trou qui est
 > désormais fermé : la MÊME mesure est écrite chaque heure dans `metric` par `ventilation_serie`, et
 > le tableau ci-dessous se **re-dérive sans relever quoi que ce soit** :
@@ -41,9 +41,9 @@ levier :
 > la comptabilité fermée garantit). Quand la mesure ne peut pas être prise, la série porte un TROU et
 > `plume_db_ventilation_ok` passe à 0 avec sa cause — jamais un zéro d'octets.
 
-**Base réelle** (`plume-daemon db-stats --par-objet`, pod live, lecture seule, **2026-08-09**) : une base
-de l'ordre du Gio pour un peu moins de deux millions d'événements ⇒ **de l'ordre du Kio par événement**
-sur disque · freelist **7,3 %** · auto_vacuum=none · comptabilité FERMÉE ✓ · parcours en **une vingtaine
+**Base réelle** (`plume-daemon db-stats --par-objet`, pod live, lecture seule) : une base
+de l'ordre du Gio pour de l'ordre du million d'événements ⇒ **de l'ordre du Kio par événement**
+sur disque · freelist **7,3 %** · auto_vacuum=none · comptabilité FERMÉE ✓ · parcours en **des dizaines
 de secondes par Gio**.
 
 | poste | part | objets dominants |
@@ -77,7 +77,7 @@ branche d'**aging** hot→froid par jour, **lecteur hot∪cold masqué**, **bloo
 (`crypto.rs`/`reader.rs`/`planner.rs`/`vectorized.rs`), scellé crypto par jour, décodage
 **vectorisé** (×2,7 mesuré, cf. horizon OLAP). **OPT-IN de bout en bout** : gate compile
 `#[cfg(feature="cold_tier")]` + gate runtime `PLUME_COLD_TIER`. ~~**OFF en production.**~~
-**FAUX — corrigé le 2026-08-10 : il est ACTIF sur l'installation de référence** (`PLUME_COLD_TIER=1`,
+**FAUX — corrigé depuis : il est ACTIF sur l'installation de référence** (`PLUME_COLD_TIER=1`,
 des dizaines de fichiers-jour Parquet, des centaines de Mio, plus d'un mois de profondeur). Cette phrase
 contredisait le §3 du MÊME fichier vingt lignes plus
 bas, et elle a survécu à la correction du levier A faite le matin même : voir `P10.10-a`. Elle est
@@ -91,12 +91,12 @@ non compressées.
 construit. C'est : (a) qu'est-ce qui EMPÊCHE de l'activer par défaut, et (b) que reste-t-il pour le
 chaud qui, lui, ne bouge pas.**
 
-## 2 bis. RE-DÉRIVATION DE L'ORDRE DEPUIS LES PARTS D'UNE BASE RÉELLE (second relevé du 2026-08-09)
+## 2 bis. RE-DÉRIVATION DE L'ORDRE DEPUIS LES PARTS D'UNE BASE RÉELLE (second relevé, même jour)
 
 Les leviers ci-dessous ont été ordonnés sur une ventilation de **banc** (3,65 M événements), publiée
 avec l'affirmation « les proportions sont indépendantes de l'échelle ». **Une base réelle l'a
 contredite.** Relevé pris par `db-stats --par-objet` (lecture seule vérifiée) sur le pod vivant :
-une base de l'ordre du Gio, un peu moins de deux millions d'événements, comptabilité FERMÉE. *(Le premier appel a REFUSÉ de publier — « écart de 1 page » sous écriture concurrente. Le
+une base de l'ordre du Gio, de l'ordre du million d'événements, comptabilité FERMÉE. *(Le premier appel a REFUSÉ de publier — « écart de 1 page » sous écriture concurrente. Le
 fail-closed fonctionne, et il révèle que le chemin CLI n'a pas le `BEGIN DEFERRED` que
 `ventilation_serie.rs` s'est donné.)*
 
@@ -154,23 +154,23 @@ d'ingestion. C'est la série de ventilation (`c4c20f4`) qui tranchera.
 
 ## 3. LES QUATRE LEVIERS, ordonnés par (impact mesuré ÷ code neuf)
 
-### ~~Levier A — ACTIVER l'aging froid (construit, OFF)~~ → **CLOS : IL N'A JAMAIS ÉTÉ « OFF » PAR DÉCISION, ET IL TOURNE** *(re-mesuré 2026-08-10)*
+### ~~Levier A — ACTIVER l'aging froid (construit, OFF)~~ → **CLOS : IL N'A JAMAIS ÉTÉ « OFF » PAR DÉCISION, ET IL TOURNE** *(re-mesuré sur l'installation de référence)*
 
 > **⚠ LA PRÉMISSE DE CE LEVIER ÉTAIT FAUSSE LE JOUR OÙ IL A ÉTÉ ÉCRIT — et la date le prouve.**
-> Ce titre date de `5de5ccd`, **2026-08-06 00:54**. Le tier froid n'a cessé d'écrire que du
-> **2026-08-05 au 2026-08-06** inclus, à cause d'un `Dockerfile` bâti `--features ldap` au lieu de
+> Ce titre date de `5de5ccd`, écrit **pendant** la panne. Le tier froid n'a cessé d'écrire que pendant
+> **deux jours consécutifs**, à cause d'un `Dockerfile` bâti `--features ldap` au lieu de
 > `ldap,cold_tier`. Ces deux jours sont **le seul moment de toute l'histoire du dépôt** où
 > l'observation « le froid ne produit rien » était vraie. **Un défaut de build de trois jours a été
 > promu en état permanent de conception, et l'ORDRE DES QUATRE LEVIERS en a été dérivé.**
-> La cause a été mesurée et écrite **le lendemain** (`6dac62e`, 2026-08-07 11:30) ; ni ce document
+> La cause a été mesurée et écrite **le lendemain** (`6dac62e`) ; ni ce document
 > ni la roadmap n'ont été rectifiés pendant quatre jours.
 >
 > **AUCUNE des quatre hypothèses listées ci-dessous n'a jamais eu à être éprouvée : aucune n'était
 > la cause.** Elles sont conservées telles quelles, barrées, parce qu'effacer une hypothèse fausse
 > effacerait la leçon.
 >
-> **ÉTAT MESURÉ SUR L'INSTALLATION DE RÉFÉRENCE LE 2026-08-10** (vérifié deux fois, indépendamment) :
-> `PLUME_COLD_TIER=1` + 4 autres variables en `env:` du Deployment (aucun ConfigMap ne les porte) ·
+> **ÉTAT MESURÉ SUR L'INSTALLATION DE RÉFÉRENCE** (vérifié deux fois, indépendamment) :
+> `PLUME_COLD_TIER=1` + quelques autres variables en `env:` du Deployment (aucun ConfigMap ne les porte) ·
 > bannière `[cold] tier froid ACTIF — <n> fichier(s)-jour, <taille>` · symboles dans le binaire QUI
 > TOURNE : `cold_store` **7**, `parquet` **32**, contre un témoin négatif à **0** · des dizaines de
 > fichiers-jour Parquet, des centaines de Mio, plus d'un mois de profondeur.
@@ -180,7 +180,7 @@ d'ingestion. C'est la série de ventilation (`c4c20f4`) qui tranchera.
 > feature rendue → rattrapage le jour même.
 >
 > **CE QUE LE LEVIER A RAPPORTE, MESURÉ ET NON PLUS ESPÉRÉ** (série de ventilation horaire, N=1
-> vieillissement observé, 2026-08-10) : un jour vieilli rend **de l'ordre de la centaine de Mio** à la
+> vieillissement observé) : un jour vieilli rend **de l'ordre de la centaine de Mio** à la
 > freelist — données, index et **FTS5** à parts inégales (environ 64 / 22 / 14 %) · fichier **inchangé**.
 > Comptabilité fermée aux deux bornes. Le jour sorti pèse **quelques Mio** au froid. **Un jour vieilli =
 > un ratio d'environ 30× entre octets rendus au chaud et octets écrits au froid** — et il emporte bien
@@ -194,7 +194,7 @@ d'ingestion. C'est la série de ventilation (`c4c20f4`) qui tranchera.
 > ÉVÉNEMENT CHAUD — le **levier B** — et non le levier A.
 >
 > **CE QUI RESTE NON MESURÉ, ET C'EST NOMMÉ** : la crête RAM *imputable* au vieillissement.
-> `memory.peak` du cgroup vaut près des trois quarts de la limite et `VmHWM` environ le tiers, mais ce
+> `memory.peak` du cgroup prend une large part de la limite et `VmHWM` reste bien en dessous, mais ce
 > sont des maxima **cumulés et non horodatés** sur près d'une journée — rien ne dit s'ils tombent pendant l'aging ou
 > pendant une requête. Idem pour la durée, le CPU et l'effet sur la latence chaude : **le
 > vieillissement est totalement MUET** (une centaine de Mio libérés sans une ligne de journal), ce qui est
@@ -283,7 +283,7 @@ livré qui cesse de fonctionner.
 **ET CE QUE ÇA RAPPORTE, MESURÉ SUR LE MÊME BANC** (300 000 lignes de type SIEM, `content='event'`,
 après `optimize` + `VACUUM`, pages de 4 Kio) :
 
-| forme | `event_fts_data` | `event_fts_docsize` | total FTS | gain vs livré | **reporté aux parts de production du 2026-08-09** (FTS 10,7 %, dont `event_fts_data` 9,3 % — le relevé qui publie LES DEUX) |
+| forme | `event_fts_data` | `event_fts_docsize` | total FTS | gain vs livré | **reporté aux parts de production** (FTS 10,7 %, dont `event_fts_data` 9,3 % — le relevé qui publie LES DEUX) |
 |---|---:|---:|---:|---:|---|
 | `detail=full`, `columnsize=1` (**livré**) | 17 412 096 o | 3 612 672 o | 21 045 248 o | — | — |
 | `detail=column` | 15 994 880 o | 3 612 672 o | 19 628 032 o | **−8,1 %** du `_data` | **≈ −0,8 % du fichier** |
@@ -315,7 +315,7 @@ la conclusion « ne pas l'engager »)*. `columnsize=0` supprime `event_fts_docsi
 `event_fts_data` est **identique à l'octet** (colonne 1 du tableau). Le gain est donc borné par tout ce
 que le poste FTS contient EN DEHORS de `_data` :
 
-* relevé de production du 2026-08-09 — le seul qui publie les deux : **FTS 10,7 %** du fichier, dont
+* premier relevé de production de ce jour — le seul qui publie les deux : **FTS 10,7 %** du fichier, dont
   **`event_fts_data` 9,3 %** ⇒ tout-sauf-`_data` = **1,4 % du fichier**, et c'est la BORNE SUPÉRIEURE
   du gain ;
 * rapportée à `_data`, cette borne vaut `1,4 / 9,3` = **15,1 %** — c'est exactement le « au plus 15 % »,
@@ -347,7 +347,7 @@ déclencheur `event_ad` en écrit un de SUPPRESSION, qui s'AJOUTE — et l'espac
 FUSION DES SEGMENTS, que plume ne déclenchait **jamais**. C'est une part de l'écart entre les 8,1 %
 du banc ci-dessus et les 17,9 % relevés sur une base réelle : de la **trace d'aging**, pas de la croissance.
 
-> **CE QUE LE RELEVÉ SUIVANT DIT — ET CE QU'IL NE DIT PAS.** Le 2026-08-09, au lendemain du
+> **CE QUE LE RELEVÉ SUIVANT DIT — ET CE QU'IL NE DIT PAS.** Au lendemain du
 > déploiement de ce levier, la base réelle mesure **FTS5 = 10,7 %** (`event_fts_data` 9,3 % du
 > fichier). C'est cohérent avec un gain de compaction. **Ce n'est pas une preuve** : trois relevés
 > manuels espacés de jours ne distinguent pas un gain de compaction d'un creux d'ingestion ou d'un
@@ -393,7 +393,7 @@ Décodée des chiffres : **le chaud doit être petit et indexé ; le froid, minu
 ## 5. ORDRE D'ATTAQUE RECOMMANDÉ (chacun se valide seul, aucun ne bloque le suivant)
 
 1. ~~**MESURER pourquoi le froid est OFF** (levier A)~~ → **FAIT, ET LE LEVIER EST CLOS**
-   *(2026-08-10)*. Il n'était pas OFF : la ligne ci-dessus a été écrite **pendant** une panne de
+   *(re-mesuré sur l'installation de référence)*. Il n'était pas OFF : la ligne ci-dessus a été écrite **pendant** une panne de
    build de trois jours, la seule fenêtre où elle était vraie. Il tourne, il rend **de l'ordre de la
    centaine de Mio par jour** au chaud pour quelques Mio écrits au froid, et **ce gain est déjà DANS la
    ligne de base relevée** —

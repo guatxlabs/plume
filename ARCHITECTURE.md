@@ -23,7 +23,7 @@ The search compiler is **shared** with the public `guatx-core` crate.
 - **Splunk-style search** over logs without Elastic: a **GXQL** language (search-like) compiled into
   read-only SQL.
 - **Lightweight by design**: one `axum` + `rusqlite` binary (~4 MB), comfortable on little RAM.
-  The reference profile **measures on the order of three hundred MiB of RSS** and is capped at **2 Gi** (host as well as k3s) — see §11
+  The reference profile **measures a few hundred MiB of RSS** and is capped at **2 Gi** (host as well as k3s) — see §11
   for the measurement conditions and the caveat (no CI guard defends this ceiling).
 - **Controlled exposure**: the daemon is **never** exposed to the Internet on its own — it lives behind a
   reverse-proxy chain (Cloudflare → Traefik → Authentik forward-auth), and agent ingest goes through
@@ -251,8 +251,8 @@ dashboard(...)  panel(...)  rule(...)   -- + users, tokens, playbooks, cases, no
   count by <dim>`, `count by source,severity`) is rewritten onto the **pre-aggregated** counters
   of `event_rollup`/`event_dim_rollup` → an answer in a few milliseconds **because it does not read the
   raw events**: the 92 seeded panels answer in **a few milliseconds** by reading **a few tens of
-  thousands of pre-aggregated rollup rows**, not the **million or more events** of a real database (reading of
-  2026-08-05 by `plume-daemon db-stats --par-objet`). Each answer carries
+  thousands of pre-aggregated rollup rows**, not the **million or more events** of a real database (reading by
+  `plume-daemon db-stats --par-objet`). Each answer carries
   `served_from: rollup|raw` + `approx` +
   `truncated` — the analyst **always** sees whether the figure is exact or aggregated.
   **And when it is truncated, it carries BY HOW MUCH**: the per-dimension top-N cap discards from x1.0 to
@@ -263,14 +263,13 @@ dashboard(...)  panel(...)  rule(...)   -- + users, tokens, playbooks, cases, no
   Buckets without a remainder row (aggregated by an earlier binary) → the extent is **admitted as unknown**,
   never replaced by 0. **What is NOT routed
   is not routed on purpose**: a `count by source,severity,action` (or `host`, or `src_ip`) falls back to the
-  **raw scan**, measured at **about thirty seconds** on a real database **no later than 2026-07-23** (date of commit
-  `c784f75`, which records the measurement; the date of the measurement itself is not recorded) — on a topology
-  that retention has since purged; **the number of rows the database held at that moment was never
-  recorded**, and the latency has **not** been re-measured since (reading of the current volume: 2026-08-05). This is
-  therefore not a current cost, it is a dated measurement. The refusal to route is about
+  **raw scan**, measured at **tens of seconds** on a real database, in an old reading whose date was not recorded
+  — on a topology that retention has since purged; **the number of rows the database held at that moment was never
+  recorded**, and the latency has **not** been re-measured since. This is
+  therefore not a current cost, it is an old measurement. The refusal to route is about
   correctness, not latency: the rollup merges `NULL` and `''` on these
   dimensions and would return a **wrong** group-by under an "approximate" label. We refuse to serve
-  an approximate answer as if it were exact: **tens of seconds (measurement ≤ 2026-07-23) that are exact rather
+  an approximate answer as if it were exact: **tens of seconds (an old measurement) that are exact rather
   than milliseconds that are wrong**. The route
   is never attempted when a **field mask** is active (`event_rollup` carries source/host/severity/
   action in plaintext) — all the figures above are measured **with masking inactive**.
@@ -411,12 +410,12 @@ Three targets, **same binary** (mode-aware):
 
 | Target | RAM | Swap |
 |---|---|---|
-| k3s (reference "SMB" profile, SQLCipher) | **on the order of three hundred MiB of RSS measured** · requests 256Mi-768Mi depending on load / **limit 2Gi** | disabled by the orchestrator |
+| k3s (reference "SMB" profile, SQLCipher) | **a few hundred MiB of RSS measured** · requests 256Mi-768Mi depending on load / **limit 2Gi** | disabled by the orchestrator |
 | Container (`docker-compose.yml`) | `mem_limit` — **same figure, 2 GiB**, adjustable through `PLUME_MEM_LIMIT`; `/tmp` bounded (`PLUME_TMP_SIZE`) because a tmpfs is RAM charged to the same cgroup | `memswap_limit` **equal** to `mem_limit` → zero bytes |
 | Bare host (systemd) | same binary, same budget: `MemoryMax=2G` / `MemoryHigh=1800M` (see `systemd/plume-daemon.service`). **256 MB and 200 MB OOM-kill the daemon at boot** — do not go below ~512 MB. | **unbounded**: no shipped unit sets `MemorySwapMax=`, so `MemoryMax=` there bounds the RESIDENT set and not the total |
 
 The reference profile is **measured at a few hundred MiB of RSS** on a real installation
-(**nearly ten million events in the database, 2 vCPU, memory ceiling 2 GiB, field masking inactive**), and the ceiling
+(**several million events in the database, 2 vCPU, memory ceiling 2 GiB, field masking inactive**), and the ceiling
 of 2 GiB is **enforced at runtime** in all **three** modes (`limits.memory: 2Gi` on k3s,
 `mem_limit` + `memswap_limit` in a container, `MemoryMax=2G` under systemd — the container did not set it,
 `P4.14-a`) — but **the same figure is not the same bound in each** (the "Swap" column above), and
@@ -447,8 +446,8 @@ is not ordered by an index makes SQLite **sort**. Under `temp_store=MEMORY`, thi
 spill mechanism** — not an overly generous setting, an absence of mechanism: in SQLite,
 `sqlite3VdbeSorterInit` only sets `mxPmaSize` if `temp_store=FILE`, and `sqlite3VdbeSorterWrite`
 encloses the whole spill computation in `if( mxPmaSize )`. The sorter therefore materialised one
-record **per scanned row**. Switching to `temp_store=FILE` makes a ceiling exist. Measured on
-3 648 003 events, process RSS peak (fresh daemon per cell, `interactive:true`, average of
+record **per scanned row**. Switching to `temp_store=FILE` makes a ceiling exist. Measured on the
+repository's bench (`bench/campagne-10m.sh`) at 3 648 003 events, process RSS peak (fresh daemon per cell, `interactive:true`, average of
 2 runs):
 
 | query | `MEMORY` (default) | `FILE` (opt-in) | spilled to disk |

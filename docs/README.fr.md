@@ -103,6 +103,7 @@ c'est ce qui permet d'en ajouter un sans toucher au central.
 | [MODULE-MAP.md](MODULE-MAP.fr.md) | ✅ | **Carte des sous-systèmes + invariants de sécurité.** Le document à lire avant une première contribution. |
 | [AI-ML-DIRECTION.md](AI-ML-DIRECTION.fr.md) | 📐 | Direction IA/ML : optionnelle, neutre vis-à-vis du fournisseur, neutre en RAM, OFF par défaut. |
 | [DESIGN-P10-echelle-2go.md](DESIGN-P10-echelle-2go.fr.md) | 📐 | **Tenir sous 2 Gio à l'échelle** — la carte du terrain MESURÉ (où partent les octets, où part la RAM de tri) et l'ordre des leviers qui en découle : chaud/froid, colonnaire, bloom, compression. C'est le document qui porte l'état le plus frais de ces travaux ; les clés `P10.*` de [ROADMAP.md](ROADMAP.md) y renvoient. Brainstorm ancré sur mesure, **pas** une décision figée. |
+| [ROADMAP-SUMMARY.md](ROADMAP-SUMMARY.md) | ✅ | **Où en est chaque chantier**, une section par phase — le résumé anglais de [ROADMAP.md](ROADMAP.md), l'index public des chantiers, tenu en français. |
 
 ## Ressources non narratives
 

@@ -1,8 +1,8 @@
 # Feuille de route de plume
 
 > *English readers: this index of workstreams is kept in French only. It changes with almost every
-> commit and the guards of this repository read it line by line, so it carries no translation; every
-> other document of this repository exists in both English and French.*
+> commit and the guards of this repository read it line by line, so it carries no translation. Its
+> English summary, one section per phase, is [`ROADMAP-SUMMARY.md`](ROADMAP-SUMMARY.md).*
 
 plume est un SOC/XDR écrit en Rust, conçu pour tenir dans un budget mémoire de **2 Gio**. Ce
 document est l'**index public des chantiers**, pas un journal de développement : chaque ligne dit ce

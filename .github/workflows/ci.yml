@@ -2509,6 +2509,15 @@ jobs:
         continue-on-error: true
         run: python3 .github/scripts/check_the_heavy_work_token_never_silences_its_caller.py
 
+      # LE RÉSUMÉ ANGLAIS DE LA FEUILLE DE ROUTE A UNE SECTION PAR PHASE DE L'INDEX, NI PLUS NI MOINS.
+      # `docs/ROADMAP.md` reste en français ; `docs/ROADMAP-SUMMARY.md` la résume par phase. L'ensemble des
+      # phases titrées de l'index et l'ensemble des sections de phase du résumé sont jugés égaux dans les
+      # deux sens : une phase neuve sans section rougit, une section sans phase rougit.
+      - name: Le resume anglais de la feuille de route couvre chaque phase de l index, et rien d autre
+        id: garde_89
+        continue-on-error: true
+        run: python3 .github/scripts/check_the_roadmap_summary_covers_every_phase.py
+
       # `P11.18-z` — LA RECHERCHE D'UNE LISTE SURVIT AU RENDU QUI DÉTRUIT SON CHAMP. La garde tient que
       # chaque liste cherchable déclare l'identité stable sans laquelle la mémoire ne peut pas s'armer :
       # sans elle, le mécanisme est posé mais la vue se comporte comme avant, en silence.
@@ -3006,6 +3015,7 @@ jobs:
           total=$((total+1)); o="${{ steps.garde_86.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_every_document_is_paired_and_in_parity.py : $o"; }
           total=$((total+1)); o="${{ steps.garde_87.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_the_language_tools_pass_their_own_tests.py : $o"; }
           total=$((total+1)); o="${{ steps.garde_88.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_the_heavy_work_token_never_silences_its_caller.py : $o"; }
+          total=$((total+1)); o="${{ steps.garde_89.outcome }}"; [ "$o" = success ] || { rouges=$((rouges+1)); rc=1; echo "::error::check_the_roadmap_summary_covers_every_phase.py : $o"; }
           echo "gardes jouées : $total ; en échec : $rouges"
           exit $rc
 

@@ -1155,3 +1155,5 @@ Détail : [`ADVANCED_MODULES.md`](ADVANCED_MODULES.fr.md).
 ## Statut
 Projet open‑source actif — **par [GuatX](https://github.com/guatxlabs)**. Détection, threat‑intel, RBA,
 multi‑hôtes, boucle purple. Pas encore de release taguée ; à utiliser avec précaution. Contributions et issues bienvenues.
+Où en est chaque chantier : l'[index des chantiers](docs/ROADMAP.md), tenu en français, et son
+[résumé anglais par phase](docs/ROADMAP-SUMMARY.md).

@@ -341,8 +341,8 @@ without a witness is not wrong; it is unverifiable, and it ages without anything
 its French translation `X.fr.md`, next to it. A change to a document touches both languages in the
 same commit. `.github/scripts/check_every_document_is_paired_and_in_parity.py` holds the tree to it,
 in CI and in the guard battery: a tracked document without its pair, or any parity gap described
-below, fails it. One document is kept in a single language, and it is named: `docs/ROADMAP.md`
-(the work log, kept in French).
+below, fails it. Two documents are kept in a single language, and they are named: `docs/ROADMAP.md`
+(the work log, kept in French) and `docs/ROADMAP-SUMMARY.md` (its English summary by phase).
 
 A translation keeps the facts of its original: same headings (count and levels), same code blocks
 and same commands outside comments, same tables, same link targets — a link to `Y.md` points to
@@ -371,7 +371,8 @@ python3 .github/scripts/check_the_language_tools_pass_their_own_tests.py # the t
 
 The suffix convention is a parameter (`--suffixe-original`, `--suffixe-traduction`, by default
 `X.md` / `X.fr.md`). The documents kept in a single language are a named set, `UNE_SEULE_LANGUE`,
-each with its reason; it holds `docs/ROADMAP.md`, the work log kept in French. The inventory names any
+each with its reason; it holds `docs/ROADMAP.md`, the work log kept in French, and
+`docs/ROADMAP-SUMMARY.md`, its English summary by phase. The inventory names any
 other tracked document without its pair, and any entry of the set that has found its pair again or
 is no longer tracked; it stays green until `--strict` is passed. In comparison, the tool returns 1
 as soon as a gap is named, even if another pair could not be read (it is named); it returns 2 when

@@ -173,6 +173,7 @@ LANGUE_DU_SUFFIXE = {".en": "en", ".fr": "fr"}
 
 UNE_SEULE_LANGUE = {
     "docs/ROADMAP.md": "journal de travail tenu en français",
+    "docs/ROADMAP-SUMMARY.md": "résumé anglais de docs/ROADMAP.md, elle-même tenue en français : sa jumelle française serait l'index qu'il résume",
 }
 
 

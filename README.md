@@ -1155,3 +1155,5 @@ Details: [`ADVANCED_MODULES.md`](ADVANCED_MODULES.md).
 ## Status
 Active open‑source project — **by [GuatX](https://github.com/guatxlabs)**. Detection, threat‑intel, RBA,
 multi‑host, purple loop. No tagged release yet; use with caution. Contributions and issues welcome.
+Where each workstream stands: the [English summary by phase](docs/ROADMAP-SUMMARY.md) of the
+[index of workstreams](docs/ROADMAP.md), which is kept in French.

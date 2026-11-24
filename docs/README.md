@@ -103,6 +103,7 @@ which is what makes it possible to add one without touching the central server.
 | [MODULE-MAP.md](MODULE-MAP.md) | ✅ | **Map of the subsystems + security invariants.** The document to read before a first contribution. |
 | [AI-ML-DIRECTION.md](AI-ML-DIRECTION.md) | 📐 | AI/ML direction: optional, vendor-neutral, RAM-neutral, OFF by default. |
 | [DESIGN-P10-echelle-2go.md](DESIGN-P10-echelle-2go.md) | 📐 | **Staying under 2 GiB at scale** — the map of the MEASURED ground (where the bytes go, where the sort RAM goes) and the order of levers that follows from it: hot/cold, columnar, bloom, compression. This is the document that carries the freshest state of this work; the `P10.*` keys of [ROADMAP.md](ROADMAP.md) point to it. A brainstorm anchored in measurement, **not** a frozen decision. |
+| [ROADMAP-SUMMARY.md](ROADMAP-SUMMARY.md) | ✅ | **Where each workstream stands**, one section per phase — the English summary of [ROADMAP.md](ROADMAP.md), the public index of workstreams, which is kept in French. |
 
 ## Non-narrative resources
 

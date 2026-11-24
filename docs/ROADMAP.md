@@ -1,5 +1,9 @@
 # Feuille de route de plume
 
+> *English readers: this index of workstreams is kept in French only. It changes with almost every
+> commit and the guards of this repository read it line by line, so it carries no translation; every
+> other document of this repository exists in both English and French.*
+
 plume est un SOC/XDR écrit en Rust, conçu pour tenir dans un budget mémoire de **2 Gio**. Ce
 document est l'**index public des chantiers**, pas un journal de développement : chaque ligne dit ce
 qu'une clé désigne, dans quel état elle se trouve, et rien de plus. Les messages de commit de ce
@@ -1163,5 +1167,5 @@ table de décision du retour arrière (P4.4-c), dont les cas sont prouvés par u
 *Les états de cet index sont tenus à jour avec le code : une ligne ✅ porte un correctif et une
 vérification, une ligne ❓ attend une re-mesure et ne doit être citée comme acquise par personne. Le
 document de conception qui détaille les travaux d'échelle est
-[DESIGN-P10-echelle-2go.md](DESIGN-P10-echelle-2go.md), également listé dans l'index
-[docs/README.md](README.md).*
+[DESIGN-P10-echelle-2go.fr.md](DESIGN-P10-echelle-2go.fr.md), également listé dans l'index
+[docs/README.fr.md](README.fr.md).*

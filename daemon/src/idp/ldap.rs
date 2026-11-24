@@ -95,7 +95,7 @@ impl LdapCfg {
 /// `ldap3` 0.12.1 quand l'URL lue rend un hôte vide, ou le fait PANIQUER quand elle n'en rend aucun (`ldap:///dc=…` :
 /// `panic!("unexpected None from url.host_str()")`, src/conn.rs) — l'un et l'autre sont refusés ici, avant toute
 /// connexion. L'autorité s'arrête au premier `/`, `?` ou `#`, comme la lit la bibliothèque `url` dont `ldap3` prend
-/// l'hôte (url 2.5.8, `parse_userinfo` : les informations d'utilisateur ne passent ni un `?` ni un `#`) : sans cela,
+/// l'hôte (url 2.5.9, `parse_userinfo` : les informations d'utilisateur ne passent ni un `?` ni un `#`) : sans cela,
 /// `ldap://10.0.0.5?@192.0.2.10` serait jugée sur 192.0.2.10 alors que `ldap3` joint 10.0.0.5. Elle est découpée par
 /// `ssrf_split_authority` (daemon/src/ledger.rs), celle que juge la garde des URL : informations d'utilisateur retirées,
 /// littéral IPv6 entre crochets. Chaque refus commence par « SSRF: », comme ceux de la garde.

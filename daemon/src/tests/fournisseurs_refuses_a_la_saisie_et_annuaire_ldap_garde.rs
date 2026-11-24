@@ -475,7 +475,7 @@ privée";
     }
 
     /// (A5) L'autorité s'arrête au premier `?` ou `#`, même avant un `@` : la bibliothèque `url` que lit `ldap3` arrête les
-    /// informations d'utilisateur à ces deux caractères (url 2.5.8, `parse_userinfo`), l'hôte joint est donc celui qui
+    /// informations d'utilisateur à ces deux caractères (url 2.5.9, `parse_userinfo`), l'hôte joint est donc celui qui
     /// précède. Jugée sur ce qui suit le `@`, l'adresse publique masquerait l'adresse privée réellement jointe.
     #[test]
     fn bq1_autorite_d_annuaire_arretee_a_la_question_et_au_diese() {

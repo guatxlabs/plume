@@ -29,6 +29,10 @@ import re
 import subprocess
 import sys
 
+sys.dont_write_bytecode = True
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import parite_des_langues as pdl  # noqa: E402
+
 ICI = os.path.dirname(os.path.abspath(__file__))
 RACINE = os.path.realpath(os.path.join(ICI, "..", ".."))
 
@@ -178,6 +182,37 @@ def epreuves() -> list[str]:
         code, _ = trancher(annonces, fich, lire)
         if code != attendu:
             echecs.append(f"épreuve de sortie « {nom} » : code {code}, attendu {attendu}")
+    echecs += epreuves_des_deux_langues()
+    return echecs
+
+
+def epreuves_des_deux_langues() -> list[str]:
+    """UN TÉMOIN PAR LANGUE, et la couverture de la table : chaque document publié l'est dans ses deux
+    langues, avec le même jeu de comptes ; un compte faux dans la phrase anglaise, puis dans la
+    française, est vu."""
+    echecs = []
+    publies = sorted({publie for publie, _, _, _ in ANNONCES})
+    manquants = pdl.langues_manquantes(publies)
+    if manquants:
+        echecs.append(f"ANNONCES ne juge pas les deux langues : {manquants}")
+    for publie in publies:
+        autre = publie[:-len(".fr.md")] + ".md" if publie.endswith(".fr.md") else publie[:-3] + ".fr.md"
+        ici = sorted(compter.__name__ for p, _, compter, _ in ANNONCES if p == publie)
+        la = sorted(compter.__name__ for p, _, compter, _ in ANNONCES if p == autre)
+        if la and ici != la:
+            echecs.append(f"ANNONCES : {publie} juge {ici}, {autre} juge {la} — une langue garde un compte que "
+                          f"l'autre ne publie plus")
+    fichiers = ["config.d/sigma/a.yml", "config.d/sigma/b.yml"]
+    deux = [("README.md", r"\*\*(\d+) sample Sigma rules\*\*", sigma_exemples, "s"),
+            ("README.fr.md", r"\*\*(\d+) règles Sigma d'exemple\*\*", sigma_exemples, "s")]
+    justes = {"README.md": "**2 sample Sigma rules**", "README.fr.md": "**2 règles Sigma d'exemple**"}
+    for fautif, texte in (("README.md", "**3 sample Sigma rules**"), ("README.fr.md", "**3 règles Sigma d'exemple**")):
+        lus = dict(justes, **{fautif: texte})
+        d, i = juger(deux, fichiers, lambda f, l=lus: l[f])
+        if len(d) != 1 or i or fautif not in d[0]:
+            echecs.append(f"épreuve « compte faux dans {fautif} » : {d} {i} — la faute de cette langue n'est pas vue")
+    if juger(deux, fichiers, lambda f: justes[f]) != ([], []):
+        echecs.append("épreuve « deux langues justes » : accusées à tort")
     return echecs
 
 

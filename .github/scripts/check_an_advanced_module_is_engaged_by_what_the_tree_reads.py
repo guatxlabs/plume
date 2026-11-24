@@ -42,6 +42,10 @@ import re
 import sys
 from dataclasses import dataclass
 
+sys.dont_write_bytecode = True
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import parite_des_langues as pdl  # noqa: E402
+
 ICI = os.path.dirname(os.path.abspath(__file__))
 RACINE = os.path.realpath(os.path.join(ICI, "..", ".."))
 CONTRIBUTING = "CONTRIBUTING.md"
@@ -242,6 +246,16 @@ def epreuves() -> list[str]:
         code, _ = trancher(page, cargo, sources)
         if code != 2:
             echecs.append(f"épreuve « français : forme anglaise seulement » : code {code}, attendu 2")
+    # UN TÉMOIN PAR LANGUE : un levier qu'aucun code ne lit, planté dans la page de chaque langue, est vu
+    # dans cette langue ; et les deux pages sont déclarées.
+    for langue, page in ((FRANCAIS, "fonctionnalité `cold_tier` + `PLUME_JAMAIS=1`"),
+                         (ANGLAIS, "`cold_tier` feature + `PLUME_JAMAIS=1`")):
+        code, lignes = trancher(page, cargo, sources, langue=langue)
+        if code != 1 or not any(langue.page in l and "PLUME_JAMAIS" in l for l in lignes):
+            echecs.append(f"épreuve « levier mort dans {langue.page} » : code {code} — la faute de cette langue n'est pas vue")
+    manquants = pdl.langues_manquantes([l.page for l in LANGUES])
+    if manquants:
+        echecs.append(f"LANGUES ne juge pas les deux langues de la page : {manquants}")
     return echecs
 
 

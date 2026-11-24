@@ -199,6 +199,15 @@ mod documentation_du_second_facteur_tests {
 
     #[test]
     fn dsf_chaque_controle_exige_est_cite_par_le_symbole_qui_le_porte() {
+        // LES DEUX LANGUES SONT DÉCLARÉES : chaque doc de `LANGUES` y figure avec son autre langue
+        // (`X.md` et `X.fr.md`), sans quoi une faute de la langue retirée resterait verte.
+        for (doc, _) in table_declaree!(LANGUES) {
+            let autre = match doc.strip_suffix(".fr.md") {
+                Some(tige) => format!("{tige}.md"),
+                None => format!("{}.fr.md", doc.strip_suffix(".md").unwrap_or(doc)),
+            };
+            assert!(LANGUES.iter().any(|(d, _)| *d == autre), "LANGUES juge {doc} sans {autre}");
+        }
         let src = racine_du_crate().join("src");
         let mut manquants = Vec::new();
         for (doc, _) in table_declaree!(LANGUES) {

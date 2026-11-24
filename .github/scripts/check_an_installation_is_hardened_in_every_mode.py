@@ -1011,6 +1011,9 @@ def scenario_central(commun, env_files):
 
 # `P10.32-j` (i), suite — la table des secrets du guide d'installation nomme ce que l'installeur pose. Le guide
 # existe en deux langues ; chacune porte la table, chemins et droits écrits à l'identique, et chacune est jugée.
+# Les README et la doc syslog jugés, chacun dans ses deux langues.
+README_JUGES = ("README.md", "README.fr.md")
+SYSLOG_DOCUMENTES = ("deploy/SYSLOG.md", "deploy/SYSLOG.fr.md")
 GUIDES_INSTALLATION = (
     ("docs/INSTALLER-SANS-OUVRIR-DE-BRECHE.fr.md", ("## 3. Où vivent les secrets", "\n## 4. ")),
     ("docs/INSTALLER-SANS-OUVRIR-DE-BRECHE.md", ("## 3. Where the secrets live", "\n## 4. ")),
@@ -1026,26 +1029,35 @@ def juger_table_des_secrets(nom, chemins):
 
 
 def juger_une_table_des_secrets(nom, chemins, guide, tranche):
-    brut = lire(os.path.join(RACINE_DEPOT, guide))
+    fautes_vues, refus_vus = fautes_de_la_table_des_secrets(
+        nom, chemins, guide, tranche, lire(os.path.join(RACINE_DEPOT, guide)))
+    for r in refus_vus:
+        refuser(r)
+    for f in fautes_vues:
+        faute(f)
+
+
+def fautes_de_la_table_des_secrets(nom, chemins, guide, tranche, brut):
+    """(fautes, refus) de la table des secrets de `guide`, dont le texte est `brut`. Pure."""
     a = brut.find(tranche[0])
     b = brut.find(tranche[1], a + 1)
     if a < 0 or b < 0:
-        refuser(f"{guide} : tranche {tranche!r} introuvable — la table des secrets n'est pas jugée")
-        return
+        return [], [f"{guide} : tranche {tranche!r} introuvable — la table des secrets n'est pas jugée"]
     lignes = [[c.strip() for c in ln.strip().strip("|").split("|")]
               for ln in brut[a:b].splitlines() if ln.lstrip().startswith("|")]
     lignes = [c for c in lignes if len(c) >= 4 and not set(c[0]) <= set("-: ")]
     if len(lignes) < 2:
-        refuser(f"{guide} : table des secrets illisible ({len(lignes)} ligne(s)) — rien n'est jugé")
-        return
+        return [], [f"{guide} : table des secrets illisible ({len(lignes)} ligne(s)) — rien n'est jugé"]
+    fautes_vues = []
     for chemin in chemins:
         ou = [c for c in lignes if f"`{chemin}`" in c[1]]
         if not ou:
-            faute(f"{nom} : {chemin} est posé par l'installeur, lu par root seul, et absent de la table des "
-                  f"secrets (§3) de {guide}")
+            fautes_vues.append(f"{nom} : {chemin} est posé par l'installeur, lu par root seul, et absent de la "
+                               f"table des secrets (§3) de {guide}")
         elif not any("0600 root:root" in c[2] for c in ou):
-            faute(f"{nom} : {guide}, table des secrets : {chemin} n'y est pas dit `0600 root:root` "
-                  f"(vu : {[c[2] for c in ou]})")
+            fautes_vues.append(f"{nom} : {guide}, table des secrets : {chemin} n'y est pas dit `0600 root:root` "
+                               f"(vu : {[c[2] for c in ou]})")
+    return fautes_vues, []
 
 
 # `P10.32-j` (i) — fichiers de /etc/plume lus par un script root et NON par PID 1 (qui lit seul les
@@ -1810,6 +1822,60 @@ DOCS_AUDIT = (
 )
 
 
+def fautes_de_la_doc_audit(langue, doc, codes):
+    """Ce que la doc d'audit d'une langue (`langue` : une entrée de DOCS_AUDIT, texte `doc`) ne dit pas.
+    Pure."""
+    nom, fautes_vues = langue["doc"], []
+    if "auditctl -l | grep -cE -- '(-k |key=)plume_'" not in doc:
+        fautes_vues.append(f"{nom} : le geste de vérification `sudo auditctl -l | grep -cE -- '(-k |key=)plume_'` manque")
+    if not re.search(langue["doublon"], doc) or "/etc/audit/rules.d" not in doc or "Rule exists" not in doc:
+        fautes_vues.append(f"{nom} : rien ne dit quoi faire d'une règle plume déjà déclarée par un autre fichier de /etc/audit/rules.d")
+    if len(codes) == 1 and langue["code"].format(code=codes[0]) not in doc:
+        fautes_vues.append(f"{nom} : n'annonce pas le code `{codes[0]}` que bootstrap.sh rend sur un chargement d'audit refusé")
+    vraie = re.search(langue["vraie"] + r".*?(?=^\S|^- |\Z)", doc, re.S | re.M)
+    if not vraie or langue["perdues"] not in " ".join(vraie.group(0).split()):
+        fautes_vues.append(f"{nom} : le cas « vraie erreur » (code 1) ne dit pas que les règles rattrapées seront PERDUES au prochain démarrage")
+    return fautes_vues
+
+
+def eprouver_les_deux_langues():
+    """UN TÉMOIN PAR LANGUE, hors du disque : la table des secrets et la doc d'audit de chaque langue,
+    justes puis avec une faute plantée, sont jugées comme il faut ; et chaque document jugé dans deux
+    langues est déclaré dans les deux (table des secrets, doc d'audit, conf syslog, README)."""
+    for guide, tranche in GUIDES_INSTALLATION:
+        titre = tranche[0]
+        juste = (f"{titre}\n\n| a | b | c | d |\n|---|---|---|---|\n| s | `/etc/plume/x.conf` | `0600 root:root` | y |\n"
+                 f"| t | `/etc/plume/y.conf` | `0600` | z |\n{tranche[1]}suite\n")
+        fautes_vues, refus_vus = fautes_de_la_table_des_secrets("épreuve", ["/etc/plume/x.conf"], guide, tranche, juste)
+        if fautes_vues or refus_vus:
+            refuser(f"témoin {guide} juste : accusé à tort ({fautes_vues} {refus_vus})")
+        for faux, vu in ((juste.replace("`0600 root:root`", "`0640 root:root`"), "n'y est pas dit"),
+                         (juste.replace("/etc/plume/x.conf", "/etc/plume/z.conf"), "absent de la table")):
+            fautes_vues, _ = fautes_de_la_table_des_secrets("épreuve", ["/etc/plume/x.conf"], guide, tranche, faux)
+            if len(fautes_vues) != 1 or vu not in fautes_vues[0] or guide not in fautes_vues[0]:
+                refuser(f"témoin {guide} fautif : {fautes_vues} — la faute de cette langue n'est pas vue")
+    for langue in DOCS_AUDIT:
+        juste = ("sudo auditctl -l | grep -cE -- '(-k |key=)plume_'\n"
+                 f"{langue['code'].format(code='3')}\n"
+                 f"{langue['doublon']} /etc/audit/rules.d (Rule exists)\n"
+                 f"{langue['vraie'].lstrip('^').replace(chr(92), '')} : {langue['perdues']}\n")
+        if fautes_de_la_doc_audit(langue, juste, ["3"]):
+            refuser(f"témoin {langue['doc']} juste : accusé à tort ({fautes_de_la_doc_audit(langue, juste, ['3'])})")
+        for faux in (juste.replace(langue["perdues"], "x"), juste.replace("Rule exists", "x"),
+                     juste.replace(langue["code"].format(code="3"), "x")):
+            if len(fautes_de_la_doc_audit(langue, faux, ["3"])) != 1:
+                refuser(f"témoin {langue['doc']} fautif : la faute de cette langue n'est pas vue")
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import parite_des_langues as pdl
+    for nom, chemins in (("GUIDES_INSTALLATION", [g for g, _ in GUIDES_INSTALLATION]),
+                         ("DOCS_AUDIT", [l["doc"] for l in DOCS_AUDIT]),
+                         ("SYSLOG_DOCUMENTES", list(SYSLOG_DOCUMENTES)),
+                         ("README_JUGES", list(README_JUGES))):
+        manquants = pdl.langues_manquantes(chemins)
+        if manquants:
+            refuser(f"{nom} ne juge pas les deux langues : {manquants}")
+
+
 def juger_docs_audit():
     """`P10.33-c` — la doc dit comment VÉRIFIER (watches comprises : `-k`, pas seulement `key=`) et quoi
     faire d'un doublon d'un autre fichier ; aucune doc ni installeur ne fait compter `key=plume_` seul."""
@@ -1819,19 +1885,10 @@ def juger_docs_audit():
     if len(codes) != 1:
         refuser(f"bootstrap.sh : bloc AUDIT_RC méconnaissable ({len(codes)} `exit` lus) — le code annoncé par la doc n'est pas jugeable")
     for langue in DOCS_AUDIT:
-        nom = langue["doc"]
-        doc = lire(os.path.join(RACINE_DEPOT, nom))
-        if "auditctl -l | grep -cE -- '(-k |key=)plume_'" not in doc:
-            faute(f"{nom} : le geste de vérification `sudo auditctl -l | grep -cE -- '(-k |key=)plume_'` manque")
-        if not re.search(langue["doublon"], doc) or "/etc/audit/rules.d" not in doc or "Rule exists" not in doc:
-            faute(f"{nom} : rien ne dit quoi faire d'une règle plume déjà déclarée par un autre fichier de /etc/audit/rules.d")
-        if len(codes) == 1 and langue["code"].format(code=codes[0]) not in doc:
-            faute(f"{nom} : n'annonce pas le code `{codes[0]}` que bootstrap.sh rend sur un chargement d'audit refusé")
-        vraie = re.search(langue["vraie"] + r".*?(?=^\S|^- |\Z)", doc, re.S | re.M)
-        if not vraie or langue["perdues"] not in " ".join(vraie.group(0).split()):
-            faute(f"{nom} : le cas « vraie erreur » (code 1) ne dit pas que les règles rattrapées seront PERDUES au prochain démarrage")
+        for f in fautes_de_la_doc_audit(langue, lire(os.path.join(RACINE_DEPOT, langue["doc"])), codes):
+            faute(f)
     seul = re.compile(r"grep\s+-c\s+['\"]?key=plume_")
-    fichiers = ["README.md", "README.fr.md", "bootstrap.sh", "bootstrap-agent.sh", CHARGEUR, GABARIT]
+    fichiers = list(README_JUGES) + ["bootstrap.sh", "bootstrap-agent.sh", CHARGEUR, GABARIT]
     for rep in ("deploy", "docs"):
         fichiers += [os.path.relpath(os.path.join(r, f), RACINE_DEPOT) for r, _, fs in os.walk(os.path.join(RACINE_DEPOT, rep))
                      for f in fs if f.endswith(".md") and f != "ROADMAP.md"]
@@ -1861,7 +1918,7 @@ def juger_conf_syslog_documentee(syslog):
 
 def juger_docs():
     prescrit = re.compile(r"chgrp\s+soc\s+/etc/plume/(plume|responder)\.conf|chmod\s+0?640\s+/etc/plume/(plume|responder)\.conf")
-    docs = [os.path.join(RACINE_DEPOT, "README.md"), os.path.join(RACINE_DEPOT, "README.fr.md")]
+    docs = [os.path.join(RACINE_DEPOT, r) for r in README_JUGES]
     for rep in ("deploy", "docs"):
         for rac, _, fs in os.walk(os.path.join(RACINE_DEPOT, rep)):
             docs += [os.path.join(rac, f) for f in fs if f.endswith(".md") and f != "ROADMAP.md"]
@@ -1878,12 +1935,11 @@ def juger_docs():
     if not any(re.match(r"\s*echo .*" + consigne, l) for l in agent):
         faute("bootstrap-agent.sh : la consigne affichée au 1er passage sans secret ne prescrit plus "
               "`sudo chmod 0600 /etc/plume/plume.conf`")
-    for syslog in ("deploy/SYSLOG.md", "deploy/SYSLOG.fr.md"):
+    for syslog in SYSLOG_DOCUMENTES:
         juger_conf_syslog_documentee(syslog)
     # P10.32-l — l'ancienne sémantique (vide = 0.0.0.0:514, « toute source acceptée ») est fausse : ni la
     # doc, ni l'unité, ni l'installeur (commentaires, conf engendrée, messages) ne la redisent.
-    for rel in ("deploy/SYSLOG.md", "deploy/SYSLOG.fr.md", "systemd/plume-collector-syslog.service",
-                "bootstrap-agent.sh"):
+    for rel in SYSLOG_DOCUMENTES + ("systemd/plume-collector-syslog.service", "bootstrap-agent.sh"):
         for i, ligne in enumerate(lire(os.path.join(RACINE_DEPOT, rel)).splitlines(), 1):
             m = ANCIENNE_SEMANTIQUE.search(ligne)
             if m:
@@ -1900,6 +1956,7 @@ def main():
         return 2
     eprouver_lecteur_systemd()
     eprouver_juge_lib()
+    eprouver_les_deux_langues()
     commun = lire(os.path.join(RACINE_DEPOT, "systemd/plume-collector-common.conf"))
     env_files = fichiers_environnement()
     if not refus:

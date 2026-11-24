@@ -917,6 +917,25 @@ def inventaire(documents, convention, une_seule_langue=None):
     return sans_traduction, orphelines, perimees
 
 
+def langues_manquantes(chemins, convention=None):
+    """Les documents de `chemins` dont l'autre langue n'y figure pas, en (chemin, chemin manquant). Une
+    garde qui juge un document dans ses deux langues déclare les deux fichiers ; celle qui n'en garde
+    qu'un rendrait vert sur une faute de l'autre."""
+    convention = convention or Convention()
+    presents = set(chemins)
+    manquants = []
+    for c in chemins:
+        if convention.est_traduction(c):
+            autre = convention.original_de(c)
+        elif convention.est_original(c):
+            autre = convention.traduction_de(c)
+        else:
+            continue
+        if autre not in presents:
+            manquants.append((c, autre))
+    return manquants
+
+
 def paires(documents, convention):
     present = set(documents)
     return [(d, convention.traduction_de(d)) for d in documents

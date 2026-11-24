@@ -25,6 +25,10 @@ import os
 import re
 import sys
 
+sys.dont_write_bytecode = True
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import parite_des_langues as pdl  # noqa: E402
+
 ICI = os.path.dirname(os.path.abspath(__file__))
 RACINE = os.path.realpath(os.path.join(ICI, os.pardir, os.pardir))
 # (README, page des trois modes) de chaque langue.
@@ -43,7 +47,7 @@ def sections(page_texte):
     return {m.group(1) for l in page_texte.split("\n") for m in [SECTION.match(l)] if m}
 
 
-def fautes(readme_lignes, sections_connues):
+def fautes(readme_lignes, sections_connues, page=PAGE):
     """[(numéro, motif)] ; [] quand chaque invocation renvoie vers une section existante."""
     out = []
     for i, l in enumerate(readme_lignes):
@@ -55,11 +59,11 @@ def fautes(readme_lignes, sections_connues):
             for m in RENVOI.finditer(v):
                 cibles.append(m.group(1) or m.group(2))
         if not cibles:
-            out.append((i + 1, f"invocation d'un installateur sans renvoi vers {PAGE} à moins de {FENETRE} lignes : "
+            out.append((i + 1, f"invocation d'un installateur sans renvoi vers {page} à moins de {FENETRE} lignes : "
                                f"en conteneur ou en cluster ce geste n'a pas cette forme, et le lecteur ne le sait pas"))
         elif not all(c in sections_connues for c in cibles):
             absentes = sorted(c for c in cibles if c not in sections_connues)
-            out.append((i + 1, f"renvoi vers des sections que {PAGE} ne porte pas : §{', §'.join(absentes)}"))
+            out.append((i + 1, f"renvoi vers des sections que {page} ne porte pas : §{', §'.join(absentes)}"))
     return out
 
 
@@ -81,6 +85,25 @@ def valider_instrument():
     cas("pas une invocation", ["`bootstrap-agent.sh` n'installe que trois collecteurs", "bootstrap.sh refuse de continuer"], [])
     cas("renvoi vers la page française", ["sudo bash bootstrap.sh", "> voir [docs/TROIS-MODES.md §3.3](docs/TROIS-MODES.fr.md)"], [])
     cas("page française seule, section absente", ["sudo bash bootstrap.sh", "> voir [§9.9](docs/TROIS-MODES.fr.md)"], [1])
+    # UN TÉMOIN PAR LANGUE : une faute plantée dans le README anglais, puis dans le français, est vue, et le
+    # message nomme la page de SA langue.
+    pages = {"README.md": "docs/TROIS-MODES.md", "README.fr.md": "docs/TROIS-MODES.fr.md"}
+    temoins = {
+        "README.md": (["```sh", "sudo bash bootstrap.sh", "```", "", "> In a container: see [docs/TROIS-MODES.md §3.3](docs/TROIS-MODES.md)."],
+                      ["```sh", "sudo bash bootstrap.sh", "```", "", "> In a container: see the three-mode page."]),
+        "README.fr.md": (["```sh", "sudo bash bootstrap.sh", "```", "", "> En conteneur : voir [docs/TROIS-MODES.md §3.3](docs/TROIS-MODES.fr.md)."],
+                         ["```sh", "sudo bash bootstrap.sh", "```", "", "> En conteneur : voir [docs/TROIS-MODES.md §9.9](docs/TROIS-MODES.fr.md)."]),
+    }
+    for readme, (juste, faux) in temoins.items():
+        if fautes(juste, secs, pages[readme]):
+            ecarts.append(f"témoin {readme} juste : accusé à tort")
+        f = fautes(faux, secs, pages[readme])
+        if [n for n, _ in f] != [2] or pages[readme] not in f[0][1] or (readme == "README.md" and ".fr.md" in f[0][1]):
+            ecarts.append(f"témoin {readme} fautif : {f} — la faute de cette langue n'est pas vue, ou le message ne nomme pas {pages[readme]}")
+    # LES DEUX LANGUES SONT DÉCLARÉES : un corpus qui n'en garderait qu'une rendrait vert sur une faute de l'autre.
+    manquants = pdl.langues_manquantes([c for paire in CORPUS for c in paire])
+    if manquants:
+        ecarts.append(f"CORPUS ne juge pas les deux langues : {manquants} — chaque README et chaque page se déclarent avec leur traduction")
     return ecarts
 
 
@@ -96,7 +119,7 @@ def juger(readme_nom, page_nom):
     if invocations < MIN_INVOCATIONS or len(secs) < MIN_SECTIONS:
         return 2, [f"::error::{invocations} invocation(s) dans {readme_nom} (plancher {MIN_INVOCATIONS}), {len(secs)} "
                    f"section(s) dans {page_nom} (plancher {MIN_SECTIONS}) : le corpus n'est plus reconnu, aucun verdict."]
-    f = fautes(readme, secs)
+    f = fautes(readme, secs, page_nom)
     if f:
         return 1, [f"::error file={readme_nom},line={n}::{motif}" for n, motif in f] + [
             f"\n{len(f)} invocation(s) d'installateur sur {invocations} dans {readme_nom} ne renvoient pas à leur forme "

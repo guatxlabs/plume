@@ -831,6 +831,11 @@ class Convention(unittest.TestCase):
         self.assertFalse(b.est_traduction("X.fr.md"))
         self.assertEqual(b.traduction_de("X.fr.md"), "X.md")
 
+    def test_langues_manquantes(self):
+        self.assertEqual(pdl.langues_manquantes(["a.md", "a.fr.md", "docs/b.fr.md", "c.md"]),
+                         [("docs/b.fr.md", "docs/b.md"), ("c.md", "c.fr.md")])
+        self.assertEqual(pdl.langues_manquantes(["a.md", "a.fr.md", "x.sh"]), [])
+
     def test_suffixes_identiques_refuses(self):
         with self.assertRaises(ValueError):
             pdl.Convention(".fr", ".fr")

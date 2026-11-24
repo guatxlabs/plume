@@ -1335,28 +1335,67 @@ def juger_la_doc(errs: list) -> None:
                         f"{sorted(CLES_PLUME_CONF_DOCUMENTEES)} (et que `PLUME_TLS_INSECURE` n'y est pas lue).")
     pose_action = bool(re.search(r"\$fields\['action'\]\s*=|\baction\s*=\s*'", src))
     for chemin, (tranche, langue) in DOCS_WINDOWS.items():
-        action_jamais, lot_perdu, avertissement = PHRASES[langue]
-        brut = Path(chemin).read_text(encoding="utf-8")
-        if tranche:
-            a = brut.find(tranche[0]); b = brut.find(tranche[1], a + 1)
-            if a < 0 or b < 0:
-                errs.append(f"{chemin}: tranche {tranche!r} introuvable : la doc Windows n'est pas jugée.")
-                continue
-            brut = brut[a:b]
-        t = texte_juge(brut)
-        if pose_action:
-            for m in action_jamais.finditer(t):
-                errs.append(f"{chemin}: « …{m.group(0)}… » alors que le script pose `fields.action` "
-                            f"(table d'issues de {COLLECT_FN}, `blocked` du pare-feu).")
-        for m in lot_perdu.finditer(t):
-            errs.append(f"{chemin}: « …{m.group(0)}… » alors qu'un envoi raté ne commet aucun filigrane "
-                        f"({COMMIT_FN}) : le run suivant relit, seuls les échantillons sont perdus.")
-        if avertissement not in t:
-            errs.append(f"{chemin}: la phrase « {avertissement} » manque, alors que la doc propose "
-                        f"des variables machine (lisibles par tout utilisateur local).")
+        errs += fautes_de_la_doc(chemin, Path(chemin).read_text(encoding="utf-8"), tranche, langue, pose_action)
+
+
+def fautes_de_la_doc(chemin, brut, tranche, langue, pose_action):
+    """Ce qu'une doc Windows, lue dans SA langue, dit de faux ou ne dit pas. Pure : le texte est donné."""
+    errs = []
+    action_jamais, lot_perdu, avertissement = PHRASES[langue]
+    if tranche:
+        a = brut.find(tranche[0]); b = brut.find(tranche[1], a + 1)
+        if a < 0 or b < 0:
+            return [f"{chemin}: tranche {tranche!r} introuvable : la doc Windows n'est pas jugée."]
+        brut = brut[a:b]
+    t = texte_juge(brut)
+    if pose_action:
+        for m in action_jamais.finditer(t):
+            errs.append(f"{chemin}: « …{m.group(0)}… » alors que le script pose `fields.action` "
+                        f"(table d'issues de {COLLECT_FN}, `blocked` du pare-feu).")
+    for m in lot_perdu.finditer(t):
+        errs.append(f"{chemin}: « …{m.group(0)}… » alors qu'un envoi raté ne commet aucun filigrane "
+                    f"({COMMIT_FN}) : le run suivant relit, seuls les échantillons sont perdus.")
+    if avertissement not in t:
+        errs.append(f"{chemin}: la phrase « {avertissement} » manque, alors que la doc propose "
+                    f"des variables machine (lisibles par tout utilisateur local).")
+    return errs
+
+
+def eprouver_la_doc_dans_les_deux_langues() -> list:
+    """UN TÉMOIN PAR LANGUE, hors du disque : une doc juste de chaque langue passe, et chaque faute plantée
+    dans la doc anglaise puis dans la française (avertissement absent, lot dit perdu, `action` dite jamais
+    posée) est vue ; et chaque doc est déclarée dans ses deux langues."""
+    echecs = []
+    justes = {"en": "`PLUME_TOKEN` is never set as a machine variable: use the file.",
+              "fr": "`PLUME_TOKEN` ne se pose jamais en variable machine : passer par le fichier."}
+    fautes = {"en": ["Use a machine variable.", justes["en"] + " A failed POST means the batch is lost.",
+                     justes["en"] + " The collector never sets the CIM `action` field."],
+              "fr": ["Poser une variable machine.", justes["fr"] + " Un POST raté et le lot est perdu.",
+                     justes["fr"] + " Le collecteur ne pose jamais le champ CIM `action`."]}
+    for langue in ("en", "fr"):
+        chemin = f"temoin.{langue}"
+        if fautes_de_la_doc(chemin, justes[langue], None, langue, True):
+            echecs.append(f"témoin {langue} juste : accusé à tort")
+        for texte in fautes[langue]:
+            if len(fautes_de_la_doc(chemin, texte, None, langue, True)) != 1:
+                echecs.append(f"témoin {langue} fautif « {texte} » : la faute de cette langue n'est pas vue")
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import parite_des_langues as pdl
+    manquants = pdl.langues_manquantes(list(DOCS_WINDOWS))
+    if manquants:
+        echecs.append(f"DOCS_WINDOWS ne juge pas les deux langues : {manquants}")
+    for chemin, (_, langue) in DOCS_WINDOWS.items():
+        if langue != ("fr" if chemin.endswith(".fr.md") else "en"):
+            echecs.append(f"DOCS_WINDOWS : {chemin} est lu avec les phrases « {langue} », pas celles de sa langue")
+    return echecs
 
 
 def main() -> int:
+    echecs = eprouver_la_doc_dans_les_deux_langues()
+    if echecs:
+        for e in echecs:
+            print(f"::error::INSTRUMENT FAUX, la garde REFUSE DE CONCLURE : {e}")
+        return 2
     files = subprocess.run(
         ["git", "ls-files", "collectors/windows/*.ps1"], capture_output=True, text=True, check=True
     ).stdout.split()

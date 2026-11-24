@@ -478,7 +478,7 @@ def juger_la_langue(doc, attendue):
     autre = "anglais" if attendue == "fr" else "français"
     nom = "français" if attendue == "fr" else "anglais"
     return [Ecart(doc.chemin, 1, "langue",
-                  f"la prose n'est pas en {nom} : {etrangers} mots-outils {autre}s sur {total} (part "
+                  f"la prose n'est pas en {nom} : {etrangers} mots-outils en {autre} sur {total} (part "
                   f"{etrangers / total:.2f}, plafond {PART_ETRANGERE_MAX}) — le fichier porte la version "
                   f"{nom}e, son texte est-il celui de l'autre langue ?")]
 

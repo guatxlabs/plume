@@ -245,13 +245,13 @@ The **shell collectors** (43 tracked scripts) get a `bash -n` parse gate (`shell
    *(Why a local check and not another CI trigger: `ci.yml` already runs on `push` to every branch,
    and has since the file was created. The 937 → 945 drift of 2026-08-07 was caught by CI on the
    push and simply not read. Measured 2026-08-09: running the default and `cold_tier` suites = 187 s + 2627 s ≈ 47 min.)*
-   <!-- Ces deux lignes ont porté « 758 » et « 949 » jusqu'au 2026-08-02, quand les compteurs vivants
-        valaient 866 et 1061 : 108 et 112 de retard, dans le fichier même qui INTERDIT de recopier la
-        valeur. La garde `check_no_duplicated_test_count.py` restait verte — c'est son résidu
-        documenté (jambe A ne cherche que la valeur COURANTE ; jambe B n'attrape que la forme
-        « nombre PUIS mot », or ici le nombre suivait le mot et était en gras markdown). Élargir la
-        jambe B a été MESURÉ le 2026-08-02 : 162 candidats pour 2 vrais — donc NON élargie, et le
-        remède est de ne plus écrire de nombre ici du tout. -->
+   <!-- These two lines carried "758" and "949" until 2026-08-02, when the live counters were
+        866 and 1061: 108 and 112 behind, in the very file that FORBIDS copying the value. The
+        guard `check_no_duplicated_test_count.py` stayed green — it is its documented residue
+        (leg A only looks for the CURRENT value; leg B only catches the form "number THEN word",
+        and here the number followed the word and was in markdown bold). Widening leg B was
+        MEASURED on 2026-08-02: 162 candidates for 2 real ones — so NOT widened, and the remedy
+        is to write no number here at all. -->
 
 4. Run `cargo test` (default) and, for gated work, the feature suite separately; run
    `cargo clippy`. All must pass. "The default suite is green" is **not** evidence for gated
@@ -289,52 +289,51 @@ Plume is for monitoring **infrastructure you own or are authorized to monitor**.
 that make it easier to exfiltrate data, evade its masking/RBAC controls, or attack systems you
 don't own are out of scope for this project.
 
-## Écrire pour le public
+## Writing for the public
 
-Ce dépôt est public. Tout ce qui y est écrit — messages de commit, documentation,
-commentaires de code — s'adresse au **lecteur futur du code**, pas à une personne ni à une
-conversation.
+This repository is public. Everything written in it — commit messages, documentation, code
+comments — addresses the **future reader of the code**, not a person nor a conversation.
 
-**Un message de commit dit CE QUI CHANGE et POURQUOI.** Il n'a pas à raconter le
-déroulement du travail. À proscrire :
+**A commit message says WHAT CHANGES and WHY.** It does not have to tell how the work went.
+To be avoided:
 
-- nommer une personne, ou citer un échange privé ;
-- le récit à la première personne (« j'ai essayé », « ma première version ») ;
-- les repères de session (« hier », « ce matin », « la quatrième fois aujourd'hui ») ;
-- un chemin machine (`/home/<compte>`), un pseudo personnel, une adresse tierce.
+- naming a person, or quoting a private exchange;
+- first-person narrative ("I tried", "my first version");
+- session markers ("yesterday", "this morning", "the fourth time today");
+- a machine path (`/home/<compte>`), a personal handle, a third-party address.
 
-Ce qui a de la valeur et doit rester : la **mesure** (chiffres et date), ce qui a été
-**réfuté**, et la **raison** d'un choix de conception. Le journal de travail, lui, a sa
-place dans un dépôt interne — pas dans l'historique public.
+What has value and must stay: the **measurement** (figures and date), what was **refuted**,
+and the **reason** for a design choice. The work log belongs in an internal repository — not
+in the public history.
 
-**Identité.** Tous les commits sont signés `guatxlabs <noreply@guatx.com>`. À poser dans
-chaque clone, car un clone frais hérite de la configuration globale de la machine :
+**Identity.** Every commit is signed `guatxlabs <noreply@guatx.com>`. Set it in each clone,
+because a fresh clone inherits the machine's global configuration:
 
 ```sh
 git config user.name  "guatxlabs"
 git config user.email "noreply@guatx.com"
-git config core.hooksPath .githooks   # arme les gardes ci-dessous
+git config core.hooksPath .githooks   # arms the guards below
 ```
 
-**Deux gardes versionnées** appliquent le mécanisable : `pre-commit` refuse un commit dont
-l'auteur n'est pas le canonique ; `commit-msg` refuse un message portant un chemin machine,
-un pseudo personnel ou une adresse tierce. Les hooks sont une **boucle de retour**, pas une
-frontière — la CI juge tout commit poussé, sur toute branche, et c'est elle qui lie. Le STYLE, lui, n'est mécanisé que là
-où un critère dérivable n'accuse pas à tort : depuis le 2026-09-09, la première personne dans les
-commentaires et la documentation est tenue par `check_prose_addresses_the_reader_not_the_author.py`
-(famille lue dans le vérificateur de message, citations et messages à l'exploitant retirés). Le reste
-du style se tient à la relecture — une garde qui prétendrait en juger produirait du bruit et
-finirait désarmée.
+**Two versioned guards** enforce what can be mechanized: `pre-commit` refuses a commit whose
+author is not the canonical one; `commit-msg` refuses a message carrying a machine path, a
+personal handle or a third-party address. The hooks are a **feedback loop**, not a boundary —
+CI judges every pushed commit, on every branch, and it is CI that binds. STYLE is mechanized
+only where a derivable criterion does not accuse wrongly: since 2026-09-09, the first person in
+comments and documentation is held by `check_prose_addresses_the_reader_not_the_author.py`
+(family read in the message checker, quotations and messages to the operator removed). The rest
+of style is held by review — a guard that claimed to judge it would produce noise and end up
+disarmed.
 
-**Un chiffre porte son témoin.** Convention d'écriture, posée le 2026-09-09 et non mécanisée : quand
-une phrase du dépôt publie une mesure — une durée, un volume, un compte, un ratio —, elle nomme, à
-côté du nombre, **la date** et **l'instrument** qui l'a produit : « 256 s (mesuré le 2026-09-09 par
-`cargo test --locked`, 12 cœurs) », « 19 sites (mesuré le 2026-09-09 par
-`le_portillon_clos_avoue_sur_le_routeur_reel_et_se_tait_quand_il_ouvre`) ». Mesuré le 2026-09-02 :
-sur mille trente-quatre lignes portant un nombre et une unité physique, six nommaient leur témoin ;
-une garde qui l'exigerait aujourd'hui accuserait presque tout le corpus, donc elle n'existe pas —
-c'est la convention qui doit d'abord faire sa population, ligne neuve après ligne neuve. Un chiffre
-sans témoin n'est pas faux ; il est invérifiable, et il vieillit sans que rien ne le dise.
+**A figure carries its witness.** Writing convention, set on 2026-09-09 and not mechanized: when
+a sentence of the repository publishes a measurement — a duration, a volume, a count, a ratio —,
+it names, next to the number, **the date** and **the instrument** that produced it: "256 s
+(measured on 2026-09-09 by `cargo test --locked`, 12 cores)", "19 sites (measured on 2026-09-09 by
+`le_portillon_clos_avoue_sur_le_routeur_reel_et_se_tait_quand_il_ouvre`)". Measured on 2026-09-02:
+of one thousand and thirty-four lines carrying a number and a physical unit, six named their
+witness; a guard that required it today would accuse almost the whole corpus, so it does not
+exist — the convention must first build its population, one new line after another. A figure
+without a witness is not wrong; it is unverifiable, and it ages without anything saying so.
 
 ## Translation parity
 
@@ -342,9 +341,8 @@ sans témoin n'est pas faux ; il est invérifiable, et il vieillit sans que rien
 its French translation `X.fr.md`, next to it. A change to a document touches both languages in the
 same commit. `.github/scripts/check_every_document_is_paired_and_in_parity.py` holds the tree to it,
 in CI and in the guard battery: a tracked document without its pair, or any parity gap described
-below, fails it. Two documents are kept in a single language, and both are named: `docs/ROADMAP.md`
-(the work log, kept in French) and `docs/BENCHMARK.md` (rendered by `bench/report.py`; its
-bilingual version is under way).
+below, fails it. One document is kept in a single language, and it is named: `docs/ROADMAP.md`
+(the work log, kept in French).
 
 A translation keeps the facts of its original: same headings (count and levels), same code blocks
 and same commands outside comments, same tables, same link targets — a link to `Y.md` points to
@@ -369,8 +367,7 @@ python3 .github/scripts/check_every_document_is_paired_and_in_parity.py # the gu
 
 The suffix convention is a parameter (`--suffixe-original`, `--suffixe-traduction`, by default
 `X.md` / `X.fr.md`). The documents kept in a single language are a named set, `UNE_SEULE_LANGUE`,
-each with its reason: `docs/ROADMAP.md`, the work log kept in French, and `docs/BENCHMARK.md`,
-rendered by `bench/report.py` while its bilingual version is under way. The inventory names any
+each with its reason; it holds `docs/ROADMAP.md`, the work log kept in French. The inventory names any
 other tracked document without its pair, and any entry of the set that has found its pair again or
 is no longer tracked; it stays green until `--strict` is passed. In comparison, the tool returns 1
 as soon as a gap is named, even if another pair could not be read (it is named); it returns 2 when

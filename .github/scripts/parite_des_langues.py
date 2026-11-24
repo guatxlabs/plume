@@ -136,7 +136,6 @@ DIESE_DE_CODE = re.compile(
 # paire ; une entrée qui retrouve la sienne, ou qui ne désigne plus un document suivi, est un écart.
 UNE_SEULE_LANGUE = {
     "docs/ROADMAP.md": "journal de travail tenu en français",
-    "docs/BENCHMARK.md": "rendu par bench/report.py, version bilingue en cours",
 }
 
 

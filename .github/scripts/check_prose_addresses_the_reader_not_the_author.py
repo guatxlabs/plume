@@ -176,8 +176,8 @@ def main():
     if hors:
         for f, i, motif, extrait in hors:
             print(f"::error file={f},line={i}::commentaire ou prose à la première personne (« {motif} ») : {extrait}")
-        print(f"\n{len(hors)} ligne(s) s'adressent à l'auteur au lieu du lecteur (AGENTS.md §2, CONTRIBUTING.md « Écrire pour "
-              f"le public »). Réécrire le fait sans son auteur : « la première version comptait 7 sites » dit la même "
+        print(f"\n{len(hors)} ligne(s) s'adressent à l'auteur au lieu du lecteur (AGENTS.md §2, CONTRIBUTING.md « Writing for "
+              f"the public », CONTRIBUTING.fr.md « Écrire pour le public »). Réécrire le fait sans son auteur : « la première version comptait 7 sites » dit la même "
               f"chose que « mon premier comptage », et reste vrai quand l'auteur change. Une CITATION se met entre « » ; "
               f"un message à l'exploitant reste entre guillemets droits.")
         rc = 1

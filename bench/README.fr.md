@@ -24,7 +24,7 @@ chiffre annoncé n'est pas contestable.
 | `probe.py` | L'échantillonneur d'ingest. Relève, à chaque tick, ce qui permet de dire POURQUOI le débit tombe : CPU du daemon, CPU du reste de la machine, octets lus/écrits au bloc, stall mémoire du cgroup. |
 | `parity.py` | **La réponse est-elle la MÊME ?** Interroge DEUX daemons (avec et sans tier froid) sur la MÊME matrice et compare **les valeurs**, pas les temps. Le jeu de contrôles n'est pas écrit : c'est `query_classes` × `windows` de `measure.py`. |
 | `concurrency.py` | **N analystes en même temps.** L'angle mort que `measure.py` déclare lui-même (une requête à la fois → personne n'attend son tour). Mesure, dans cet ordre : la JUSTESSE sous charge (chaque réponse concurrente comparée par sa VALEUR à la réponse obtenue seul), la RAM sous budget appliqué (RSS + cgroup + `memory.events`), la courbe de latence/débit, et le DÉCOUPAGE de l'attente (`sem_wait_ms` = le permit ; `db_lock_wait_ms` = le verrou de la connexion partagée ; `prepare_ms`/`exec_ms`). Le mélange de requêtes est **dérivé** de la passe solo qui le précède. |
-| `report.py` | Rend `docs/BENCHMARK.md`. Ne masque aucune cellule. |
+| `report.py` | Rend `docs/BENCHMARK.md` (anglais) et `docs/BENCHMARK.fr.md` (français) depuis les mêmes résultats : `--langue en` ou `--langue fr` choisit la langue, `--rendu-le`, `--materiel` et `--compare-note-fr` fixent l'horodatage, le matériel et la note de comparaison française. Ne masque aucune cellule. |
 | `run.sh` | **La commande unique.** Enchaîne tout, budget de 2 Gio *appliqué* par cgroup. |
 | `fts-compaction/` | **L'arbitrage `optimize` contre `merge` borné** (P10.7-b) — le seul banc qui n'interroge pas le daemon. La question porte sur ce que FTS5 fait de ses SEGMENTS quand une purge lui laisse des postings de suppression : c'est une propriété du moteur de stockage, mesurée sur l'amalgamation SQLCipher que le daemon LIE (mêmes `-D` que le `build.rs` de `libsqlite3-sys`, mais `-O2` — le profil `dev` de cargo compile ce C à `-O0`, ce qui fausserait toute durée). `mesurer.sh` **valide l'instrument avant de s'en servir** (version SQLCipher, FTS5, dbstat) et refuse de publier un chiffre s'il n'est pas la SQLite du produit. |
 | `results/` | Les **données brutes** de la mesure publiée dans `docs/BENCHMARK.md`. Versionnées exprès — voir ci-dessous. |
@@ -208,8 +208,8 @@ serait une fuite pour zéro gain de vérifiabilité, puisqu'il ne contient aucun
 déjà dans les JSONL. `report.py` l'accepte en `--fill-log` quand vous lancez le banc vous-même : il
 est une sortie de VOTRE exécution, pas une entrée qu'il faut recevoir de nous.
 
-**La commande de rendu est publiée PAR le document lui-même** (`docs/BENCHMARK.md`, section
-« Reproduire ») : `report.py` la reconstruit depuis ses propres arguments et la repointe vers
+**La commande de rendu est publiée PAR le document lui-même** ([docs/BENCHMARK.fr.md](../docs/BENCHMARK.fr.md#reproduire-et-contredire), section
+« Reproduire, et contredire ») : `report.py` la reconstruit depuis ses propres arguments et la repointe vers
 `bench/results/`. Elle est un POINT FIXE — la relancer telle quelle redonne le document à l'octet
 près, hors ligne d'horodatage (vérifié). La version précédente publiait une commande incomplète qui
 amputait le document de ses sections d'écart : une commande de reproduction fausse est pire
@@ -238,7 +238,7 @@ python3 bench/parity.py --hot-base http://127.0.0.1:7421 --cold-base http://127.
     --user <u> --password <p> --end-ts <ts> --span-days 28 --hot-window-days 7 \
     --retention-days 30 -o parity.jsonl
 # le rendu : NE PAS l'écrire de mémoire. La commande EXACTE est publiée par le document
-# lui-même (docs/BENCHMARK.md, section « Reproduire ») et elle en est un point fixe.
+# lui-même (docs/BENCHMARK.fr.md, section « Reproduire, et contredire ») et elle en est un point fixe.
 ```
 
 `report.py` accepte PLUSIEURS fichiers de résultats : passer les JSONL de deux volumes différents

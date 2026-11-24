@@ -433,7 +433,7 @@ banc ne mesure de surcoût MÉMOIRE de la vtable `event_fields_fts` : la seule p
 binaire, le volume et la base rend une crête **plus basse** avec la capacité active, et le banc dit
 lui-même que cet écart n'est pas attribuable au drapeau (chaque configuration repart d'un démon
 neuf). Ce qui est mesuré, c'est un coût de **DISQUE** — de l'ordre d'un dixième de base en plus sur
-cette même paire, au banc du dépôt (`docs/BENCHMARK.md`, levier L6) — et ce qui pèse le plus n'est
+cette même paire, au banc du dépôt ([docs/BENCHMARK.fr.md](docs/BENCHMARK.fr.md), levier L6) — et ce qui pèse le plus n'est
 pas chiffrable en octets : **activer cette capacité échange de la performance de recherche contre de
 la confidentialité sur la sauvegarde.** La vtable est déclarée *contentless* (`content=''`), forme
 que le plan de sauvegarde typé refuse (`collect_dump_plan` → `PlanErr::Unsupported`) ; le chemin

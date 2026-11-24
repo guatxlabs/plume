@@ -898,10 +898,10 @@ class Inventaire(unittest.TestCase):
         self.assertEqual(muet(pdl.main, ["--racine", self.racine, "--inventaire", "--strict"])[0], 1)
 
     def test_ensemble_reel_nomme_ses_raisons(self):
-        # Les deux documents en une seule langue du dépôt, chacun avec une raison écrite.
+        # Le document en une seule langue du dépôt, avec une raison écrite.
         self.seules.stop()
         try:
-            self.assertEqual(sorted(pdl.UNE_SEULE_LANGUE), ["docs/BENCHMARK.md", "docs/ROADMAP.md"])
+            self.assertEqual(sorted(pdl.UNE_SEULE_LANGUE), ["docs/ROADMAP.md"])
             self.assertTrue(all(r.strip() for r in pdl.UNE_SEULE_LANGUE.values()))
         finally:
             self.seules.start()

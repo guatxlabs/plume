@@ -433,7 +433,7 @@ bench measures a MEMORY overhead of the `event_fields_fts` vtable: the only pair
 binary, the volume and the database shows a **lower** peak with the capability enabled, and the bench itself
 says that this difference cannot be attributed to the flag (each configuration restarts from a fresh
 daemon). What is measured is a **DISK** cost — on the order of a tenth of the database extra on
-that same pair, on the repository's bench (`docs/BENCHMARK.md`, lever L6) — and what weighs the most cannot
+that same pair, on the repository's bench ([docs/BENCHMARK.md](docs/BENCHMARK.md), lever L6) — and what weighs the most cannot
 be counted in bytes: **enabling this capability trades search performance for
 confidentiality of the backup.** The vtable is declared *contentless* (`content=''`), a form
 that the typed backup plan refuses (`collect_dump_plan` → `PlanErr::Unsupported`); the

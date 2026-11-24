@@ -24,7 +24,7 @@ announced figure cannot be challenged.
 | `probe.py` | The ingest sampler. Records, at each tick, what makes it possible to say WHY throughput drops: daemon CPU, CPU of the rest of the machine, bytes read/written at the block layer, cgroup memory stall. |
 | `parity.py` | **Is the answer the SAME?** Queries TWO daemons (with and without cold tier) on the SAME matrix and compares **the values**, not the times. The set of checks is not written: it is `query_classes` × `windows` from `measure.py`. |
 | `concurrency.py` | **N analysts at the same time.** The blind spot that `measure.py` declares itself (one query at a time → nobody waits their turn). Measures, in this order: CORRECTNESS under load (each concurrent answer compared by its VALUE with the answer obtained alone), RAM under an enforced budget (RSS + cgroup + `memory.events`), the latency/throughput curve, and the BREAKDOWN of waiting (`sem_wait_ms` = the permit; `db_lock_wait_ms` = the lock of the shared connection; `prepare_ms`/`exec_ms`). The query mix is **derived** from the solo pass that precedes it. |
-| `report.py` | Renders `docs/BENCHMARK.md`. Hides no cell. |
+| `report.py` | Renders `docs/BENCHMARK.md` (English) and `docs/BENCHMARK.fr.md` (French) from the same results: `--langue en` or `--langue fr` picks the language, `--rendu-le`, `--materiel` and `--compare-note-fr` pin the timestamp, the hardware and the French comparison note. Hides no cell. |
 | `run.sh` | **The single command.** Chains everything, 2 GiB budget *enforced* by cgroup. |
 | `fts-compaction/` | **The `optimize` versus bounded `merge` trade-off** (P10.7-b) — the only bench that does not query the daemon. The question concerns what FTS5 does with its SEGMENTS when a purge leaves it deletion postings: it is a property of the storage engine, measured on the SQLCipher amalgamation that the daemon LINKS (same `-D` as the `build.rs` of `libsqlite3-sys`, but `-O2` — cargo's `dev` profile compiles this C at `-O0`, which would distort any duration). `mesurer.sh` **validates the instrument before using it** (SQLCipher version, FTS5, dbstat) and refuses to publish a figure if it is not the product's SQLite. |
 | `results/` | The **raw data** of the measurement published in `docs/BENCHMARK.md`. Versioned on purpose — see below. |
@@ -208,8 +208,8 @@ would be a leak for zero gain in verifiability, since it contains no figure that
 already in the JSONL files. `report.py` accepts it as `--fill-log` when you run the bench yourself: it
 is an output of YOUR run, not an input you need to receive from us.
 
-**The rendering command is published BY the document itself** (`docs/BENCHMARK.md`, section
-"Reproduire"): `report.py` rebuilds it from its own arguments and repoints it to
+**The rendering command is published BY the document itself** ([docs/BENCHMARK.md](../docs/BENCHMARK.md#reproduce-and-contradict), section
+"Reproduce, and contradict"): `report.py` rebuilds it from its own arguments and repoints it to
 `bench/results/`. It is a FIXED POINT — running it again as is gives back the document byte for
 byte, except for the timestamp line (checked). The previous version published an incomplete command that
 amputated the document of its gap sections: a false reproduction command is worse
@@ -238,7 +238,7 @@ python3 bench/parity.py --hot-base http://127.0.0.1:7421 --cold-base http://127.
     --user <u> --password <p> --end-ts <ts> --span-days 28 --hot-window-days 7 \
     --retention-days 30 -o parity.jsonl
 # rendering: do NOT write it from memory. The EXACT command is published by the document
-# itself (docs/BENCHMARK.md, section "Reproduire") and it is a fixed point of it.
+# itself (docs/BENCHMARK.md, section "Reproduce, and contradict") and it is a fixed point of it.
 ```
 
 `report.py` accepts SEVERAL result files: passing the JSONL files of two different volumes

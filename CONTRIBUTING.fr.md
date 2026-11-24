@@ -358,9 +358,8 @@ sans témoin n'est pas faux ; il est invérifiable, et il vieillit sans que rien
 sa traduction française `X.fr.md`, à côté. Une modification d'un document touche ses deux langues
 dans le même commit. `.github/scripts/check_every_document_is_paired_and_in_parity.py` y tient
 l'arbre, dans l'intégration continue et dans la batterie de gardes : un document suivi sans sa
-paire, ou tout écart de parité décrit ci-dessous, la fait échouer. Deux documents restent en une
-seule langue, et tous deux sont nommés : `docs/ROADMAP.md` (le journal de travail, tenu en
-français) et `docs/BENCHMARK.md` (rendu par `bench/report.py` ; sa version bilingue est en cours).
+paire, ou tout écart de parité décrit ci-dessous, la fait échouer. Un document reste en une seule
+langue, et il est nommé : `docs/ROADMAP.md` (le journal de travail, tenu en français).
 
 Un document traduit garde les faits de son original : mêmes titres (nombre et niveaux), mêmes blocs
 de code et mêmes commandes hors commentaires, mêmes tableaux, mêmes cibles de liens — un lien vers
@@ -385,9 +384,8 @@ python3 .github/scripts/check_every_document_is_paired_and_in_parity.py # la gar
 
 La convention de suffixe est un paramètre (`--suffixe-original`, `--suffixe-traduction`, par défaut
 `X.md` / `X.fr.md`). Les documents tenus en une seule langue sont un ensemble nommé,
-`UNE_SEULE_LANGUE`, chacun avec sa raison : `docs/ROADMAP.md`, le journal de travail tenu en
-français, et `docs/BENCHMARK.md`, rendu par `bench/report.py` pendant que sa version bilingue se
-prépare. L'inventaire nomme tout autre document suivi sans sa paire, et toute entrée de l'ensemble
+`UNE_SEULE_LANGUE`, chacun avec sa raison ; il porte `docs/ROADMAP.md`, le journal de travail tenu
+en français. L'inventaire nomme tout autre document suivi sans sa paire, et toute entrée de l'ensemble
 qui a retrouvé sa paire ou n'est plus suivie ; il rend vert tant que `--strict` n'est pas passé. En
 comparaison, l'outil rend 1 dès qu'un écart est nommé, même si une autre paire n'a pas pu être lue
 (elle est nommée) ; il rend 2 quand il n'y a aucun écart et que quelque chose n'a pas été lu (zéro

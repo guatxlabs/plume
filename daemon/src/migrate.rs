@@ -99,7 +99,8 @@ pub(crate) const CODE_SCHEMA_MAX: i64 = 126;
 /// version à la cible d'une étape (`migrate_step`, `restore_schema_version`) : à ces endroits la
 /// valeur n'autorise rien, elle DÉCRIT, et une lecture ratée s'y lit comme une anomalie de plus dans
 /// un message déjà coupable. La lecture qui AUTORISE — celle de l'ouverture — ne passe plus par ici :
-/// elle passe par [`lire_l_estampille_de_schema`], qui refuse de fabriquer un « 1 ».
+/// elle passe par [`lire_l_estampille_de_schema`], qui refuse de fabriquer un « 1 ». `P10.20-b` : la
+/// version qui ARBITRE la chaîne (`migrate_chain`) et le contrôle d'entrée de `prepare_schema` non plus.
 pub(crate) fn read_schema_version(conn: &Connection) -> i64 {
     conn.query_row("SELECT value FROM meta WHERE key='schema_version'", [], |r| r.get::<_, String>(0))
         .ok()
@@ -628,17 +629,23 @@ fn migrate(conn: &Connection) -> bool {
 /// ────────────────────────────────────────────────────────────────────────────────────────────────────
 #[must_use]
 fn migrate_chain(conn: &Connection) -> bool {
-    // `P10.20-f` / `P10.20-i` — COPIE INLINE DU REPLI, ET SON ATTEIGNABILITÉ, DITE. Ce `unwrap_or(1)`
-    // n'est PAS la lecture qui autorise : la porte (`db_open::PreparedDb::seal`) a déjà refusé toute
-    // base dont l'estampille n'est pas établie, et `prepare_schema` a rejoué `db/schema.sql`, qui
-    // repose la ligne. `P10.20-i` ne le rend pas atteignable — il RÉTRÉCIT au contraire ce qui
-    // l'atteint (une base migrée sans sa ligne n'arrive plus jusqu'ici). Il reste atteignable par les
-    // appels DIRECTS à `migrate()` hors de la porte, tous internes à la caisse de test.
-    let v: i64 = conn
-        .query_row("SELECT value FROM meta WHERE key='schema_version'", [], |r| r.get::<_, String>(0))
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(1);
+    // `P10.20-b` — LA VERSION QUI ARBITRE LA CHAÎNE SE LIT COMME À LA PORTE, JAMAIS PAR UN REPLI SUR « UN ».
+    // La porte (`db_open::PreparedDb::seal`) a déjà refusé toute base dont l'estampille n'est pas établie ;
+    // mais cette seconde lecture est faite PLUS TARD, après `db/schema.sql`, et son ancien repli
+    // (`.ok().and_then(parse).unwrap_or(1)`) rendait « un » sur toute lecture ratée ou valeur non entière :
+    // une base à jour dont `meta` cessait de se lire entre les deux rejouait la chaîne ENTIÈRE — les
+    // destructions que `P10.20-f` a chiffrées (v33, v48, v58, v59, v77, v102). Mêmes issues que la porte
+    // désormais : estampille lue -> la chaîne part de là ; fichier sans schéma (neuf, ou `meta` seule) ->
+    // version un, rien à détruire ; estampille NON LUE -> la chaîne ne joue AUCUNE étape et rend `false`
+    // (« chaîne non menée au bout »), que `prepare_schema` sert comme un refus d'ouverture.
+    let v: i64 = match lire_l_estampille_de_schema(conn) {
+        EstampilleDeSchema::Lue(v) => v,
+        EstampilleDeSchema::BaseNeuve | EstampilleDeSchema::JamaisEstampillee => 1,
+        EstampilleDeSchema::NonLue(cause) => {
+            mig_log!("[migration] AUCUNE étape jouée : {cause} La chaîne de migrations n'est pas arbitrée sur une version qu'on n'a pas lue.");
+            return false;
+        }
+    };
     if v < 2 && !migrate_step(conn, 2, migrate_v2) { return false; }
     if v < 3 && !migrate_step(conn, 3, migrate_v3) { return false; }
     if v < 4 && !migrate_step(conn, 4, migrate_v4) { return false; }
@@ -1226,6 +1233,17 @@ pub(crate) fn schema_gaps(conn: &Connection) -> Result<Vec<String>, String> {
 /// recréer l'objet nommé), pas une attente. On préfère l'indisponibilité BRUYANTE au contrôle de
 /// sécurité silencieusement absent, même quand la panne ne se résorbe pas toute seule.
 pub(crate) fn prepare_schema(conn: &Connection) -> Result<(), String> {
+    // `P10.20-b` — L'ESTAMPILLE SE JUGE AVANT `db/schema.sql`, ICI AUSSI. La porte (`db_open::PreparedDb::seal`)
+    // la juge déjà ; ce contrôle rend la propriété vraie pour TOUT appelant de cette fonction. Après
+    // `db/schema.sql`, une table `meta` absente est recréée VIDE avec la ligne '1' (`INSERT OR IGNORE`) : la
+    // chaîne lirait alors une estampille PARFAITEMENT LUE qui vaut « un », et rejouerait toutes les étapes sur
+    // une base à jour. Seul l'état d'AVANT le contrat distingue une base neuve d'une base illisible.
+    if let EstampilleDeSchema::NonLue(cause) = lire_l_estampille_de_schema(conn) {
+        return Err(format!(
+            "{cause} Le contrat de schéma n'est PAS joué : ni `db/schema.sql`, ni aucune étape de migration — une base \
+             qui porte un schéma n'est jamais traitée comme une base neuve."
+        ));
+    }
     let schema_sql_err = conn
         .execute_batch(include_str!("../../db/schema.sql"))
         .err()
@@ -5653,6 +5671,13 @@ mod schema_contract_tests {
     /// CE QU'IL NE TIENT PAS : il ne joue pas la porte de bout en bout (fichier sur disque, refus
     /// complet, inventaire avant/après) — c'est le rôle de
     /// `tests/meta_sans_ligne_de_version_sur_une_base_qui_porte_un_schema.rs`.
+    ///
+    /// INVERSÉ PAR `P10.20-b` (le NOM reste, cité par `docs/ROADMAP.md`, et il ne décrit plus le
+    /// comportement) : le contrat NE rattrape PLUS cette forme. Il juge l'estampille AVANT
+    /// `db/schema.sql`, comme la porte, et refuse sans rien écrire — sans quoi tout appelant direct
+    /// de `prepare_schema` rejouait la chaîne entière sur une base à jour. `migrate()` seul refuse
+    /// aussi, désormais sans jouer aucune étape (la ligne absente sur un fichier qui porte un schéma
+    /// est une estampille NON LUE, plus un « 1 »).
     #[test]
     fn legacy_meta_without_a_version_row_is_recovered_by_the_contract() {
         let conn = fresh_migrated();
@@ -5663,10 +5688,13 @@ mod schema_contract_tests {
             matches!(schema_downgrade_guard(&conn), Err(RefusDOuverture::EstampilleNonLue(_))),
             "une base qui porte un schéma et pas sa ligne de version est REFUSÉE par la porte"
         );
-        assert!(!migrate(&conn), "migrate() seul : sans la ligne, la 1re étape ne peut pas estampiller");
-        assert!(prepare_schema(&conn).is_ok(), "le contrat de boot repose la ligne, puis migre jusqu'au bout");
-        assert_eq!(read_schema_version(&conn), CODE_SCHEMA_MAX);
-        assert!(schema_gaps(&conn).unwrap().is_empty(), "et la base porte bien ce que le binaire déclare");
+        assert!(!migrate(&conn), "migrate() seul : sans la ligne, aucune étape n'est arbitrée");
+        let refus = prepare_schema(&conn).expect_err("`P10.20-b` : le contrat refuse comme la porte");
+        assert!(refus.starts_with(CAUSE_ESTAMPILLE_DE_SCHEMA_NON_LUE), "le refus nomme sa cause : {refus}");
+        let lignes: i64 = conn
+            .query_row("SELECT COUNT(*) FROM meta WHERE key='schema_version'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(lignes, 0, "rien n'est écrit : `db/schema.sql` n'a pas reposé la ligne à « 1 »");
     }
 
     /// Le contrôle est FAIL-CLOSED sur lui-même : catalogue illisible OU colonnes illisibles = échec du

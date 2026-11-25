@@ -255,9 +255,11 @@ impl PreparedDb {
             Err(RefusDOuverture::PlusRecenteQueCeBinaire(v)) => {
                 return Err(DbOpenError::PlusRecenteQueCeBinaire(v))
             }
-            // `P10.20-f` — une estampille NON LUE arrête ici, AVANT `prepare_schema` : c'est
-            // `migrate_chain` qui rejouerait la chaîne sur un « 1 » fabriqué, et il n'est jamais
-            // atteint. Une base NEUVE (catalogue vide) et la forme legacy sans ligne passent, elles.
+            // `P10.20-f` — une estampille NON LUE arrête ici, AVANT `prepare_schema`, avec la phrase qui
+            // nomme la clé au repos et la sauvegarde. `P10.20-b` : `prepare_schema` et `migrate_chain`
+            // la refusent aussi désormais (aucun « 1 » fabriqué), ce qui tient la propriété pour un appel
+            // qui ne passerait pas par ici. Une base NEUVE (catalogue vide) et la forme legacy sans ligne
+            // passent, elles.
             Err(RefusDOuverture::EstampilleNonLue(cause)) => {
                 return Err(DbOpenError::EstampilleNonLue(cause))
             }

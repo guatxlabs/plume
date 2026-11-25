@@ -1998,7 +1998,11 @@ pub(crate) fn resolve_tenant_and_role(
             // rôle "admin" sur un tenant où il n'a AUCUN grant et, comme tenant_mgmt_gate/can_manage_grants
             // vérifient `role=="admin" && tenant==tid` (or tenant EST le tid visé), gérerait ses grants
             // -> escalade cross-tenant. "viewer" -> gate + handler refusent (403).
-            Some(t) => mgmt_grants_role(st, name, t, sso_grant_map, is_sa),
+            // `P10.20-b` — des droits NON LUS ne prennent pas le repli non-membre : 503 nommé avant tout jugement.
+            Some(t) => match mgmt_grants_role(st, name, t, sso_grant_map, is_sa) {
+                Ok(role) => role,
+                Err(_) => return Err(err_json(StatusCode::SERVICE_UNAVAILABLE, crate::rbac::CAUSE_DROITS_DU_COMPTE_NON_LUS)),
+            },
             None => role_floor.clone(),
         };
         (target.unwrap_or_else(|| "default".to_string()), role, is_sa, false)
@@ -2015,6 +2019,10 @@ pub(crate) fn resolve_tenant_and_role(
             });
         match resolve_tenant_access(st, name, sso_grant_map, sso_superadmin, requested.as_deref(), mutating, breakglass) {
             Ok(a) => (a.tenant, a.role, a.is_superadmin, a.cross_tenant),
+            // `P10.20-b` — une lecture NON FAITE (droits ou catalogue) part dans le corps `{error, id}` que la console lit
+            // (`causeNommeeParLeDemon`, web/core.js) : un cinq cent trois en texte nu y serait pris pour une panne de
+            // passerelle et sa cause remplacée. Les refus de droit gardent leur texte nu d'avant.
+            Err((code, msg)) if code == StatusCode::SERVICE_UNAVAILABLE => return Err(err_json(code, msg)),
             Err((code, msg)) => return Err((code, msg).into_response()),
         }
     };
@@ -2340,8 +2348,13 @@ pub(crate) async fn auth_guard(State(st): State<AppState>, mut req: Request, nex
     // la base d'un autre tenant) — ce garde reste la couche qui le DIT à l'appelant, il n'est plus ce qui
     // empêche la fuite. `tenant_available` enregistre au passage la clé DU tenant (registre read-pool).
     // Mode 0 : sauté (multi_tenant=false) -> comportement STRICTEMENT identique.
-    if st.multi_tenant && !st.tenants.tenant_available(&tenant) {
-        return (StatusCode::FORBIDDEN, "tenant indisponible (base non résoluble)").into_response();
+    // `P10.20-b` — une ligne de catalogue NON LUE n'est pas « base non résoluble » : 503 nommé, rien n'est servi.
+    if st.multi_tenant {
+        match st.tenants.tenant_available_lu(&tenant) {
+            Ok(true) => {}
+            Ok(false) => return (StatusCode::FORBIDDEN, "tenant indisponible (base non résoluble)").into_response(),
+            Err(_) => return err_json(StatusCode::SERVICE_UNAVAILABLE, crate::rbac::CAUSE_CATALOGUE_DES_TENANTS_NON_LU),
+        }
     }
     // #2b/D3/R9 — MARQUEUR STRUCTUREL d'accès OPÉRATEUR cross-tenant : un super-admin consulte/écrit un
     // tenant dont il n'est PAS membre. Émis ICI (choke-point unique, JAMAIS un handler séparé) -> impossible

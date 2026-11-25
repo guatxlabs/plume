@@ -105,6 +105,15 @@ administrateur » sur une lecture qui n'a pas eu lieu ; les DEUX plafonds anti-D
 ligne de REGISTRE tamper-evident ; `actions.rs:1260` écrit dans ce même registre « verdict `` déjà
 posé » quand le statut conservé n'a pas pu être relu.
 
+LE CORPUS EST LE DÉMON ENTIER DEPUIS LE 2026-11-25 (`P10.20-b`)
+---------------------------------------------------------------
+Ce qui suit décrit l'écriture de 2026-09-16, quand le corpus était `daemon/src/handlers/` seul et que le
+reste du démon n'était que COMPTÉ. Il est désormais `daemon/src` entier, modules de test exclus par nom
+(`tests/`, `tests.rs` : `HORS_CORPUS_PAR_NOM`), et chaque site hors de `handlers/` est CLASSÉ dans l'ensemble
+nommé, fichier et fonction, avec sa raison en une ligne : deux classes neuves, « le repli ne décide rien »
+et « défaut connu, à corriger ». Une épreuve sur arbre fabriqué tient l'exclusion des modules de test dans
+les deux sens (`epreuve_des_modules_de_test`).
+
 POURQUOI UNE GARDE NEUVE, ET NON UNE SECONDE FAMILLE DANS `check_a_truncated_list_…`
 -------------------------------------------------------------------------------------
 La garde de famille (`P10.7-f`) partage TOUS ses lecteurs avec celle-ci — ils sont IMPORTÉS ici, pas
@@ -312,10 +321,14 @@ PROPAGATEURS = ("?", "unwrap", "expect")
 # RE-DÉRIVÉS le 2026-10-24 (`P10.20-l`, vague AL : `excl_display_csv`) : relevé de l'arbre ce jour-là, après le correctif,
 # MESURÉ par cette garde — 3 sites sur 3 fichiers (`dashboards.rs` SORT du relevé). Même règle (deux tiers, arrondi
 # bas) : 3 -> 2, 3 -> 2.
-RELEVE_SITES = 3
-RELEVE_FICHIERS = 3
-PLANCHER_SITES = 2
-PLANCHER_FICHIERS = 2
+# RE-DÉRIVÉS le 2026-11-25 (`P10.20-b`) : le CORPUS change — `daemon/src` entier, modules de test exclus, et
+# non plus `handlers/` seul. Relevé de l'arbre ce jour-là, après les correctifs du même lot, MESURÉ par cette
+# garde : 58 sites sur 22 fichiers (2 sur 2 sous `handlers/`, 56 sur 20 ailleurs). Même règle (69 % et 65 %,
+# arrondis en dessous) : 58 -> 40 (69 % = 40,02), 22 -> 14 (65 % = 14,3).
+RELEVE_SITES = 58
+RELEVE_FICHIERS = 22
+PLANCHER_SITES = 40
+PLANCHER_FICHIERS = 14
 
 # ================================================================================================
 # L'ENSEMBLE NOMMÉ — CINQ CLASSES, JUGÉES DANS LES DEUX SENS
@@ -626,12 +639,124 @@ DEFAUTS_RANG_4_FAIL_CLOSED = {
     # `…_ADMINISTRATEURS_NON_COMPTES`, et leurs pendants `CAUSE_COMPTE_NON_MODIFIE_…`), rien d'écrit.
 }
 
+# ================================================================================================
+# HORS DE `handlers/` — LE RESTE DU DÉMON, CLASSÉ SITE PAR SITE (`P10.20-b`, 2026-11-25)
+# ================================================================================================
+# Jusqu'ici cette garde ne lisait que `handlers/`, et le reste du démon était COMPTÉ, pas classé. Le corpus
+# est désormais `daemon/src` entier, modules de test exclus (le répertoire `tests/` et les fichiers
+# `tests.rs`, que `#[cfg(test)] mod tests;` déclare) ; chaque site hors de `handlers/` porte sa raison en une
+# ligne. Relevé ce jour-là, après les correctifs du même lot : 56 sites hors de `handlers/` sur 20 fichiers.
+#
+# SEPT SITES QUITTENT LA POPULATION AVEC CE LOT, et aucun n'a d'entrée ici : `state.rs::resolve_user_tenant`
+# (trois lectures : compte de plateforme, droit demandé, premier droit), `state.rs::catalog_route` (la ligne
+# du catalogue des tenants), `tenants.rs::tenant_delete` et `tenant_provision`, `migrate.rs::migrate_chain`.
+# Chacun lit en trois issues et sert un 503 nommé, ou ne joue aucune étape (témoins :
+# `daemon/src/tests/lectures_d_une_ligne_du_plan_de_controle_et_de_l_estampille.rs`).
+#
+# ÉPROUVÉ PAR MUTATION le 2026-11-25, sur l'arbre : une entrée retirée de la classe 6 -> FORME NEUVE (code 1) ;
+# une entrée fantôme ajoutée -> EXEMPTION SANS OBJET (code 1) ; le corpus ramené à `handlers/` -> plancher
+# franchi, refus de conclure (code 2) ; `tenants.rs::tenant_delete` remis en `.ok()` -> FORME NEUVE (code 1).
+
+# --- CLASSE 6 : HORS `handlers/`, LE REPLI NE DÉCIDE RIEN. Journal, statistique d'affichage, valeur recalculée
+# au passage suivant, repli qui part du côté bruyant ou fail-closed, ou lecture qui n'est que le premier essai
+# d'une seconde lecture en trois issues. La raison est écrite au-dessus de chaque entrée.
+SITES_HORS_HANDLERS_SANS_DECISION = {
+    # Premier essai sur le pool de lecture : seul `Some(false)` est cru ; une lecture ratée retombe sur l'écrivain,
+    # qui lit `user.hash` par `.optional()` et dont l'échec refuse le nom (`RefusDeLAnnuaire::NonVerifie`).
+    ("daemon/src/auth.rs", "juger_le_nom_presente_par_l_annuaire"): ("ok",),
+    # Affichage du rapport de vérification d'une restauration : la mention `schema_version=` est omise, aucun
+    # chiffre n'est fabriqué ; le verdict de la restauration repose sur les tables et les lignes comptées.
+    ("daemon/src/backup/verification.rs", "inventaire_restaure"): ("ok",),
+    # Dead-man's-switch du vieillissement froid : `None` (lecture ratée comprise) fait TIRER, le côté bruyant.
+    ("daemon/src/cold_store/aging.rs", "dernier_tir_du_retard"): ("ok.and_then",),
+    # Mesures du compactage plein texte : `None` s'écrit « non mesuré » dans le rapport, jamais zéro, et la
+    # passe suivante remesure.
+    ("daemon/src/compactage_fts.rs", "documents"): ("ok",),
+    ("daemon/src/compactage_fts.rs", "octets_index"): ("ok",),
+    ("daemon/src/compactage_fts.rs", "structure"): ("ok.?",),
+    # Suivi de l'exercice de restauration : une ligne illisible se lit « jamais », qui lève l'alerte d'exercice
+    # en retard — le côté bruyant, écrit dans la doc de la fonction.
+    ("daemon/src/exercice_de_restauration.rs", "dernier_exercice"): ("ok.?",),
+    # Régime des statistiques de l'index servi à l'écran système : une lecture ratée se lit « aucune
+    # statistique », un affichage que la passe suivante recalcule ; aucune décision n'en dépend.
+    ("daemon/src/index_usage.rs", "lignes_estimees"): ("ok.?",),
+    ("daemon/src/index_usage.rs", "regime_statistiques"): ("unwrap_or", "unwrap_or"),
+    ("daemon/src/index_usage.rs", "statistiques_detaillees_compilees"): ("unwrap_or",),
+    # Sous-commande `db-stats` (diagnostic en lecture seule) : la lisibilité de la base est jugée AVANT
+    # (`PRAGMA page_count`, sortie 2) ; un compte non lu s'imprime -1, jamais 0.
+    ("daemon/src/main.rs", "main"): ("unwrap_or", "unwrap_or"),
+    # Fait de déploiement persisté : illisible vaut 0, c'est-à-dire AUCUNE fenêtre d'atténuation (fail-closed,
+    # l'alerte reste).
+    ("daemon/src/maj_corroboree.rs", "fait_persiste"): ("ok.and_then.filter.unwrap_or",),
+    # Migrations historiques : chaque lecture passe par `MigTx::query_row`, qui MÉMORISE un échec opérationnel
+    # (classe B : disque, verrou, lecture seule, corruption) et fait annuler l'étape avant son estampille ; seul
+    # un « no such table » ou une absence vaut absence, l'idempotence voulue de ces étapes.
+    ("daemon/src/migrate.rs", "col_exists"): ("is_ok",),
+    ("daemon/src/migrate.rs", "migrate_v100"): ("is_ok", "is_ok"),
+    ("daemon/src/migrate.rs", "migrate_v43"): ("is_err",),
+    ("daemon/src/migrate.rs", "migrate_v48"): ("is_ok",),
+    ("daemon/src/migrate.rs", "migrate_v50"): ("is_ok", "is_ok"),
+    ("daemon/src/migrate.rs", "migrate_v51"): ("is_ok", "is_ok"),
+    ("daemon/src/migrate.rs", "migrate_v52"): ("is_ok", "is_ok"),
+    ("daemon/src/migrate.rs", "migrate_v53"): ("is_ok", "is_ok"),
+    ("daemon/src/migrate.rs", "migrate_v56"): ("is_ok",),
+    ("daemon/src/migrate.rs", "migrate_v57"): ("is_ok", "is_ok"),
+    ("daemon/src/migrate.rs", "migrate_v58"): ("is_ok", "unwrap_or"),
+    ("daemon/src/migrate.rs", "migrate_v75"): ("is_ok", "is_ok"),
+    # Couverture des rollups : DÉFAUT = REFUS, écrit dans la doc — non lue, elle vaut `unproven` et la route
+    # sert le chemin brut ; la passe suivante republie.
+    ("daemon/src/rollup_coverage.rs", "of"): ("ok", "ok.and_then"),
+    # Borne de couverture relue par le rollup : non lue, elle vaut « couverture absente », qui fait
+    # RECONSTRUIRE la bande (le côté sûr, comme le watermark non lu deux lignes plus haut).
+    ("daemon/src/rollups.rs", "rollup_events"): ("ok.and_then",),
+    # Données de démonstration (`PLUME_DEMO=1`) : l'élément de chronologie part sans référence plutôt qu'avec
+    # un identifiant inventé (`P4.1-s`).
+    ("daemon/src/seeds.rs", "ecrire_les_donnees_de_demonstration"): ("ok", "ok"),
+    # Reprise de la recréation v67, migration historique jouée dans sa transaction : une lecture ratée mène à
+    # l'échec de l'étape, annulée et retentée au démarrage suivant.
+    ("daemon/src/seeds.rs", "table_exists"): ("is_ok",),
+    # Annonce des réseaux protégés au registre : non lue, l'annonce est REPOSÉE (une ligne de plus, bruit borné).
+    ("daemon/src/server/mod.rs", "run"): ("unwrap_or_default",),
+    # Boucle d'`incremental_vacuum` : -1 la rend inerte pour ce tour, 0 la fait sauter ; le tour suivant relit.
+    ("daemon/src/server/travaux_sur_la_base.rs", "spawn_autovacuum_loop"): ("unwrap_or", "unwrap_or", "unwrap_or"),
+    # Sonde du magasin de secrets : `None` devient `Mesure::Illisible` (source illisible, nommée), jamais un
+    # magasin sain ; le total non lu est servi `None` à côté du compte lu.
+    ("daemon/src/sonde_du_magasin_de_secrets.rs", "etat_du_magasin"): ("ok.?", "ok.?", "ok.?", "ok.map"),
+    # Miroir FTS : `None` = pas d'oracle, que l'appelant DIT (`fts_plan`) au lieu de deviner.
+    ("daemon/src/soql_glue.rs", "derive"): ("ok.?",),
+    # Tri des connexions : `None` devient `Tri::Illisible` avec sa cause, jamais un tri en mémoire supposé.
+    ("daemon/src/tri_des_connexions.rs", "lire_tri"): ("ok",),
+    # Ventilation de la base (statistique d'affichage) : -1 ramené à 0 page ; la mesure suivante relit.
+    ("daemon/src/ventilation_serie.rs", "mesurer_une_fois"): ("unwrap_or",),
+    # Taille de page pour la borne du WAL : le défaut de compilation plutôt que zéro (qui tronquerait à chaque
+    # checkpoint) ; un réglage, aucun fait servi.
+    ("daemon/src/wal_empreinte.rs", "page_size_de"): ("unwrap_or.max",),
+}
+
+# --- CLASSE 7 : HORS `handlers/`, DÉFAUTS CONNUS NON CORRIGÉS. Le repli entre dans un fait écrit, ou décide
+# d'une écriture. Chaque entrée nomme ce qui manque.
+DEFAUTS_HORS_HANDLERS_A_CORRIGER = {
+    # Le titre de l'alerte `control.catalog` (écrit en base) dit « aucun état DIFFÉRENT n'a jamais été relevé
+    # pour cette machine » quand la lecture de l'état précédent ou de sa date a échoué.
+    ("daemon/src/controles_de_defense.rs", "dernier_etat_different"): ("ok.flatten",),
+    ("daemon/src/controles_de_defense.rs", "jour_utc"): ("ok.flatten",),
+    # Une signature d'unités non lue se lit « base neuve » : la signature est réécrite SANS audit du
+    # déploiement (aucune fenêtre n'est ouverte, mais le changement de build est oublié en silence).
+    ("daemon/src/maj_corroboree.rs", "noter_le_build_en_cours"): ("ok",),
+    # Repli descriptif des messages d'étape, mais `migrate_step` y relit aussi la version d'AVANT l'étape :
+    # une lecture ratée entre deux étapes, suivie d'un échec de l'étape, ferait réécrire « 1 » par
+    # `restore_schema_version`. La chaîne (`migrate_chain`) et le contrat (`prepare_schema`) ne la lisent plus.
+    ("daemon/src/migrate.rs", "read_schema_version"): ("ok.and_then.unwrap_or",),
+}
+
 CLASSES = (
     ("assumé", SITES_ASSUMES),
     ("défaut connu — rang 1, le repli ouvre une porte", DEFAUTS_RANG_1_LE_REPLI_OUVRE),
     ("défaut connu — rang 2, fait servi ou écrit", DEFAUTS_RANG_2_FAIT_SERVI_OU_ECRIT),
     ("défaut connu — rang 3, interne", DEFAUTS_RANG_3_INTERNE),
     ("défaut connu — rang 4, fail-closed", DEFAUTS_RANG_4_FAIL_CLOSED),
+    ("hors handlers — le repli ne décide rien", SITES_HORS_HANDLERS_SANS_DECISION),
+    ("défaut connu — hors handlers, à corriger", DEFAUTS_HORS_HANDLERS_A_CORRIGER),
 )
 SITES_ADMIS = {}
 for _libelle, _classe in CLASSES:
@@ -738,8 +863,19 @@ def analyser(chemin_relatif, texte, journal, aveux_du_lecteur=None):
     return sites
 
 
+# LES MODULES DE TEST SONT HORS DU CORPUS, PAR NOM : le répertoire `tests/` (`#[cfg(test)] mod tests;` de
+# `main.rs`) et tout fichier `tests.rs` (celui de `cold_store/`, déclaré de même) avec le répertoire `tests/` qui
+# le prolonge. Une fixture y lit légitimement par `.ok()` ; l'accuser poserait un rouge qu'aucun geste de
+# production ne referme. `coupe_tests` coupe déjà les modules `#[cfg(test)]` ÉCRITS dans un fichier de production.
+HORS_CORPUS_PAR_NOM = ("tests", "tests.rs")
+
+
 def fichiers_du_corpus(racine=None):
     """Tous les `.rs` de `daemon/src/handlers/`, SOUS-RÉPERTOIRES COMPRIS, artefacts ÉLAGUÉS.
+
+    CE N'EST PLUS LE CORPUS DE CETTE GARDE depuis le 2026-11-25 (`fichiers_du_demon`) : il reste celui de
+    `check_a_bare_chain_match_is_never_served_as_a_fact.py`, qui l'IMPORTE et dont l'ensemble nommé ne couvre
+    que `handlers/` — l'élargir ici aurait élargi l'autre garde en silence.
 
     L'élagage passe par le geste PARTAGÉ (`parcours_des_sources`, `P11.8-m`) : il exclut PAR NOM DANS
     la descente, et porter une liste à la main ici serait la « copie divergente » que
@@ -755,9 +891,24 @@ def fichiers_du_corpus(racine=None):
     return sorted(trouves)
 
 
+def fichiers_du_demon(racine=None):
+    """Tous les `.rs` de `daemon/src/`, SOUS-RÉPERTOIRES COMPRIS, artefacts et modules de test ÉLAGUÉS — le
+    corpus de CETTE garde depuis le 2026-11-25 (`P10.20-b`) ; il était `daemon/src/handlers/` seul, et le reste
+    du démon était compté, jamais classé. Même élagage partagé que `fichiers_du_corpus`, plus les modules de
+    test par nom (`HORS_CORPUS_PAR_NOM`)."""
+    racine = DEMON if racine is None else racine
+    if not os.path.isdir(racine):
+        return []
+    trouves = []
+    for dossier, fichiers in parcours_des_sources(racine, hors=HORS_CORPUS_PAR_NOM):
+        trouves += [os.path.join(dossier, n) for n in fichiers
+                    if n.endswith(".rs") and os.path.isfile(os.path.join(dossier, n))]
+    return sorted(trouves)
+
+
 def decouvrir():
     sites, journal, aveux_du_lecteur = [], [], {}
-    for chemin in fichiers_du_corpus():
+    for chemin in fichiers_du_demon():
         with open(chemin, encoding="utf-8", errors="replace") as fh:
             texte = fh.read()
         sites += analyser(os.path.relpath(chemin, RACINE), texte, journal, aveux_du_lecteur)
@@ -980,7 +1131,7 @@ def epreuve_de_la_descente():
             os.makedirs(os.path.dirname(chemin), exist_ok=True)
             with open(chemin, "w", encoding="utf-8") as fh:
                 fh.write(SOURCE_FABRIQUEE)
-        vus = {os.path.relpath(c, racine).replace(os.sep, "/") for c in fichiers_du_corpus(racine)}
+        vus = {os.path.relpath(c, racine).replace(os.sep, "/") for c in fichiers_du_demon(racine)}
         manquants = sorted(SOURCES_ATTENDUES - vus)
         if manquants:
             errs.append(f"épreuve de la DESCENTE (positif) : {manquants} n'est pas dans le corpus — la "
@@ -996,6 +1147,45 @@ def epreuve_de_la_descente():
             errs.append("épreuve de la DESCENTE (analyse) : le fichier d'un sous-répertoire est LISTÉ "
                         "mais son site n'est pas ACCUSÉ — un corpus qui s'élargit sans que le lecteur "
                         "suive ne vaut rien")
+    return errs
+
+
+# L'EXCLUSION DES MODULES DE TEST S'ÉPROUVE SUR UN ARBRE FABRIQUÉ, dans les deux sens : un fichier de
+# production à côté d'un `tests.rs` et sous un répertoire qui porte un `tests/` reste dans le corpus.
+ARBRE_DES_MODULES_DE_TEST = (("production.rs",),
+                             ("froid", "mod.rs"),
+                             ("froid", "tests.rs"),
+                             ("froid", "tests", "temoin.rs"),
+                             ("tests", "mod.rs"),
+                             ("tests", "sous", "temoin.rs"))
+SOURCES_DE_PRODUCTION_ATTENDUES = {"production.rs", "froid/mod.rs"}
+
+
+def epreuve_des_modules_de_test():
+    """Les modules de test sont HORS du corpus, et RIEN d'autre ne l'est — jugé DANS LES DEUX SENS.
+
+    Sans le sens NÉGATIF, une fixture de `tests/` ou de `cold_store/tests.rs` entrerait dans la population
+    et serait accusée ; sans le sens POSITIF, un élagage trop large (par préfixe, ou du répertoire parent)
+    ferait disparaître du code de production en silence.
+
+    ÉPROUVÉE PAR MUTATION le 2026-11-25 : `HORS_CORPUS_PAR_NOM` vidé -> l'exclusion rougit (code 2) ; élargi au
+    nom d'un répertoire de production (`froid`) -> le sens production rougit (code 2)."""
+    errs = []
+    with tempfile.TemporaryDirectory(prefix="plume-lecture-unique-tests-") as racine:
+        for rel in ARBRE_DES_MODULES_DE_TEST:
+            chemin = os.path.join(racine, *rel)
+            os.makedirs(os.path.dirname(chemin), exist_ok=True)
+            with open(chemin, "w", encoding="utf-8") as fh:
+                fh.write(SOURCE_FABRIQUEE)
+        vus = {os.path.relpath(c, racine).replace(os.sep, "/") for c in fichiers_du_demon(racine)}
+        entres = sorted(vus - SOURCES_DE_PRODUCTION_ATTENDUES)
+        if entres:
+            errs.append(f"épreuve des MODULES DE TEST (exclusion) : {entres} est entré dans le corpus — une "
+                        "fixture de test serait accusée, et aucun geste de production ne refermerait ce rouge")
+        perdus = sorted(SOURCES_DE_PRODUCTION_ATTENDUES - vus)
+        if perdus:
+            errs.append(f"épreuve des MODULES DE TEST (production) : {perdus} n'est plus dans le corpus — "
+                        "l'exclusion des modules de test emporte du code de production, en silence")
     return errs
 
 
@@ -1077,6 +1267,7 @@ def valider_instrument():
 
     # --- LE CORPUS DESCEND, ET IL ÉLAGUE — sur un arbre FABRIQUÉ, dans les deux sens.
     errs += epreuve_de_la_descente()
+    errs += epreuve_des_modules_de_test()
 
     # --- L'ENSEMBLE NOMMÉ EST JUGÉ DANS LES DEUX SENS ET SUR LES FORMES, À SON PROPRE NIVEAU. Sans
     # ces épreuves, un `juger_contre_l_ensemble` débranché rendrait la garde verte quoi que l'arbre
@@ -1124,13 +1315,10 @@ def ce_qui_n_est_pas_tenu():
           "  * elle ne juge PAS `unwrap()` ni `expect(..)` sur un `query_row`. Ils TUENT le "
           "processus : c'est un défaut, ce n'est pas CELUI-CI (aucun fait n'est servi), et l'accuser "
           "ici poserait un rouge qu'aucun geste de cette famille ne referme.\n"
-          "  * elle ne lit QUE `daemon/src/handlers/` et ses sous-répertoires. Le même geste, mesuré "
-          "sur `daemon/src` entier au 2026-09-16, donne 249 chaînes absorbantes : CENT CINQUANTE-NEUF "
-          "vivent HORS `handlers/` et ne sont ni jugées ni classées. Parmi elles, `state.rs` porte à "
-          "lui seul onze résolutions de jeton et `scim.rs` trois — de l'authentification. HORS "
-          "PÉRIMÈTRE, ET DIT. (Le chiffre « cent vingt et une » qu'écrivait `docs/ROADMAP.md` était "
-          "le TOTAL de `daemon/src` pour le geste `ok`, pas son hors-`handlers/` : l'en-tête de ce "
-          "fichier refait le calcul.)\n"
+          "  * elle lit `daemon/src` ENTIER depuis le 2026-11-25 (`P10.20-b`), modules de test exclus par "
+          "nom (`tests/`, `tests.rs`) ; un module `#[cfg(test)]` écrit dans un fichier de production est "
+          "coupé par `coupe_tests`. Les chaînes NUES hors de `handlers/` (premier point) ne sont pas plus "
+          "jugées qu'ailleurs.\n"
           "  * elle ne dit RIEN du rang. Les cinq classes de `SITES_ADMIS` portent un rang et une "
           "raison LUS À LA MAIN le 2026-09-16 ; la garde, elle, ne sait pas les recalculer. Un site "
           "neuf est accusé sans rang, et c'est à la lecture de le lui donner en entrant dans "
@@ -1166,18 +1354,9 @@ def main():
     if os.path.isfile(cargo):
         with open(cargo, encoding="utf-8", errors="replace") as fh:
             manifeste = fh.read()
-    hors_handlers = 0
-    for dossier, sous, noms in os.walk(DEMON):
-        sous[:] = [d for d in sous if d not in ("tests", "handlers")]
-        for nom in noms:
-            if not nom.endswith(".rs"):
-                continue
-            with open(os.path.join(dossier, nom), encoding="utf-8", errors="replace") as fh:
-                hors_handlers += fh.read().count(".query_row(")
-    if not re.search(r"^\s*rusqlite\s*=", manifeste, re.M) and hors_handlers == 0:
-        print("::error::ni `rusqlite` dans daemon/Cargo.toml ni un seul `.query_row(` dans daemon/src "
-              "hors handlers : `query_row` n'est plus la méthode que cette garde croit lire, et sa "
-              "population n'a plus d'ancrage. Elle REFUSE DE CONCLURE.")
+    if not re.search(r"^\s*rusqlite\s*=", manifeste, re.M):
+        print("::error::`rusqlite` n'est plus dans daemon/Cargo.toml : `query_row` n'est plus la méthode "
+              "que cette garde croit lire, et sa population n'a plus d'ancrage. Elle REFUSE DE CONCLURE.")
         ce_qui_n_est_pas_tenu()
         return 2
 
@@ -1198,7 +1377,7 @@ def main():
     fichiers = {c for c, _l, _f, _fo, _x in sites}
     if len(sites) < PLANCHER_SITES or len(fichiers) < PLANCHER_FICHIERS:
         print(f"::error::{len(sites)} site(s) découvert(s) sur {len(fichiers)} fichier(s), planchers "
-              f"{PLANCHER_SITES}/{PLANCHER_FICHIERS} (re-dérivés le 2026-10-24 du relevé de ce jour-là : "
+              f"{PLANCHER_SITES}/{PLANCHER_FICHIERS} (re-dérivés le 2026-11-25 du relevé de ce jour-là : "
               f"{RELEVE_SITES} sites sur {RELEVE_FICHIERS} fichiers, règle des deux tiers). La DÉCOUVERTE est cassée, ou un lot a "
               "fermé assez de sites pour que les planchers doivent être RE-DÉRIVÉS du relevé du jour "
               "— dans le second cas, ils descendent, avec leur date écrite dans le fichier. La garde "
@@ -1215,7 +1394,7 @@ def main():
     for _c, _l, _f, forme, _x in sites:
         par_forme[forme] = par_forme.get(forme, 0) + 1
     print(f"\n[{ETIQUETTE}] POPULATION DÉCOUVERTE le jour de l'exécution : {len(sites)} site(s) sur "
-          f"{len(fichiers)} fichier(s) de daemon/src/handlers (sous-répertoires compris) — "
+          f"{len(fichiers)} fichier(s) de daemon/src (sous-répertoires compris, modules de test exclus) — "
           + " · ".join(f"{f} {n}" for f, n in sorted(par_forme.items(), key=lambda p: (-p[1], p[0])))
           + ". Commentaires DÉPOUILLÉS, modules `#[cfg(test)]` COUPÉS, littéraux de chaîne EXCLUS : "
             "une forme citée dans une note ou dans une phrase n'est jamais un site.")
@@ -1235,7 +1414,7 @@ def main():
     print(f"[{ETIQUETTE}] l'ensemble nommé est EXACTEMENT ce que l'arbre porte ({len(sites)} site(s)) — "
           "ni forme neuve, ni exemption sans objet, ni forme CHANGÉE.")
     restants = sum(len(f) for f in DEFAUTS_CONNUS.values())
-    print(f"[{ETIQUETTE}] CE QUE CE VERT NE DIT PAS : les {restants} accusations des rangs un à quatre "
+    print(f"[{ETIQUETTE}] CE QUE CE VERT NE DIT PAS : les {restants} accusations des classes « défaut connu » "
           "sont des DÉFAUTS CONNUS ET NON CORRIGÉS, admis pour que cette garde puisse être câblée "
           "VERTE le jour où elle est écrite plutôt que d'attendre une campagne — une garde qui naît "
           "rouge sur quatre-vingt-neuf sites ne se branche pas, et une garde qui ne se branche pas ne "

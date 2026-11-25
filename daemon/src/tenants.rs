@@ -44,8 +44,9 @@ pub(crate) enum ProvisionNonFaite {
     /// Mode 0, slug invalide, clé non résoluble, tenant existant, base non créée : la phrase d'avant, servie comme avant
     /// (`409` pour « existe déjà », `400` sinon).
     Refusee(String),
-    /// La base du plan de contrôle n'a pas pris la transaction de la création (`BEGIN`, un effacement de ce qui restait
-    /// sous l'identifiant, l'inscription de la ligne du tenant, ou le `COMMIT`) : l'étape refusée, servie par sa phrase
+    /// La base du plan de contrôle n'a pas pris la transaction de la création (`BEGIN`, la lecture de l'existence du
+    /// tenant, un effacement de ce qui restait sous l'identifiant, l'inscription de la ligne du tenant, ou le `COMMIT`) :
+    /// l'étape refusée, servie par sa phrase
     /// fixe (`refuser_la_creation_non_prise`) ; le texte du moteur est dit au journal, jamais servi.
     NonPrise(EtapeDeLaCreationNonPrise),
 }
@@ -67,6 +68,10 @@ impl From<String> for ProvisionNonFaite {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum EtapeDeLaCreationNonPrise {
     TransactionNonOuverte,
+    /// `P10.20-b` — la lecture « un tenant porte-t-il déjà cet identifiant ? » n'a pas eu lieu. Le `.is_ok()` d'avant
+    /// la lisait « identifiant libre » et la transaction poursuivait jusqu'à l'effacement de ce qui restait sous
+    /// l'identifiant : rien n'est plus tenté sur une existence qu'on n'a pas lue.
+    ExistenceNonLue,
     RestesNonEffaces,
     LigneNonInscrite,
     NonValidee,
@@ -76,6 +81,7 @@ pub(crate) enum EtapeDeLaCreationNonPrise {
 fn refuser_la_creation_non_prise(etape: EtapeDeLaCreationNonPrise) -> Response {
     match etape {
         EtapeDeLaCreationNonPrise::TransactionNonOuverte => err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_TENANT_NON_CREE_TRANSACTION_NON_OUVERTE),
+        EtapeDeLaCreationNonPrise::ExistenceNonLue => err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_TENANT_NON_CREE_EXISTENCE_NON_LUE),
         EtapeDeLaCreationNonPrise::RestesNonEffaces => err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_TENANT_NON_CREE_EFFACEMENT_NON_PRIS),
         EtapeDeLaCreationNonPrise::LigneNonInscrite => err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_TENANT_NON_CREE_LIGNE_NON_INSCRITE),
         EtapeDeLaCreationNonPrise::NonValidee => err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_TENANT_NON_CREE_NON_VALIDE),
@@ -88,6 +94,13 @@ pub(crate) const CAUSE_TENANT_NON_CREE_TRANSACTION_NON_OUVERTE: &str = "TENANT N
      RIEN n'est créé : ni ligne au catalogue, ni base chiffrée. Réessayez ; s'il est refusé encore, l'écrivain est occupé \
      ou bloqué.";
 
+/// `P10.20-b` — l'existence d'un tenant sous cet identifiant n'a pas été lue : rien n'est tenté (ni effacement, ni
+/// inscription). Ouverture `TENANT NON CRÉÉ`, que la console reconnaît pour ce geste (`OUVERTURE_DU_TENANT_NON_CREE`,
+/// web/multitenant.js) ; la suite ne dit pas « la transaction est annulée » : c'est une LECTURE non faite, pas une écriture
+/// refusée, et le harnais de la console range sous « rien n'a changé » toute cause qui le dit.
+pub(crate) const CAUSE_TENANT_NON_CREE_EXISTENCE_NON_LUE: &str = "TENANT NON CRÉÉ : le plan de contrôle n'a pas pu lire \
+     si un tenant porte déjà cet identifiant — RIEN n'est créé ni effacé : ni ligne au catalogue, ni base chiffrée. Ce \
+     n'est PAS « tenant existant » ni « identifiant libre ». Réessayez une fois le plan de contrôle de nouveau lisible.";
 /// `P10.34-h` — un effacement de ce qui restait sous l'identifiant refusé : la transaction est annulée (forme
 /// `OUVERTURE_DE_L_ECRITURE_NON_PRISE`, web/core.js).
 pub(crate) const CAUSE_TENANT_NON_CREE_EFFACEMENT_NON_PRIS: &str = "TENANT NON CRÉÉ : la base n'a pas pris \
@@ -115,8 +128,8 @@ pub(crate) const CAUSE_TENANT_NON_CREE_NON_VALIDE: &str = "TENANT NON CRÉÉ : l
 /// `P10.34-h` — UN TENANT NAÎT SANS JETON, SANS DROIT ET SANS PROVENANCE SCIM. Dans la transaction qui inscrit sa
 /// ligne, la création retire ce qui restait sous son identifiant (`RESTES_SOUS_UN_IDENTIFIANT_DE_TENANT` : jetons SCIM et
 /// d'agent effacés, droits effacés, provenance scellée) : un jeton d'un tenant recréé est refusé, et ni un droit ni une
-/// identité laissés sous cet identifiant ne passent au tenant recréé. Un refus (`BEGIN`, un effacement, l'inscription de
-/// la ligne, `COMMIT`) rend `NonPrise` et rien n'est créé — ni ligne, ni base.
+/// identité laissés sous cet identifiant ne passent au tenant recréé. Un refus (`BEGIN`, la lecture de l'existence, un
+/// effacement, l'inscription de la ligne, `COMMIT`) rend `NonPrise` et rien n'est créé — ni ligne, ni base.
 #[allow(dead_code)]
 pub(crate) fn tenant_provision(mgr: &TenantDbManager, id: &str, name: &str, db_path: &str, key_ref: &str) -> Result<(), ProvisionNonFaite> {
     use crate::handlers::transaction_validee::{jouer_le_geste_garde, IssueDuGesteGarde as Issue};
@@ -131,9 +144,12 @@ pub(crate) fn tenant_provision(mgr: &TenantDbManager, id: &str, name: &str, db_p
     {
         let conn = cp.conn.lock();
         let issue = jouer_le_geste_garde(&conn, "tenants", "création du tenant", |conn| -> Result<(), ProvisionNonFaite> {
-            let exists = conn.query_row("SELECT 1 FROM tenant WHERE id=?1", params![id], |_| Ok(())).is_ok();
-            if exists {
-                return Err(ProvisionNonFaite::Refusee(format!("tenant '{id}' existe déjà")));
+            // `P10.20-b` — TROIS ISSUES : présent (409 d'avant), absent (on poursuit), NON LU (rien n'est tenté).
+            use rusqlite::OptionalExtension as _;
+            match conn.query_row("SELECT 1 FROM tenant WHERE id=?1", params![id], |_| Ok(())).optional() {
+                Ok(Some(())) => return Err(ProvisionNonFaite::Refusee(format!("tenant '{id}' existe déjà"))),
+                Ok(None) => {}
+                Err(_) => return Err(ProvisionNonFaite::NonPrise(EtapeDeLaCreationNonPrise::ExistenceNonLue)),
             }
             for (quoi, sql) in RESTES_SOUS_UN_IDENTIFIANT_DE_TENANT {
                 if let Err(e) = conn.execute(sql, params![id]) {
@@ -742,6 +758,13 @@ pub(crate) const CAUSE_TENANT_NON_LU_BASCULE_NON_FAITE: &str = "TENANT NON LU, B
      n'a pas pu lire le tenant visé — ce n'est PAS « tenant inconnu », son existence n'est ni affirmée ni niée. Le tenant \
      garde l'état qu'il avait (suspendu ou actif), rien n'est tracé. Réessayez une fois le plan de contrôle de nouveau lisible.";
 
+/// `P10.20-b` — la lecture du tenant visé par une destruction a échoué, AVANT la trace et la transaction : ni présent ni
+/// absent n'est affirmé. Ouverture `TENANT NON DÉTRUIT`, celle que la console reconnaît déjà pour ce geste
+/// (`OUVERTURE_DU_TENANT_NON_DETRUIT`, web/multitenant.js).
+pub(crate) const CAUSE_TENANT_NON_DETRUIT_NOM_NON_LU: &str = "TENANT NON DÉTRUIT : le plan de contrôle n'a pas pu lire \
+     le tenant visé avant la destruction — ce n'est PAS « tenant inconnu », son existence n'est ni affirmée ni niée. RIEN \
+     n'est détruit ni tracé : le tenant et sa base sont intacts. Réessayez une fois le plan de contrôle de nouveau lisible.";
+
 /// `P10.21-g` — LA BASCULE DE SUSPENSION QUE LA BASE N'A PAS PRISE EST REFUSÉE : 503, et rien n'est posé
 /// — ni au journal de contrôle, ni dans la base du tenant. L'état du tenant est celui d'avant la demande.
 pub(crate) const CAUSE_BASCULE_DE_SUSPENSION_NON_ECRITE: &str =
@@ -772,12 +795,17 @@ pub(crate) async fn tenant_delete(State(st): State<AppState>, Extension(au): Ext
     let Some(cp) = st.tenants.control.as_ref() else {
         return (StatusCode::INTERNAL_SERVER_ERROR, "control-plane indisponible").into_response();
     };
-    let name: Option<String> = {
+    // `P10.20-b` — TROIS ISSUES : le nom lu, l'absence ÉTABLIE (404 d'avant), la lecture NON FAITE (503 nommé, rien
+    // n'est tracé ni détruit). Le `.ok()` d'avant servait une lecture ratée comme « tenant inconnu ».
+    let name = {
+        use rusqlite::OptionalExtension as _;
         let conn = cp.conn.lock();
-        conn.query_row("SELECT name FROM tenant WHERE id=?1", params![id], |r| r.get::<_, String>(0)).ok()
+        conn.query_row("SELECT name FROM tenant WHERE id=?1", params![id], |r| r.get::<_, String>(0)).optional()
     };
-    let Some(name) = name else {
-        return (StatusCode::NOT_FOUND, "tenant inconnu").into_response();
+    let name = match name {
+        Ok(Some(name)) => name,
+        Ok(None) => return (StatusCode::NOT_FOUND, "tenant inconnu").into_response(),
+        Err(_) => return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_TENANT_NON_DETRUIT_NOM_NON_LU),
     };
     // CONFIRMATION FORTE : body {confirm} DOIT égaler EXACTEMENT le nom du tenant (anti-suppression accidentelle).
     let confirm = b.str_field("confirm");

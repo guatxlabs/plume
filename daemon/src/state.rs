@@ -500,20 +500,29 @@ impl TenantDbManager {
     /// #45. Le seul chemin servable sort de `ready`/`ready_db_path`. Un chemin de production qui
     /// l'appellerait ne COMPILE PAS (`cargo build`, CI) ; les tests, eux, mesurent légitimement le
     /// catalogue nu.
-    fn catalog_route(&self, tenant: &str) -> Option<(String, Option<String>)> {
+    ///
+    /// `P10.20-b` — TROIS ISSUES : `Ok(Some(..))` servable, `Ok(None)` absent, suspendu ou clé non résolue
+    /// (fail-closed, comme avant), `Err(..)` la ligne du catalogue n'a PAS été lue. Le `.ok()?` d'avant
+    /// rendait cette lecture ratée comme un tenant absent, et les portes d'entrée la servaient en 403
+    /// « tenant inconnu ou indisponible » : un refus de droit sur une lecture qui n'avait pas eu lieu.
+    fn catalog_route(&self, tenant: &str) -> rusqlite::Result<Option<(String, Option<String>)>> {
         match &self.control {
-            None => Some((self.default_db_path.as_ref().clone(), db_key())),
+            None => Ok(Some((self.default_db_path.as_ref().clone(), db_key()))),
             Some(cp) => {
+                use rusqlite::OptionalExtension as _;
                 let conn = cp.conn.lock();
-                let (db_path, key_ref, suspended) = conn
+                let Some((db_path, key_ref, suspended)) = conn
                     .query_row(
                         "SELECT db_path, key_ref, suspended FROM tenant WHERE id=?1",
                         params![tenant],
                         |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?)),
                     )
-                    .ok()?;
+                    .optional()?
+                else {
+                    return Ok(None);
+                };
                 if suspended != 0 {
-                    return None; // tenant suspendu -> pas de handle
+                    return Ok(None); // tenant suspendu -> pas de handle
                 }
                 // #2a-3 : résout la clé DU TENANT et l'enregistre (db_path -> clé) pour que read_conn_open
                 // ouvre CE fichier avec SA clé (frontière crypto). FAIL-CLOSED : clé non résoluble
@@ -521,11 +530,11 @@ impl TenantDbManager {
                 match resolve_tenant_key(&key_ref) {
                     Ok(key) => {
                         register_db_key(&db_path, key.clone());
-                        Some((db_path, key))
+                        Ok(Some((db_path, key)))
                     }
                     Err(e) => {
                         eprintln!("[multi-tenant] tenant '{tenant}' : clé non résolue -> FAIL-CLOSED, base NON ouverte ({e})");
-                        None
+                        Ok(None)
                     }
                 }
             }
@@ -534,10 +543,12 @@ impl TenantDbManager {
 
     /// VISIBILITÉ DE TEST du catalogue nu (cf. `catalog_route`) : les tests mesurent légitimement
     /// « ce tenant est-il catalogué / sa clé résout-elle », sans rien servir. Absente du binaire de
-    /// production, exactement comme `open_db`/`open_db_keyed` dans db_open.rs.
+    /// production, exactement comme `open_db`/`open_db_keyed` dans db_open.rs. Une ligne de catalogue
+    /// non lue y vaut `None`, À DESSEIN : les témoins de la lecture ratée passent par
+    /// `tenant_available_lu`, la seule forme que la production appelle.
     #[cfg(test)]
     pub(crate) fn resolve(&self, tenant: &str) -> Option<(String, Option<String>)> {
-        self.catalog_route(tenant)
+        self.catalog_route(tenant).ok().flatten()
     }
 
     /// LE TENANT EST-IL DISPONIBLE ? (existe, non suspendu, clé résoluble). C'est TOUT ce dont les
@@ -545,8 +556,19 @@ impl TenantDbManager {
     /// ne servent rien. Elles n'obtiennent donc AUCUN chemin — la seule façon d'en obtenir un reste
     /// `ready_db_path`. Effet de bord conservé (identique à l'ancien `resolve` qu'elles appelaient) :
     /// la clé DU tenant est enregistrée au registre du read-pool.
+    ///
+    /// `P10.20-b` — `Err` : la ligne du catalogue n'a pas été lue. Ce n'est ni « disponible » ni
+    /// « indisponible », et chaque porte la sert en 503 nommé (`rbac::CAUSE_CATALOGUE_DES_TENANTS_NON_LU`).
+    pub(crate) fn tenant_available_lu(&self, tenant: &str) -> rusqlite::Result<bool> {
+        Ok(self.catalog_route(tenant)?.is_some())
+    }
+
+    /// TÉMOINS SEULEMENT — la forme booléenne d'avant `P10.20-b`, contrôle des fixtures (« ce tenant est
+    /// résolu »). Absente du binaire de production : une porte qui la prendrait confondrait de nouveau
+    /// une lecture ratée avec un tenant indisponible, et ne compile pas.
+    #[cfg(test)]
     pub(crate) fn tenant_available(&self, tenant: &str) -> bool {
-        self.catalog_route(tenant).is_some()
+        matches!(self.tenant_available_lu(tenant), Ok(true))
     }
 
     /// LE POINT DE PASSAGE UNIQUE VERS UNE BASE TENANT — mode 1 uniquement.
@@ -569,7 +591,14 @@ impl TenantDbManager {
         if self.control.is_none() {
             return None; // mode 0 : inatteignable (tous les appelants court-circuitent AVANT) ; fail-closed si ça change
         }
-        let (path, key) = self.catalog_route(tenant)?;
+        // `P10.20-b` — une ligne de catalogue NON LUE ne sert pas de base, comme un tenant absent : la
+        // conduite est la même (fail-closed, rien n'est routé). Ce qui la distingue est dit EN AMONT, aux
+        // portes d'entrée qui lisent la même ligne avant tout gestionnaire (`auth_guard`, `rbac::
+        // resolve_tenant_access` : 503 `CAUSE_CATALOGUE_DES_TENANTS_NON_LU`) ; ici rien n'est servi.
+        let (path, key) = match self.catalog_route(tenant) {
+            Ok(Some(route)) => route,
+            Ok(None) | Err(_) => return None,
+        };
         let cached = self.writers.lock().get(tenant).cloned();
         if let Some(w) = cached {
             if w.path() == path {
@@ -1421,14 +1450,24 @@ pub(crate) fn aveu_de_mise_a_lecart(reason: &str, name: &str, qdir: &str, issue:
 }
 
 /// Résout le tenant COURANT d'un user (mode 1) : sélection explicite (header/param) si l'user y a un grant
-/// actif, sinon son 1er grant (ordre stable). None = aucun grant -> fail-closed (403 côté guard). Le rôle
+/// actif, sinon son 1er grant (ordre stable). `Ok(None)` = aucun grant -> fail-closed (403 côté guard). Le rôle
 /// per-tenant renvoyé alimentera le RBAC per-tenant (#2b) ; ici auth_guard n'en retient que le tenant.
-pub(crate) fn resolve_user_tenant(st: &AppState, user: &str, requested: Option<&str>) -> Option<(String, String)> {
-    let cp = st.tenants.control.as_ref()?;
+///
+/// `P10.20-b` — `Err` : le compte de plateforme ou ses droits n'ont PAS été lus. Les trois `.ok()` d'avant
+/// rendaient cette lecture ratée comme « aucun droit », servie en 403 « aucun accès à ce tenant » ; la porte la
+/// sert désormais en 503 nommé (`rbac::refus_des_droits_non_lus`), jamais en refus de droit.
+pub(crate) fn resolve_user_tenant(st: &AppState, user: &str, requested: Option<&str>) -> rusqlite::Result<Option<(String, String)>> {
+    use rusqlite::OptionalExtension as _;
+    let Some(cp) = st.tenants.control.as_ref() else {
+        return Ok(None);
+    };
     let conn = cp.conn.lock();
-    let uid: String = conn
-        .query_row("SELECT id FROM platform_user WHERE name=?1", params![user], |r| r.get(0))
-        .ok()?;
+    let Some(uid) = conn
+        .query_row("SELECT id FROM platform_user WHERE name=?1", params![user], |r| r.get::<_, String>(0))
+        .optional()?
+    else {
+        return Ok(None);
+    };
     if let Some(t) = requested.map(|s| s.trim()).filter(|s| !s.is_empty()) {
         return conn
             .query_row(
@@ -1437,8 +1476,8 @@ pub(crate) fn resolve_user_tenant(st: &AppState, user: &str, requested: Option<&
                 params![uid, t],
                 |r| r.get::<_, String>(0),
             )
-            .ok()
-            .map(|role| (t.to_string(), role));
+            .optional()
+            .map(|role| role.map(|role| (t.to_string(), role)));
     }
     conn.query_row(
         "SELECT g.tenant_id, g.role FROM \"grant\" g JOIN tenant t ON t.id=g.tenant_id \
@@ -1446,5 +1485,5 @@ pub(crate) fn resolve_user_tenant(st: &AppState, user: &str, requested: Option<&
         params![uid],
         |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
     )
-    .ok()
+    .optional()
 }

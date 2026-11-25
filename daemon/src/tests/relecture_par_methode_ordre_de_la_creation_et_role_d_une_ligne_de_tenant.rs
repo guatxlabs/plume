@@ -182,7 +182,7 @@ mod relecture_par_methode_ordre_de_la_creation_et_role_d_une_ligne_de_tenant {
                 .execute("INSERT INTO \"grant\"(user_id,tenant_id,role) SELECT id,?1,'editor' FROM platform_user WHERE name='bd1-cible'", params![RGSC_TENANT_B])
                 .expect("fixture : droit de la cible");
         }
-        assert_eq!(crate::rbac::grant_role_for(&st, "bd1-cible", RGSC_TENANT_B, None).as_deref(), Some("editor"), "fixture : droit de la cible sur B");
+        assert_eq!(crate::rbac::grant_role_for(&st, "bd1-cible", RGSC_TENANT_B, None).expect("droits lus").as_deref(), Some("editor"), "fixture : droit de la cible sur B");
         let absente = ligne + 999_999;
         let ben = rgsc_basic("rgsc-ben", RGSC_MOT_DE_PASSE);
         let tenant_b = ("x-plume-tenant", RGSC_TENANT_B);
@@ -210,7 +210,7 @@ mod relecture_par_methode_ordre_de_la_creation_et_role_d_une_ligne_de_tenant {
         for kind in ["config.user.role_change", "secret_des_gestes"] {
             assert_eq!(rgsc_compter(&base_b.lock(), "SELECT COUNT(*) FROM ledger WHERE kind=?1", kind), 0, "aucune ligne `{kind}` au registre de B");
         }
-        assert_eq!(crate::rbac::grant_role_for(&st, "bd1-cible", RGSC_TENANT_B, None).as_deref(), Some("editor"), "le droit de la CIBLE sur B est inchangé");
+        assert_eq!(crate::rbac::grant_role_for(&st, "bd1-cible", RGSC_TENANT_B, None).expect("droits lus").as_deref(), Some("editor"), "le droit de la CIBLE sur B est inchangé");
     }
 
     /// CE QU'IL TIENT : mode multi-tenant avec plan de contrôle, par le routeur, tenant `default`. `rgsc-dan`

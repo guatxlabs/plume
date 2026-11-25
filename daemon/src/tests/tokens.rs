@@ -351,9 +351,9 @@
         assert_ne!(req_db_path(&st, &au_a), req_db_path(&st, &au_b), "req_db_path distinct par tenant");
         assert!(!Arc::ptr_eq(&req_db(&st, &au_a), &req_db(&st, &au_b)), "req_db = writer distinct par tenant");
         assert_ne!(req_db_path(&st, &au_a), *st.db_path, "mode 1 : jamais la base par défaut/opérateur");
-        assert_eq!(resolve_user_tenant(&st, "analyst", None).map(|(t, _)| t), Some("a".to_string()), "défaut = 1er grant");
-        assert!(resolve_user_tenant(&st, "analyst", Some("ghost")).is_none(), "tenant non granté -> None (403 côté guard)");
-        assert!(resolve_user_tenant(&st, "nobody", None).is_none(), "user inconnu -> None (fail-closed)");
+        assert_eq!(resolve_user_tenant(&st, "analyst", None).expect("droits lus").map(|(t, _)| t), Some("a".to_string()), "défaut = 1er grant");
+        assert!(resolve_user_tenant(&st, "analyst", Some("ghost")).expect("droits lus").is_none(), "tenant non granté -> None (403 côté guard)");
+        assert!(resolve_user_tenant(&st, "nobody", None).expect("droits lus").is_none(), "user inconnu -> None (fail-closed)");
 
         // seed données DISTINCTES : A = 3 events 'sshd' + 1 alerte 'new' ; B = 1 event 'web', 0 alerte.
         {
@@ -1523,28 +1523,28 @@
         assert_eq!(tenant_create(State(st.clone()), crate::secret_des_gestes::presente_de_test(), Extension(au_super("op")), Json(json!({ "id": "beta", "name": "B" }))).await.status(), StatusCode::CREATED);
 
         // (a) VRAI admin de acme (grant présent, NON-superadmin) -> "admin" SUR acme, "viewer" sur beta.
-        assert_eq!(mgmt_grants_role(&st, "alice", "acme", None, false), "admin", "grant admin réel -> admin sur SON tenant");
-        assert_eq!(mgmt_grants_role(&st, "alice", "beta", None, false), "viewer", "admin de acme = NON-membre de beta -> viewer (jamais role_floor)");
+        assert_eq!(mgmt_grants_role(&st, "alice", "acme", None, false).expect("droits lus"), "admin", "grant admin réel -> admin sur SON tenant");
+        assert_eq!(mgmt_grants_role(&st, "alice", "beta", None, false).expect("droits lus"), "viewer", "admin de acme = NON-membre de beta -> viewer (jamais role_floor)");
 
         // (b) admin LOCAL/config INCONNU du control-plane (aucun platform_user, aucun grant, NON-superadmin) :
         // role_floor="admin" côté auth_guard, mais mgmt_grants_role NE le lit PAS -> "viewer" partout.
-        assert_eq!(mgmt_grants_role(&st, "localadmin", "acme", None, false), "viewer", "admin local sans grant -> viewer (pas d'héritage du plancher)");
-        assert_eq!(mgmt_grants_role(&st, "localadmin", "beta", None, false), "viewer");
+        assert_eq!(mgmt_grants_role(&st, "localadmin", "acme", None, false).expect("droits lus"), "viewer", "admin local sans grant -> viewer (pas d'héritage du plancher)");
+        assert_eq!(mgmt_grants_role(&st, "localadmin", "beta", None, false).expect("droits lus"), "viewer");
 
         // (c) SUPER-ADMIN non-membre (aucun grant) : repli "admin" -> passe rbac_gate en écriture + le flag
         // is_superadmin autorise la gestion cross-tenant. AUCUNE régression du management-plane.
-        assert_eq!(mgmt_grants_role(&st, "op", "acme", None, true), "admin", "super-admin non-membre garde un rôle admin (accès cross-tenant légitime)");
+        assert_eq!(mgmt_grants_role(&st, "op", "acme", None, true).expect("droits lus"), "admin", "super-admin non-membre garde un rôle admin (accès cross-tenant légitime)");
 
         // (d) le path-guard REFUSE l'admin local sur les grants d'un tenant tiers (rôle résolu=viewer, non-SA)
         // — EXACTEMENT le contexte que produit auth_guard pour ce chemin.
-        let role_local = mgmt_grants_role(&st, "localadmin", "beta", None, false);
+        let role_local = mgmt_grants_role(&st, "localadmin", "beta", None, false).expect("droits lus");
         assert!(tenant_mgmt_gate("/api/tenants/beta/grants", &role_local, "beta", false).is_err(),
             "admin local (role résolu=viewer, non-superadmin) REFUSÉ sur les grants de beta (anti-escalade cross-tenant)");
         // ... alors que le VRAI admin de acme passe bien sur SON tenant, et le SUPER-ADMIN partout.
-        let role_alice = mgmt_grants_role(&st, "alice", "acme", None, false);
+        let role_alice = mgmt_grants_role(&st, "alice", "acme", None, false).expect("droits lus");
         assert!(tenant_mgmt_gate("/api/tenants/acme/grants", &role_alice, "acme", false).is_ok(),
             "admin réel de acme autorisé sur les grants de acme");
-        let role_op = mgmt_grants_role(&st, "op", "beta", None, true);
+        let role_op = mgmt_grants_role(&st, "op", "beta", None, true).expect("droits lus");
         assert!(tenant_mgmt_gate("/api/tenants/beta/grants", &role_op, "beta", true).is_ok(),
             "super-admin autorisé sur les grants de n'importe quel tenant");
         let _ = std::fs::remove_dir_all(&dir);

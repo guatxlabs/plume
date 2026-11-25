@@ -99,24 +99,47 @@ pub(crate) fn platform_user_superadmin_lu(st: &AppState, user: &str) -> Result<b
 }
 
 /// #2b — rôle de `user` POUR `tenant`. SSO : la map LIVE fait foi (révocation instantanée d'un groupe) ;
-/// Basic/cookie : la table `grant` du control-plane (via resolve_user_tenant). None = aucun grant sur ce tenant.
-pub(crate) fn grant_role_for(st: &AppState, user: &str, tenant: &str, sso_map: Option<&HashMap<String, String>>) -> Option<String> {
+/// Basic/cookie : la table `grant` du control-plane (via resolve_user_tenant). `Ok(None)` = aucun grant sur ce
+/// tenant ; `Err` = compte ou droits NON LUS (`P10.20-b`), jamais confondu avec l'absence de droit.
+pub(crate) fn grant_role_for(st: &AppState, user: &str, tenant: &str, sso_map: Option<&HashMap<String, String>>) -> rusqlite::Result<Option<String>> {
     if let Some(map) = sso_map {
-        return map.get(tenant).cloned();
+        return Ok(map.get(tenant).cloned());
     }
-    resolve_user_tenant(st, user, Some(tenant)).map(|(_, role)| role)
+    Ok(resolve_user_tenant(st, user, Some(tenant))?.map(|(_, role)| role))
 }
 
 /// #2b — tenant par DÉFAUT (aucune sélection explicite header/param) : 1er grant en ordre STABLE. SSO : plus
-/// petit slug ; Basic/cookie : 1er grant (resolve_user_tenant). None = aucun grant.
-pub(crate) fn default_grant(st: &AppState, user: &str, sso_map: Option<&HashMap<String, String>>) -> Option<(String, String)> {
+/// petit slug ; Basic/cookie : 1er grant (resolve_user_tenant). `Ok(None)` = aucun grant ; `Err` = non lu.
+pub(crate) fn default_grant(st: &AppState, user: &str, sso_map: Option<&HashMap<String, String>>) -> rusqlite::Result<Option<(String, String)>> {
     if let Some(map) = sso_map {
         let mut keys: Vec<&String> = map.keys().collect();
         keys.sort();
-        let t = keys.into_iter().next()?;
-        return Some((t.clone(), map[t].clone()));
+        return Ok(keys.into_iter().next().map(|t| (t.clone(), map[t].clone())));
     }
     resolve_user_tenant(st, user, None)
+}
+
+/// `P10.20-b` — LES DROITS D'UN COMPTE N'ONT PAS ÉTÉ LUS : le plan de contrôle n'a rendu ni le compte de plateforme
+/// ni ses droits. Ce n'est PAS « aucun droit » : servir le 403 d'avant affirmerait une absence que personne n'a lue.
+pub(crate) const CAUSE_DROITS_DU_COMPTE_NON_LUS: &str = "DROITS DU COMPTE NON LUS : le plan de contrôle n'a pas pu \
+     lire le compte de plateforme ou ses droits sur les tenants — ce n'est PAS « aucun droit » : l'accès n'est ni accordé \
+     ni refusé sur cette lecture. Réessayez une fois le plan de contrôle de nouveau lisible.";
+
+/// `P10.20-b` — LA LIGNE DU CATALOGUE DES TENANTS N'A PAS ÉTÉ LUE : ni « tenant disponible » ni « tenant inconnu ou
+/// indisponible » n'est affirmé.
+pub(crate) const CAUSE_CATALOGUE_DES_TENANTS_NON_LU: &str = "CATALOGUE DES TENANTS NON LU : le plan de contrôle n'a \
+     pas pu lire la ligne du tenant demandé — ce n'est PAS « tenant inconnu ou indisponible » : son existence n'est ni \
+     affirmée ni niée, et aucune base n'est servie. Réessayez une fois le plan de contrôle de nouveau lisible.";
+
+/// `P10.20-b` — le refus des portes d'entrée sur des droits non lus : 503, la phrase fixe, sans le texte du moteur.
+pub(crate) fn refus_des_droits_non_lus() -> (StatusCode, String) {
+    (StatusCode::SERVICE_UNAVAILABLE, CAUSE_DROITS_DU_COMPTE_NON_LUS.to_string())
+}
+
+/// `P10.20-b` — le refus des portes d'entrée sur une ligne de catalogue non lue : 503, la phrase fixe, sans le texte
+/// du moteur.
+pub(crate) fn refus_du_catalogue_non_lu() -> (StatusCode, String) {
+    (StatusCode::SERVICE_UNAVAILABLE, CAUSE_CATALOGUE_DES_TENANTS_NON_LU.to_string())
 }
 
 /// #2b — accès RBAC per-tenant résolu par auth_guard (choke-point). `role` = rôle EFFECTIF pour `tenant`.
@@ -151,8 +174,9 @@ pub(crate) fn resolve_tenant_access(
     let tenant = match requested {
         Some(t) => t.to_string(),
         None => match default_grant(st, user, sso_map) {
-            Some((t, _)) => t,
-            None => {
+            Ok(Some((t, _))) => t,
+            Err(_) => return Err(refus_des_droits_non_lus()),
+            Ok(None) => {
                 return if is_sa {
                     // super-admin sans tenant par défaut -> sélection explicite requise (jamais un tenant deviné).
                     Err((StatusCode::CONFLICT, "sélection de tenant requise (super-admin sans tenant par défaut)".into()))
@@ -163,16 +187,20 @@ pub(crate) fn resolve_tenant_access(
         },
     };
     // 2) Membre normal du tenant -> son rôle per-tenant (admin chez A, viewer chez B).
-    if let Some(role) = grant_role_for(st, user, &tenant, sso_map) {
-        return Ok(TenantAccess { tenant, role, is_superadmin: is_sa, cross_tenant: false });
+    match grant_role_for(st, user, &tenant, sso_map) {
+        Ok(Some(role)) => return Ok(TenantAccess { tenant, role, is_superadmin: is_sa, cross_tenant: false }),
+        Ok(None) => {}
+        Err(_) => return Err(refus_des_droits_non_lus()),
     }
     // 3) Non-membre : seul un super-admin peut accéder (cross-tenant, audité) ; sinon 403.
     if !is_sa {
         return Err((StatusCode::FORBIDDEN, "aucun accès à ce tenant (grant requis)".into()));
     }
     // Le tenant doit exister ET être résoluble (fail-closed : jamais d'accès à un tenant fantôme/suspendu).
-    if !st.tenants.tenant_available(&tenant) {
-        return Err((StatusCode::FORBIDDEN, "tenant inconnu ou indisponible".into()));
+    match st.tenants.tenant_available_lu(&tenant) {
+        Ok(true) => {}
+        Ok(false) => return Err((StatusCode::FORBIDDEN, "tenant inconnu ou indisponible".into())),
+        Err(_) => return Err(refus_du_catalogue_non_lu()),
     }
     if mutating {
         // ÉCRITURE cross-tenant = break-glass EXPLICITE (raison non vide), sinon 403. Jamais silencieuse.
@@ -1425,9 +1453,13 @@ pub(crate) fn mgmt_target_tenant(path: &str) -> Option<String> {
 /// (escalade cross-tenant). Repli non-membre : "admin" pour un SUPER-ADMIN (accès cross-tenant légitime,
 /// borné par le flag is_superadmin en aval ; conserve son rôle non-viewer pour passer rbac_gate en écriture),
 /// "viewer" pour tout autre (le path-guard + rbac_gate refusent alors la gestion des grants).
-pub(crate) fn mgmt_grants_role(st: &AppState, user: &str, target: &str, sso_map: Option<&HashMap<String, String>>, is_sa: bool) -> String {
-    grant_role_for(st, user, target, sso_map)
-        .unwrap_or_else(|| if is_sa { "admin".to_string() } else { "viewer".to_string() })
+///
+/// `P10.20-b` — `Err` : les droits n'ont pas été lus. Le repli non-membre n'est PAS pris (« viewer » affirmerait une
+/// absence de droit, « admin » un accès inter-tenants décidé sans lecture) : l'appelant sert `CAUSE_DROITS_DU_COMPTE_NON_LUS`
+/// en 503.
+pub(crate) fn mgmt_grants_role(st: &AppState, user: &str, target: &str, sso_map: Option<&HashMap<String, String>>, is_sa: bool) -> rusqlite::Result<String> {
+    Ok(grant_role_for(st, user, target, sso_map)?
+        .unwrap_or_else(|| if is_sa { "admin".to_string() } else { "viewer".to_string() }))
 }
 
 /// (#2c) PATH-GUARD des routes de gestion des tenants (appelé par auth_guard, MODE 1 uniquement). Double le

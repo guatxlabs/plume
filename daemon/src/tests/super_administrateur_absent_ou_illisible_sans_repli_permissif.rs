@@ -85,10 +85,18 @@ mod super_administrateur_absent_ou_illisible_sans_repli_permissif {
 
     /// CE QU'IL TIENT (`R3`, `resolve_tenant_access`, table entière) : `rgsc-ana` (administratrice de A, éditrice de B,
     /// pas super-administratrice) par son cookie. Avant : `200` dans A, `403` dans `default` dont elle n'est pas membre.
-    /// `platform_user` renommée : `GET /api/me` sous `default` rend `403`, corps exact SAR_AUCUN_ACCES — pas l'accès
-    /// inter-tenants (lecteur) du super-administrateur.
+    /// `platform_user` renommée : `GET /api/me` sous `default` rend `503`, corps `{error: CAUSE_DROITS_DU_COMPTE_NON_LUS, id}` —
+    /// ni l'accès inter-tenants (lecteur) du super-administrateur, ni le refus de droit.
     ///
-    /// LES MUTATIONS QUI LE FONT ROUGIR : « R3_ENVELOPPE_PERMISSIVE » et « R3_SITE_RBAC148 » (`200` dans `default`).
+    /// INVERSÉ PAR `P10.20-b` : ce témoin attendait le `403` SAR_AUCUN_ACCES, c'est-à-dire « aucun droit » affirmé sur un
+    /// compte de plateforme qu'on n'avait pas lu (`resolve_user_tenant` lisait par `.ok()?`). Le compte non lu est
+    /// désormais un 503 nommé, posé AVANT la branche du super-administrateur : les mutants « R3_ENVELOPPE_PERMISSIVE » et
+    /// « R3_SITE_RBAC148 » ne le font plus rougir (le refus précède la valeur qu'ils changent) — ils restent tenus par le
+    /// témoin suivant, où seule la valeur `is_superadmin` est illisible et les droits lisibles.
+    ///
+    /// LES MUTATIONS QUI LE FONT ROUGIR : la lecture du compte de plateforme rendue à l'absence (la forme `.ok()?` d'avant
+    /// dans `state::resolve_user_tenant`, `CJ1_UID`) — `403` SAR_AUCUN_ACCES ; le 503 rendu en texte nu par
+    /// `auth::resolve_tenant_and_role` (`CJ1_TEXTE_NU`) — corps sans `error` ni `id`.
     #[tokio::test]
     async fn sar_platform_user_illisible_pas_d_acces_inter_tenants() {
         let (st, _dir) = rgsc_plateforme().await;
@@ -100,7 +108,12 @@ mod super_administrateur_absent_ou_illisible_sans_repli_permissif {
         plan.conn.lock().execute_batch("ALTER TABLE platform_user RENAME TO platform_user_ecartee_sar").expect("fixture : illisible");
         let (statut, corps, texte) = sar_get(addr, "/api/me", &ana, Some("default")).await;
         plan.conn.lock().execute_batch("ALTER TABLE platform_user_ecartee_sar RENAME TO platform_user").expect("fixture : rendue");
-        assert_eq!((statut, &corps), (403, &json!(SAR_AUCUN_ACCES)), "platform_user illisible : ana n'entre pas dans default : {texte}");
+        assert_eq!(
+            (statut, &corps["error"]),
+            (503, &json!(crate::rbac::CAUSE_DROITS_DU_COMPTE_NON_LUS)),
+            "platform_user illisible : ana n'entre pas dans default, et la cause n'est pas un refus de droit : {texte}"
+        );
+        assert!(corps["id"].as_str().is_some_and(|id| id.starts_with("plume-e")), "corps `{{error, id}}` que la console lit : {texte}");
     }
 
     /// CE QU'IL TIENT (`R3`, `resolve_tenant_access`, la SEULE valeur `is_superadmin` illisible) : `rgsc-ana` reste membre

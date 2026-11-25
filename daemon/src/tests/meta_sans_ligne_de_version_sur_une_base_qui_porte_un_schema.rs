@@ -197,6 +197,12 @@ mod meta_sans_ligne_de_version_sur_une_base_qui_porte_un_schema {
     ///
     /// LA MUTATION QUI LE FERAIT ROUGIR : rendre la chaîne idempotente sur ces cinq lignes — le refus
     /// perdrait sa justification, et ce témoin dirait qu'il est temps de la rediscuter.
+    ///
+    /// INVERSÉ PAR `P10.20-b` : le contrat ne rattrape PLUS la ligne absente — il juge l'estampille
+    /// avant `db/schema.sql` et refuse, inventaire intact (premier volet). Le PRIX reste chiffré, sur
+    /// ce que l'ancien repli FABRIQUAIT : une estampille lisible qui vaut « 1 » sur une base à jour
+    /// (second volet). C'est ce chiffre-là qu'il faudra relire si quelqu'un rouvre une voie qui
+    /// prend une base existante pour une base neuve.
     #[test]
     fn p10_20i_le_prix_du_rattrapage_reste_chiffre_sur_le_contrat_que_la_porte_n_atteint_plus() {
         let (_t, p) = eso_base_migree("msl-prix");
@@ -206,7 +212,15 @@ mod meta_sans_ligne_de_version_sur_une_base_qui_porte_un_schema {
 
         {
             let c = crate::db_open::open_db(&p).unwrap();
-            assert!(prepare_schema(&c).is_ok(), "le CONTRAT, lui, rattrape toujours : il repose la ligne et migre");
+            assert!(prepare_schema(&c).is_err(), "`P10.20-b` : le CONTRAT refuse la ligne absente, comme la porte");
+        }
+        assert_eq!(eso_inventaire(&p), avant, "refus : rien n'est rejoué, l'inventaire est intact");
+
+        {
+            let c = crate::db_open::open_db(&p).unwrap();
+            c.execute("INSERT INTO meta(key,value) VALUES('schema_version','1')", [])
+                .expect("fixture : l'estampille fabriquée que l'ancien repli rendait");
+            assert!(prepare_schema(&c).is_ok(), "sur une estampille LUE qui vaut « 1 », le contrat migre");
             assert_eq!(read_schema_version(&c), CODE_SCHEMA_MAX, "et il remonte la base à la tête");
         }
 

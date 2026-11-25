@@ -34,8 +34,8 @@
 //!     veut dire « pas mesuré », JAMAIS « zéro ».
 //! LE DEAD-MAN'S-SWITCH DE RETARD A DÉSORMAIS SA PROPRE PAIRE DE LIGNES, ET C'EST `P10.13-a` QUI L'EXIGE.
 //! Depuis le levier ①, ce détecteur ne tourne plus à CHAQUE passe mais une fois par jour (`RETARD_CADENCE`) —
-//! parce qu'une base réelle a mesuré, sur près de deux jours de passes horaires le 2026-08-13, **deux passes
-//! utiles et toutes les autres sans le moindre travail**, soit plus de 95 % du temps de `db.lock()` tenu
+//! parce qu'une base réelle a mesuré, sur ses passes horaires, **une passe utile par jour et toutes les
+//! autres sans le moindre travail**, soit plus de 95 % du temps de `db.lock()` tenu
 //! pour rien, porté EN TOTALITÉ par son énoncé (`SCAN e`, un balayage complet de `event`). Une passe qui
 //! ne l'a pas tiré ne doit surtout
 //! pas se lire comme une passe où il n'y avait pas de retard : `NOM_RETARD_LIGNES` n'est publiée QUE
@@ -194,8 +194,8 @@ pub(crate) const CRETE_SUSPENDU: &str = "aging_suspendu";
 // compilé dans le profil par défaut, et une étiquette de série qui n'existerait que sous une feature
 // serait invisible aux tests qui gardent la FORME de la série.
 /// `P10.13-a` levier ① — LA CADENCE. Le détecteur ne tire qu'une fois par `PLUME_COLD_STALL_CHECK_INTERVAL_S`
-/// (défaut 24 h) : cette passe-ci n'était pas due. MESURE qui l'a décidé (installation de référence, près de deux jours
-/// de passes horaires, 2026-08-13) : deux passes utiles, toutes les autres sans le moindre travail, plus de
+/// (défaut 24 h) : cette passe-ci n'était pas due. MESURE qui l'a décidé (relevé d'exploitation sur des
+/// passes horaires) : une passe utile par jour, toutes les autres sans le moindre travail, plus de
 /// 95 % du temps de `db.lock()` tenu pour rien — la columnarisation n'a lieu qu'UNE FOIS PAR JOUR, et cet
 /// énoncé (`SCAN e`, un balayage complet de `event`) portait la TOTALITÉ du coût des 23 autres passes.
 pub(crate) const RETARD_CADENCE: &str = "cadence";

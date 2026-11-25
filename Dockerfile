@@ -136,8 +136,8 @@ COPY config.d /usr/local/share/plume/config.d
 RUN chmod -R a+rX /usr/local/share/plume/web /usr/local/share/plume/config.d
 RUN install -d -o soc -g soc /data /data/spool
 USER soc
-# LEVIER RAM (glibc arena cap) : borne le nombre d'arenas malloc à 2 (défaut = 8×CPU). Mesuré 2300→310 MiB
-# sur ce process (nombreux threads : loops rollup/refresh/ingest + pool read-only) où le fragment par-arena
+# LEVIER RAM (glibc arena cap) : borne le nombre d'arenas malloc à 2 (défaut = 8×CPU). Mesuré : près d'un
+# ordre de grandeur de RSS en moins sur ce process (nombreux threads : loops rollup/refresh/ingest + pool read-only) où le fragment par-arena
 # domine. DÉJÀ appliqué dans le manifeste k8s (deployment.yaml) ; baké ici en DURABILITÉ (belt-and-suspenders)
 # pour qu'un déploiement frais depuis CE Dockerfile n'hérite pas du défaut glibc. RUNTIME stage uniquement
 # (le process daemon hérite de l'env) ; sans effet sur le comportement fonctionnel (allocateur seul).

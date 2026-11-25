@@ -72,7 +72,7 @@ case "$CS_WL_SEUIL" in
   [1-9]|[1-9][0-9]|100) ;;
   *) plume_reglage_illisible crowdsec PLUME_CROWDSEC_WHITELIST_SHARE_MAX "$CS_WL_SEUIL" 90 "l'environnement du capteur"; CS_WL_SEUIL=90 ;;
 esac
-# P10.32-k (prolongation, mesuré en production le 2026-11-04) — DURÉE SANS AUCUNE LIGNE AUX SCÉNARIOS, en
+# P10.32-k (prolongation, mesuré en production) — DURÉE SANS AUCUNE LIGNE AUX SCÉNARIOS, en
 # heures, avant que `tout_en_liste_blanche` refuse de conclure. Un site dont un CDN arrête les robots en amont
 # ne voit, la plupart des heures, aucune ligne à adresse publique : refuser à chaque passage (sévérité 3, aveu
 # horaire) criait un fait de quelques heures comme une panne. Sous ce seuil le verdict se nomme
@@ -206,7 +206,7 @@ fi
 # reste celui d'avant, à l'octet — hors du mode `exec` kube, où les deux champs de pods s'ajoutent toujours.
 # LE COÛT EST NOMMÉ : une installation réellement sans trafic pendant un intervalle entier refusera de
 # conclure ; la dédup horaire du canal en borne le volume, et c'est exact — rien n'a été observé. Pour
-# `tout_en_liste_blanche`, ce coût était payé à CHAQUE passage (mesuré le 2026-11-04 : sévérité 3, aveu horaire,
+# `tout_en_liste_blanche`, ce coût était payé à CHAQUE passage (mesuré : sévérité 3, aveu horaire,
 # sur un site dont un CDN arrête les robots) ; il ne l'est plus qu'au-delà du seuil de durée. LE PRIX DE CE
 # SEUIL, DIT : pendant jusqu'à 24 h (par défaut), un moteur réellement aveuglé par un mandataire ne refuse pas —
 # il le dit en sévérité 1, avec la répartition qui nomme la liste privée. Une mise à niveau ou un horodatage
@@ -348,7 +348,7 @@ EOF
     acq_cause=forme_inconnue
   fi
 fi
-# ── 2 ter) QUELLE LISTE BLANCHE ÉCARTE (P10.32-k, prolongation). CONSTATÉ le 2026-11-04 : le verdict
+# ── 2 ter) QUELLE LISTE BLANCHE ÉCARTE (P10.32-k, prolongation). CONSTATÉ en production : le verdict
 # `tout_en_liste_blanche` peut être VRAI avec une cause affichée FAUSSE. Les lignes arrivées par un relais
 # (adresse privée) partent bien dans `crowdsecurity/whitelists`, mais des sessions authentifiées arrivent avec
 # leur adresse PUBLIQUE et partent dans une AUTRE liste blanche : le moteur lit alors les vraies adresses, et

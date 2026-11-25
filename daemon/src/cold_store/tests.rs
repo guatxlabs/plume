@@ -2096,8 +2096,8 @@ fn le_retard_compte_les_lignes_par_couple_env_et_jour() {
 // =====================================================================================================
 // `P10.13-a` LEVIER ① — LE DÉTECTEUR DE RETARD TIRE UNE FOIS PAR JOUR, PAS À CHAQUE PASSE.
 //
-// LE CHIFFRE QUI L'A DÉCIDÉ, relevé sur une base réelle le 2026-08-13 sur près de deux jours de passes
-// horaires : **deux passes utiles, toutes les autres sans le moindre travail** — plus de 95 % de
+// LE CHIFFRE QUI L'A DÉCIDÉ, relevé sur une base réelle au fil de ses passes
+// horaires : **une passe utile par jour, toutes les autres sans le moindre travail** — plus de 95 % de
 // gaspillage du temps de `db.lock()`. La columnarisation n'a lieu qu'UNE FOIS PAR JOUR (un jour franchit
 // la fenêtre chaude) ; les 23 autres passes horaires ne peuvent rien faire PAR CONSTRUCTION. Et cet énoncé
 // porte la TOTALITÉ du coût de chaque passe (`SCAN e`, un balayage complet de `event`).

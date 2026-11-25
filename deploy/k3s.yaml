@@ -166,7 +166,7 @@ spec:
             # tourner à vide avec un avertissement au démarrage. Poser une valeur > 0 seulement sur une
             # base créée en INCREMENTAL, vérifiée par `plume-daemon db-stats`.
             - { name: PLUME_AUTOVACUUM_INTERVAL, value: "0" }
-            # Borne les arenas malloc glibc : mesuré 2300 -> 310 MiB de RSS sur ce process (nombreux
+            # Borne les arenas malloc glibc : mesuré, près d'un ordre de grandeur de RSS en moins sur ce process (nombreux
             # threads : rollup/refresh/ingest + pool read-only). Indispensable pour tenir la limite 2Gi.
             - { name: MALLOC_ARENA_MAX, value: "2" }
           ports: [ { containerPort: 7000 } ]

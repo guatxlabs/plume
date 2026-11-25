@@ -516,10 +516,10 @@ function Sev-For([int]$id) {
 # interrogent. Les deux règles de brute-force LIVRÉES (« Brute-force auth par IP » et « RBA :
 # brute-force d'authentification », toutes deux T1110, activées) compilent
 # `category=auth action=failure`.
-# MESURÉ le 2026-08-02, trois échecs d'ouverture de session Windows (4625) réellement ingérés à la
+# MESURÉ sur trois échecs d'ouverture de session Windows (4625) réellement ingérés à la
 # forme des DEUX émetteurs livrés : `search category=auth | stats count by source` rendait
-# `windows-security 2 · WinEventLog:Security 1 · sudo 366`, et `search category=auth action=failure
-# | stats count by source` rendait **sudo 17 et RIEN pour Windows**. Les échecs étaient en base ; la
+# `windows-security 2 · WinEventLog:Security 1` à côté de `sudo`, et `search category=auth action=failure
+# | stats count by source` rendait **`sudo` seul et RIEN pour Windows**. Les échecs étaient en base ; la
 # règle qui prétend les détecter n'en voyait aucun.
 #
 # CE QUI CHANGE STRUCTURELLEMENT : `Collect-Log` ne prend plus de liste d'identifiants. Il prend une

@@ -291,11 +291,11 @@ fn severity_from_level(level: i64) -> i64 {
 /// POURQUOI UN TYPE ET PAS UN `Option<&str>`. `fields.action` est l'OUTCOME normalisé : c'est lui que
 /// les détections cross-source interrogent. Les deux règles de brute-force LIVRÉES
 /// (« Brute-force auth par IP » et « RBA : brute-force d'authentification », toutes deux T1110 et
-/// activées) compilent `category=auth action=failure`. MESURÉ le 2026-08-02 sur trois échecs
-/// d'ouverture de session Windows (4625) réellement ingérés à la forme des DEUX émetteurs livrés :
-/// `search category=auth | stats count by source` rend `WinEventLog:Security 1 · windows-security 2 ·
-/// sudo 366`, tandis que `search category=auth action=failure | stats count by source` rend **sudo 17
-/// et RIEN pour Windows**. Les événements étaient là, la règle ne les voyait pas — un `Option` par
+/// activées) compilent `category=auth action=failure`. MESURÉ sur trois échecs d'ouverture de
+/// session Windows (4625) réellement ingérés à la forme des DEUX émetteurs livrés :
+/// `search category=auth | stats count by source` rend `WinEventLog:Security 1 · windows-security 2`
+/// à côté de `sudo`, tandis que `search category=auth action=failure | stats count by source` rend
+/// **`sudo` seul et RIEN pour Windows**. Les événements étaient là, la règle ne les voyait pas — un `Option` par
 /// défaut à `None` est exactement ce qui rend ce trou écrivable sans y penser.
 ///
 /// `SansIssue` n'est PAS un défaut : c'est une DÉCLARATION qu'il faut écrire (« cet enregistrement ne

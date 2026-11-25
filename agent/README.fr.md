@@ -33,9 +33,9 @@ vers le endpoint d'ingest Plume — le même contrat de fil que les collecteurs 
   canonique CIM v1.3 ; `process` n'appartient pas à `CIM_CATEGORIES`. Mesuré le 2026‑08‑02 sur Windows 11
   Enterprise 24H2 (build 26100) : les 4688 remontés par l'agent arrivent en `category=exec`.)*
   **Tout ce qui n'est pas listé ci-dessus part avec une catégorie VIDE** — ce n'est pas marginal :
-  *mesuré le 2026‑08‑02, 1 572 des 5 189 événements Windows (30 %) sont arrivés sans catégorie*, dont
-  834 du canal `Security` et 604 du canal `System`. Le champ CIM `action` (vocabulaire neutre,
-  `docs/CIM.md` §4c) n'est **jamais** posé par ce lecteur : **0 / 5 189** événements Windows le portent.
+  *mesuré, 30 % des événements Windows sont arrivés sans catégorie*, pour l'essentiel
+  des canaux `Security` et `System`. Le champ CIM `action` (vocabulaire neutre,
+  `docs/CIM.md` §4c) n'est **jamais** posé par ce lecteur : **aucun** événement Windows ne le porte.
   *Les deux lacunes ont été **reconfirmées le 2026‑08‑02 sur deux Windows Server 2022** (Server Core +
   Desktop Experience promue contrôleur de domaine), donc sur un autre OS et un autre profil de machine :
   **2 552 / 6 962 (36,7 %)** sans catégorie — `Application` **100 %**, `Security` **43,6 %**, `System`

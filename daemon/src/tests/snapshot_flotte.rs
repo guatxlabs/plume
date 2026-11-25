@@ -463,7 +463,7 @@
             (ev, me), (22, 1),
             "ANCRAGE DE LA DETTE DÉCLARÉE : 22 sondes d'events + 1 de métriques gardent la portée « flotte \
              confondue » — MÊME défaut de famille, coût DIFFÉRENT (`event` compte plus d'un million de \
-             lignes sur une base réelle, relevé du 2026-08-05 par `db-stats --par-objet`, sondé sous le \
+             lignes sur une base réelle, sondé sous le \
              verrou d'écriture, contre une ligne vivante par (kind,hôte) pour `snapshot`). Ce compte doit \
              BAISSER, jamais monter en silence."
         );

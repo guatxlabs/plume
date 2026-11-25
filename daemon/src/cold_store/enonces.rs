@@ -19,8 +19,8 @@
 //!
 //! CE QUE LE LEVIER ① A CHANGÉ, ET CE QU'IL N'A PAS CHANGÉ (2026-08-14). L'énoncé n° 5 est INTACT —
 //! même texte, mêmes bornes, même chose détectée. Ce qui change est QUAND la passe l'exécute : une fois
-//! par jour au lieu de vingt-quatre. Le chiffre, relevé sur une base réelle le 2026-08-13 sur près de
-//! deux jours de passes horaires : **deux passes utiles, toutes les autres sans le moindre travail** — plus
+//! par jour au lieu de vingt-quatre. Le chiffre, relevé sur une base réelle au fil de ses passes
+//! horaires : **une passe utile par jour, toutes les autres sans le moindre travail** — plus
 //! de 95 % du temps de `db.lock()` tenu pour rien. La columnarisation n'a lieu qu'UNE FOIS PAR JOUR (un jour franchit la fenêtre
 //! chaude) ; les 23 autres passes horaires ne peuvent rien faire PAR CONSTRUCTION. Ce module porte donc
 //! aussi la DÉCISION DE TIR (`tir_du_retard`, `periode_de_tir`, `TirDuRetard`), pour la même raison qu'il
@@ -330,8 +330,8 @@ impl Bande {
 ///
 /// POURQUOI 24 H, ET PAS UN CHIFFRE ROND. Parce que la columnarisation n'a lieu qu'UNE FOIS PAR JOUR (un
 /// jour franchit la fenêtre chaude), et que les 23 autres passes horaires ne peuvent rien faire PAR
-/// CONSTRUCTION. Mesuré sur une base réelle le 2026-08-13, sur près de deux jours de passes horaires :
-/// **deux passes utiles, toutes les autres sans le moindre travail** — plus de 95 % du temps de `db.lock()`
+/// CONSTRUCTION. Mesuré sur une base réelle, au fil de ses passes horaires :
+/// **une passe utile par jour, toutes les autres sans le moindre travail** — plus de 95 % du temps de `db.lock()`
 /// tenu pour rien, porté EN TOTALITÉ par l'énoncé n° 5 (`SCAN e`, un balayage complet de `event`, relevé
 /// à `cold-aging-plan`). Ce levier ne
 /// supprime AUCUN travail : il supprime des passes qui n'en avaient aucun.

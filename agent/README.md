@@ -33,9 +33,9 @@ to the Plume ingest endpoint — the same wire contract as the `.sh` collectors 
   canonical CIM v1.3 name; `process` does not belong to `CIM_CATEGORIES`. Measured on 2026‑08‑02 on Windows 11
   Enterprise 24H2 (build 26100): the 4688 events forwarded by the agent arrive as `category=exec`.)*
   **Everything not listed above leaves with an EMPTY category** — this is not marginal:
-  *measured on 2026‑08‑02, 1,572 of the 5,189 Windows events (30%) arrived without a category*, including
-  834 from the `Security` channel and 604 from the `System` channel. The CIM field `action` (neutral vocabulary,
-  `docs/CIM.md` §4c) is **never** set by this reader: **0 / 5,189** Windows events carry it.
+  *measured: 30% of the Windows events arrived without a category*, mostly
+  from the `Security` and `System` channels. The CIM field `action` (neutral vocabulary,
+  `docs/CIM.md` §4c) is **never** set by this reader: **no** Windows event carries it.
   *Both gaps were **reconfirmed on 2026‑08‑02 on two Windows Server 2022 machines** (Server Core +
   Desktop Experience promoted to domain controller), so on another OS and another machine profile:
   **2,552 / 6,962 (36.7%)** without a category — `Application` **100%**, `Security` **43.6%**, `System`

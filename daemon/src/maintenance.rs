@@ -731,7 +731,7 @@ enum Subsumant<'a> {
 /// POURQUOI UN DROP EST SÛR EN TÂCHE DE FOND ALORS QU'UN CREATE NE L'EST PAS. `DROP INDEX` ne fait que rendre
 /// au freelist les pages du btree de l'index : il NE LIT NI NE DÉCHIFFRE la table (aucune page de `event` /
 /// `alert` n'est touchée), donc son coût ne dépend PAS du volume de lignes. `CREATE INDEX`, lui, doit
-/// DÉCHIFFRER et trier la totalité de la table SQLCipher : sur des millions de lignes (auditd ~4M) il tient le
+/// DÉCHIFFRER et trier la totalité de la table SQLCipher : sur des millions de lignes (auditd seul peut en porter autant) il tient le
 /// verrou d'écriture assez longtemps pour retarder le bind -> la liveness probe k8s échoue -> CrashLoopBackOff
 /// (leçon idx_event_category / idx_event_src_ts). La doctrine anti-crashloop qui interdit un CREATE synchrone
 /// ne s'applique donc PAS à un DROP.
@@ -923,7 +923,7 @@ pub(crate) fn drop_orphan_auto_field_indexes_background(db: &Arc<Mutex<Connectio
 /// COMPOSITE couvre source+ts -> le COUNT BORNÉ (query.rs) devient un balayage INDEX-ONLY plafonné (zéro
 /// déchiffrement de table) et la page range-prune sur ts. `db/schema.sql` le déclare (bases NEUVES l'ont, table
 /// vide) mais AUCUNE migration ne peut le créer synchrone : un CREATE INDEX sur des MILLIONS de lignes chiffrées
-/// (auditd ~4M) bloquerait le bind -> liveness k8s -> CrashLoopBackOff (cf. idx_event_category/idx_event_src). MÊME
+/// (auditd seul en porte des millions) bloquerait le bind -> liveness k8s -> CrashLoopBackOff (cf. idx_event_category/idx_event_src). MÊME
 /// nom que schema.sql -> sur base neuve le court-circuit no-op (pas de btree en double), sur la base live on comble
 /// le trou. Modèle EXACT de ensure_event_source_index_background : court-circuit si présent, sinon UN CREATE
 /// one-shot IF NOT EXISTS (idempotent). Le re-ANALYZE (bump v108) fait connaître l'index au planner. `source` =
@@ -969,11 +969,11 @@ pub(crate) fn ensure_event_src_ts_index_background(db: &Arc<Mutex<Connection>>) 
 /// consomme sous le verrou, l'ingestion ne l'a pas.
 ///
 /// POURQUOI PARTIEL et pas (source, category, ts) : MESURÉ sur banc, le composite plein coûte 25,5 o/LIGNE
-/// INGÉRÉE, soit quelques dizaines de Mio EXTRAPOLÉS au million et demi de lignes d'une base réelle (volume
-/// relevé le 2026-08-05 par `db-stats --par-objet`) + un insert btree sur le CHEMIN D'INGEST CHAUD ; le
+/// INGÉRÉE, soit quelques dizaines de Mio EXTRAPOLÉS dès qu'une base atteint l'ordre du million de lignes
+/// + un insert btree sur le CHEMIN D'INGEST CHAUD ; le
 /// partiel coûte 21,8 o/LIGNE DE BATTEMENT (~1,5 Mio pour 8 collecteurs battant toutes les 5 min sur 30 j)
-/// + un insert toutes les ~37 s. 26x moins de disque — l'écart de disque SUIT LE VOLUME (il valait 166x
-/// sous l'hypothèse, réfutée, d'une base six fois plus grosse, et pèse 2,0 % du budget 2 Go au lieu de 12,5 %),
+/// + un insert toutes les ~37 s. Un à deux ordres de grandeur de disque en moins à cette échelle — l'écart
+/// de disque SUIT LE VOLUME (il grandit avec la base, et ne pèse qu'une petite part du budget 2 Go),
 /// tandis que l'écart d'INSERTIONS n'en dépend pas. L'objection d'amplification d'écriture qui avait fait
 /// écarter le correctif (cf. handlers/freshness.rs) ne porte que sur le composite plein.
 ///

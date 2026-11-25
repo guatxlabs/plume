@@ -252,7 +252,7 @@ pub(crate) fn cadence_json(cadence: &CadenceDeclaree, n_24h: Option<i64>) -> Val
 // (b) L'objection sur le composite (source, category, ts) était JUSTE — mais elle ne visait QUE le
 //     composite PLEIN. Un index PARTIEL `(source, ts) WHERE category='health'` ferme les mêmes 8 sondes
 //     en n'indexant QUE les battements : mesuré 21,8 o/battement (~1,5 Mio) contre 25,5 o/ligne INGÉRÉE
-//     (~250 Mio) pour le composite plein, et un insert btree toutes les ~37 s au lieu d'un par event.
+//     (des dizaines à des centaines de Mio, selon la taille de la base) pour le composite plein, et un insert btree toutes les ~37 s au lieu d'un par event.
 //     C'est ce qui a été livré (cf. daemon/src/sondes.rs, migration v114).
 // (c) LE COÛT QUE CE SWR N'A JAMAIS COUVERT : le cache ci-dessous protège /api/integrations. Il ne
 //     protège PAS `check_heartbeats`, qui exécute LES MÊMES sondes toutes les 20 s SOUS LE VERROU

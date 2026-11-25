@@ -159,7 +159,7 @@ const _: () = {
 //        `idx_ev_auto_risk` et `idx_ev_auto_vtype` existaient RÉELLEMENT en production (ils sont
 //        RELEVÉS, avec leur taille, dans `bench/profile-prod.json`, `provenance: measured`,
 //        2026-07-30) et la purge de fond du retrait les a droppés. L'instrument qui avait servi à
-//        conclure à leur absence (`db-stats --par-objet`, top 10) ne montre rien sous ~22 Mio : il ne
+//        conclure à leur absence (`db-stats --par-objet`, top 10) ne montre rien sous son dixième objet : il ne
 //        pouvait pas prouver une absence. Ne pas voir n'est pas mesurer — d'autant que le relevé qui
 //        les montrait était DÉJÀ dans le dépôt.
 //     La leçon commune aux deux : « le mécanisme est cassé AUJOURD'HUI » et « il n'a JAMAIS rien

@@ -1348,11 +1348,11 @@ fn migrate_v113(conn: &MigTx) {
 /// ne l'a pas.
 ///
 /// POURQUOI PARTIEL et pas (source, category, ts) : MESURÉ sur banc, le composite plein coûte 25,5 o/LIGNE
-/// INGÉRÉE, soit quelques dizaines de Mio EXTRAPOLÉS au million et demi de lignes d'une base réelle (volume
-/// relevé le 2026-08-05 par `db-stats --par-objet`) + un insert btree sur le CHEMIN D'INGEST CHAUD ; le
+/// INGÉRÉE, soit quelques dizaines de Mio EXTRAPOLÉS dès qu'une base atteint l'ordre du million de lignes
+/// + un insert btree sur le CHEMIN D'INGEST CHAUD ; le
 /// partiel coûte 21,8 o par LIGNE DE BATTEMENT (~1,5 Mio pour 8 collecteurs battant toutes les 5 min sur
-/// 30 j de rétention) + un insert toutes les ~37 s. 26x moins de disque — cet écart-là SUIT LE VOLUME (166x
-/// sous l'hypothèse réfutée d'une base six fois plus grosse), l'écart d'INSERTIONS non ; et l'objection d'amplification
+/// 30 j de rétention) + un insert toutes les ~37 s. Un à deux ordres de grandeur de disque en moins à cette
+/// échelle — cet écart-là SUIT LE VOLUME (il grandit avec la base), l'écart d'INSERTIONS non ; et l'objection d'amplification
 /// d'écriture consignée en v104 dans handlers/freshness.rs ne portait que sur le composite plein.
 ///
 /// `db/schema.sql` le déclare (bases NEUVES : `event` VIDE -> CREATE instantané) mais AUCUNE migration ne
@@ -1866,7 +1866,7 @@ const SQL_V123_SUPPRESSION_DE_L_AUTEUR_DEPUIS_LE_REGISTRE: &str = "\
 /// synchrone), MÊME posture EXACTE que v102 (idx_event_src). Comble l'index COMPOSITE MANQUANT
 /// `idx_event_src_ts(source, ts)` sur la base MIGRÉE. `db/schema.sql` le déclare (bases NEUVES : table `event`
 /// VIDE -> CREATE instantané) mais AUCUNE migration ne peut le créer ICI : un `CREATE INDEX` sur des MILLIONS
-/// de lignes `event` chiffrées SQLCipher (auditd ~4M) au boot déchiffre+réécrit page par page et BLOQUE le bind
+/// de lignes `event` chiffrées SQLCipher (auditd seul en porte des millions) au boot déchiffre+réécrit page par page et BLOQUE le bind
 /// -> liveness k8s -> CrashLoopBackOff (leçon v102/v103/idx_event_category, migrate() tourne AVANT le bind).
 /// Le CREATE est donc DÉLÉGUÉ à `ensure_event_src_ts_index_background`, lancé EN FOND APRÈS le bind (idempotent,
 /// IF NOT EXISTS, MÊME nom que schema.sql -> aucun btree en double sur base neuve). Cette migration ne fait que
@@ -2145,7 +2145,7 @@ fn migrate_v103(conn: &MigTx) {
 
 /// v102 (CHANGE 4) — MARQUEUR pur (aucune DDL synchrone). Comble l'index MANQUANT idx_event_src (source-seul) sur
 /// la base MIGRÉE. `db/schema.sql` le déclare déjà (bases neuves OK) mais AUCUNE migration ne l'a créé -> la base
-/// live (montée par migrations) full-scanne `search source=X | ...` sur les GROS flux (auditd ~4M, k8s-log ~851k :
+/// live (montée par migrations) full-scanne `search source=X | ...` sur les GROS flux (auditd en millions de lignes, k8s-log en centaines de milliers :
 /// le composite idx_event_src_srcip(source,src_ip) est souvent ignoré par le planner pour un `source=X` pur) ->
 /// budget requête 5s dépassé. Le CREATE n'est PAS fait ICI : un CREATE INDEX synchrone sur des millions de lignes
 /// chiffrées bloque le bind -> liveness k8s -> CrashLoopBackOff (cf. idx_event_category). Il est

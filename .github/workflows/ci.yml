@@ -171,7 +171,7 @@ env:
   # 989 datait du même jour ; **+18 viennent du lot « série du budget »** — 16 dans
   # `tests/ventilation_serie.rs`, 2 dans `db_ventilation.rs`. Le lot ferme le défaut RACINE derrière
   # trois autres : la ventilation par poste n'existait qu'en RELEVÉ PONCTUEL (`db-stats --par-objet`,
-  # une vingtaine de secondes par Gio sur une base réelle le 2026-08-09), donc aucune question de tendance —
+  # une vingtaine de secondes par Gio sur une base réelle), donc aucune question de tendance —
   # « la part FTS5 a-t-elle baissé depuis la compaction `4ca6339` ? » — n'était répondable sans
   # relever à la main. La MÊME mesure est désormais écrite par un tick lent dans `metric`, que la
   # commande GXQL `metric` unionne avec `metric_rollup` (90 j).
@@ -200,7 +200,7 @@ env:
   # index de `event` »** (`tests/index_usage_event.rs`). Le lot ne corrige aucun défaut : il MESURE
   # celui que `docs/DESIGN-P10-echelle-2go.md` §5.4 avait interdit de toucher sans mesure — « qui se
   # sert des index b-tree de `event` ? » — sur un poste qui pèse **plus du quart du fichier** sur une
-  # base réelle (relevé du 2026-08-09), dont plus de la moitié hors de l'index de dédup.
+  # base réelle, dont plus de la moitié hors de l'index de dédup.
   # Les 5 : le LECTEUR DE PLAN validé par témoin positif DÉRIVÉ (chaque index du catalogue, forcé par
   # `INDEXED BY`, doit être relu — l'index ajouté demain est couvert le jour où il est ajouté) ET par
   # témoin négatif (`NOT INDEXED` doit rendre VIDE, sinon un vide ne serait pas une mesure) ; le REFUS

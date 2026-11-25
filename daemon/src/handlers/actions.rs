@@ -667,16 +667,44 @@ impl FormeDeLaFileDActions {
 /// tenues ensemble par un test d'équivalence et non par construction.
 macro_rules! reclamation_libre_ou_perimee {
     ($maintenant:literal, $delai:literal) => {
-        concat!("(claimed_ts IS NULL OR ", $maintenant, "-claimed_ts>", $delai, ")")
+        concat!("(", $crate::handlers::actions::reclamation_libre!(), " OR ", $maintenant, "-claimed_ts>", $delai, ")")
     };
 }
 pub(crate) use reclamation_libre_ou_perimee;
 
+/// `P10.21-n` — « PERSONNE NE L'A RÉCLAMÉE », écrit une fois : la moitié libre de la fenêtre, et la
+/// seule clause que l'intention du responder local exige (`SQL_INTENTION_DU_RESPONDER_LOCAL`) — une
+/// réclamation, même périmée, est une riposte déjà remise, que ce responder n'exécute pas.
+macro_rules! reclamation_libre {
+    () => {
+        "claimed_ts IS NULL"
+    };
+}
+pub(crate) use reclamation_libre;
+
+/// `P10.21-n` — L'INTENTION DU RESPONDER LOCAL, telle qu'il l'écrit dans `action.result` AVANT d'exécuter
+/// une riposte (`SQL_INTENTION_DU_RESPONDER_LOCAL`), et que son verdict remplace. Une ligne encore
+/// `approved` qui la porte est une exécution COMMENCÉE dont aucun verdict n'a été posé : ni ce responder
+/// (`ACTIONS_A_RECLAMER_ICI` la lit, `respond_run` la dit sans la rejouer) ni un agent
+/// (`CONDITION_DE_RECLAMATION_D_AGENT`) ne l'exécutent de nouveau ; l'exploitant tranche (annuler la
+/// riposte, ou la recréer). Écrite dans des littéraux SQL entre apostrophes : elle n'en contient aucune.
+macro_rules! intention_du_responder_local {
+    () => {
+        "[responder local] EXÉCUTION COMMENCÉE, verdict pas encore posé. Si cette mention reste, son exécution \
+         a été interrompue : elle ne sera PAS rejouée, à trancher (annuler la riposte, ou la recréer)."
+    };
+}
+
 /// `P10.21-n` — LA CONDITION DE RÉCLAMATION D'UN AGENT, la seule écriture : le SELECT d'`actions_pending`
 /// en dérive, l'UPDATE de réclamation et sa relecture la rejouent (`?1` = hôte du jeton, `?2` =
-/// maintenant, `?3` = délai de péremption, `?4` = identifiant de l'action pour l'UPDATE).
+/// maintenant, `?3` = délai de péremption, `?4` = identifiant de l'action pour l'UPDATE). Une riposte
+/// dont l'exécution a été commencée par le responder local (`intention_du_responder_local!`) n'est
+/// jamais remise à un agent, même une fois la fenêtre passée : sur un hôte à la fois central et agent,
+/// elle serait exécutée une seconde fois.
 pub(crate) const CONDITION_DE_RECLAMATION_D_AGENT: &str = concat!(
-    "(host=?1 OR host IS NULL OR host='') AND status='approved' AND kind IN ('ban_ip','unban_ip') AND ",
+    "(host=?1 OR host IS NULL OR host='') AND status='approved' AND kind IN ('ban_ip','unban_ip') AND result IS NOT '",
+    intention_du_responder_local!(),
+    "' AND ",
     reclamation_libre_ou_perimee!("?2", "?3")
 );
 
@@ -2006,22 +2034,99 @@ pub(crate) fn ensure_nft_blocklist() {
 /// La constante existe pour que le test exerce l'énoncé du PRODUIT et non une recopie : une paraphrase
 /// resterait verte le jour où celui-ci changerait.
 /// `P4.7-f` — UNE RÉCLAMATION D'AGENT VAUT PENDANT CE DÉLAI : au-delà, l'agent est tenu pour planté et
-/// l'action est re-remise (par `actions_pending` à un agent, ou par le responder local). Une seule valeur,
-/// lue par les deux : deux fenêtres différentes referaient la course que cette clé ferme.
+/// l'action est re-remise à un agent par `actions_pending`. Le responder local la relit aussi passé ce
+/// délai, mais `P10.21-n` : il ne l'exécute plus, il la dit (une réclamation est une riposte remise, qui a
+/// pu avoir lieu). Une seule valeur, lue par les deux : deux fenêtres différentes referaient la course que
+/// cette clé ferme.
 pub(crate) const RECLAMATION_PERIMEE_S: i64 = 300;
 
-/// Les actions que CE responder exécute : approuvées, non ciblées ou ciblant cette machine — ET que
-/// aucun agent n'a réclamées récemment (`P4.7-f`) : le central ne double plus un agent qui tient déjà
-/// le dossier, lui qui lit la liste d'épargne que le central n'a pas. Paramètres : ?1 = identité,
-/// ?2 = identité lue (0/1), ?3 = maintenant, ?4 = délai de péremption d'une réclamation.
-/// `P10.21-n` — la fenêtre est celle de l'agent (`reclamation_libre_ou_perimee!`), écrite une fois ;
-/// hôte et genre diffèrent À DESSEIN : ce responder exécute tout le vocabulaire fermé, l'agent ne
-/// réclame que ban et levée, et la clause d'hôte suit l'identité lue (`S33`).
+/// La clause d'hôte du responder local (`S33`), écrite une fois pour sa lecture et son intention :
+/// ?1 = identité, ?2 = identité lue (0/1).
+macro_rules! hote_du_responder_local {
+    () => {
+        "(host IS NULL OR host='' OR (?2 = 1 AND host = ?1))"
+    };
+}
+
+/// `P10.21-n` — LES ACTIONS QUE CE RESPONDER EXAMINE : approuvées, non ciblées ou ciblant cette machine
+/// — ET que personne n'a réclamées récemment (`P4.7-f`) : le central ne double plus un agent qui tient
+/// déjà le dossier, lui qui lit la liste d'épargne que le central n'a pas. Paramètres : ?1 = identité,
+/// ?2 = identité lue (0/1), ?3 = maintenant, ?4 = délai de péremption d'une réclamation. Colonnes :
+/// identifiant, genre, cible, simulation, puis `reclamee` (une réclamation, forcément périmée ici) et
+/// `commencee_ici` (la ligne porte `intention_du_responder_local!`) : `respond_run` n'exécute qu'une
+/// ligne où les deux sont faux, et DIT les autres. La fenêtre est celle de l'agent
+/// (`reclamation_libre_ou_perimee!`), écrite une fois ; hôte et genre diffèrent À DESSEIN : ce responder
+/// exécute tout le vocabulaire fermé, l'agent ne réclame que ban et levée, et la clause d'hôte suit
+/// l'identité lue (`S33`).
 pub(crate) const ACTIONS_A_RECLAMER_ICI: &str = concat!(
-    "SELECT id,kind,target,dry_run FROM action \
-     WHERE status='approved' AND (host IS NULL OR host='' OR (?2 = 1 AND host = ?1)) AND ",
+    "SELECT id,kind,target,dry_run,claimed_ts IS NOT NULL,result IS '",
+    intention_du_responder_local!(),
+    "' FROM action WHERE status='approved' AND ",
+    hote_du_responder_local!(),
+    " AND ",
     reclamation_libre_ou_perimee!("?3", "?4")
 );
+
+/// `P10.21-n` — L'INTENTION, ÉCRITE AVANT TOUTE EXÉCUTION. Elle pose `claimed_ts` (un agent ne réclame
+/// plus la ligne pendant la fenêtre) et `intention_du_responder_local!` dans `result` (ni un agent ni ce
+/// responder ne la reprennent une fois la fenêtre passée), sur une ligne encore approuvée, de cet hôte,
+/// et que PERSONNE n'a réclamée : un agent ou un autre passage de ce responder qui l'a prise entre la
+/// lecture et l'intention l'emporte (zéro ligne). ?1 = identité, ?2 = identité lue (0/1),
+/// ?3 = maintenant, ?4 = identifiant de l'action.
+pub(crate) const SQL_INTENTION_DU_RESPONDER_LOCAL: &str = concat!(
+    "UPDATE action SET claimed_ts=?3, result='",
+    intention_du_responder_local!(),
+    "' WHERE id=?4 AND status='approved' AND ",
+    hote_du_responder_local!(),
+    " AND ",
+    reclamation_libre!()
+);
+
+/// `P10.21-n` — ce que l'écriture de l'intention a rendu. Trois issues : seule `Ecrite` laisse exécuter.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum IntentionDuResponder {
+    /// La ligne porte l'intention de CE passage : l'exécution peut partir.
+    Ecrite,
+    /// Aucune ligne n'a pris l'intention : réclamée, close ou annulée entre la lecture et l'intention,
+    /// ou écriture sans effet. Rien n'est exécuté.
+    NonPrise,
+    /// L'écriture a été refusée — la cause du moteur. Rien n'est exécuté.
+    NonEcrite(String),
+}
+
+/// Écrit l'intention de ce responder sur l'action `id` (`SQL_INTENTION_DU_RESPONDER_LOCAL`) et rend son
+/// issue. Séparée de `respond_run` pour être exercée sur deux connexions entrelacées.
+pub(crate) fn ecrire_l_intention_du_responder(conn: &Connection, id: i64, me: &str, identite_lue: bool, now_ts: i64) -> IntentionDuResponder {
+    match conn.execute(SQL_INTENTION_DU_RESPONDER_LOCAL, params![me, i64::from(identite_lue), now_ts, id]) {
+        Ok(1) => IntentionDuResponder::Ecrite,
+        Ok(_) => IntentionDuResponder::NonPrise,
+        Err(e) => IntentionDuResponder::NonEcrite(e.to_string()),
+    }
+}
+
+/// `P10.21-n` — une riposte dont l'intention est écrite et qu'aucun verdict n'a close dans le délai de
+/// réclamation. Dite au journal (identifiant seul), jamais rejouée.
+pub(crate) const RIPOSTE_COMMENCEE_SANS_VERDICT: &str =
+    "son exécution a été commencée par un passage du responder local (intention écrite) et aucun verdict \
+     n'a été posé dans le délai de réclamation : elle a pu avoir lieu. Elle n'est PAS rejouée ; à trancher \
+     par l'exploitant (annuler la riposte, ou la recréer).";
+
+/// `P10.21-n` — une riposte réclamée par un agent dont le verdict n'est pas venu dans le délai de
+/// réclamation (hôte à la fois central et agent, même identité). Dite, jamais exécutée ici.
+pub(crate) const RIPOSTE_RECLAMEE_PAR_UN_AGENT: &str =
+    "elle a été réclamée par un agent dont le verdict n'est pas venu dans le délai de réclamation : elle a \
+     pu être exécutée. Elle n'est PAS exécutée ici ; elle reste réclamable par l'agent.";
+
+/// `P10.21-n` — l'intention n'a pris aucune ligne : rien n'est exécuté ce tour-ci.
+pub(crate) const INTENTION_NON_PRISE: &str =
+    "l'intention d'exécution n'a pris aucune ligne (réclamée, close ou annulée entre la lecture et \
+     l'intention, ou écriture sans effet) : rien n'est exécuté.";
+
+/// `P10.21-n` — l'intention a été refusée par la base : rien n'est exécuté ce tour-ci.
+pub(crate) const INTENTION_NON_ECRITE: &str =
+    "INTENTION NON ÉCRITE : la trace qui précède l'exécution n'a pas pu être écrite, donc la riposte n'est \
+     PAS exécutée (exécutée sans trace, une interruption la ferait rejouer) ; elle reste approuvée et un \
+     passage suivant la relit.";
 
 /// `P4.7-f` — LA CLÔTURE D'UNE ACTION NE REMPLACE JAMAIS UN VERDICT DÉJÀ POSÉ : elle n'écrit que sur une
 /// action encore `approved`. Un agent qui a posté « adresse épargnée » a le dernier mot ; le responder
@@ -2202,10 +2307,13 @@ pub(crate) fn respond_run() {
     // processus par déclenchement de la minuterie), pas une boucle du démon long ; le compteur
     // `TICKS_AVEUGLES` meurt avec le processus et n'atteint pas `/metrics`. C'est la ligne de journal
     // (stderr -> journald) qui est ici l'observable, et le compteur reste posé pour que la forme soit UNE.
-    let pending: Vec<(i64, String, String, bool)> = match conn
+    // `P10.21-n` — chaque ligne porte aussi `reclamee` et `commencee_ici` (`ACTIONS_A_RECLAMER_ICI`).
+    let lues: Vec<(i64, String, String, bool, bool, bool)> = match conn
         .prepare(ACTIONS_A_RECLAMER_ICI)
         .and_then(|mut s| {
-            s.query_map(params![me, i64::from(identite_lue), now(), RECLAMATION_PERIMEE_S], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, i64>(3)? != 0)))?
+            s.query_map(params![me, i64::from(identite_lue), now(), RECLAMATION_PERIMEE_S], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, i64>(3)? != 0, r.get::<_, bool>(4)?, r.get::<_, bool>(5)?))
+            })?
                 .collect::<rusqlite::Result<Vec<_>>>()
         }) {
         Ok(v) => v,
@@ -2214,6 +2322,22 @@ pub(crate) fn respond_run() {
             return;
         }
     };
+    // `P10.21-n` — UNE RIPOSTE DÉJÀ COMMENCÉE N'EST PAS REJOUÉE, ELLE EST DITE, avant toute validation : une
+    // ligne commencée ne prend pas non plus un verdict `blocked` qui effacerait son intention. Seules les lignes
+    // que personne n'a réclamées entrent dans la liste de travail. L'identifiant seul part au journal, jamais la
+    // cible.
+    let mut pending: Vec<(i64, String, String, bool)> = Vec::with_capacity(lues.len());
+    for (id, kind, target, dry, reclamee, commencee_ici) in lues {
+        if commencee_ici {
+            eprintln!("[responder] WARN action {id} NON rejouée : {RIPOSTE_COMMENCEE_SANS_VERDICT}");
+            continue;
+        }
+        if reclamee {
+            eprintln!("[responder] action {id} NON exécutée ici : {RIPOSTE_RECLAMEE_PAR_UN_AGENT}");
+            continue;
+        }
+        pending.push((id, kind, target, dry));
+    }
     if pending.is_empty() {
         return;
     }
@@ -2283,6 +2407,22 @@ pub(crate) fn respond_run() {
             let _ = conn.execute("UPDATE action SET status='dryrun', result=?2, done_ts=?3 WHERE id=?1 AND status='approved'", params![id, simulee, now()]);
             continue;
         }
+        // `P10.21-n` — L'INTENTION AVANT L'EFFET. Avant, rien n'était écrit avant l'exécution : un processus
+        // arrêté entre la commande et la clôture, ou une clôture refusée, laissait la riposte `approved` et le
+        // passage suivant la ré-exécutait (second `cscli decisions add`, levée ou `kill` rejoués sur une cible
+        // qui a pu changer). L'intention est écrite d'abord ; non écrite ou non prise, rien n'est exécuté ce
+        // tour-ci — le démon a sa base sous la main, il ne joue pas sans trace.
+        match ecrire_l_intention_du_responder(&conn, id, &me, identite_lue, now()) {
+            IntentionDuResponder::Ecrite => {}
+            IntentionDuResponder::NonPrise => {
+                eprintln!("[responder] action {id} NON exécutée ce tour-ci : {INTENTION_NON_PRISE}");
+                continue;
+            }
+            IntentionDuResponder::NonEcrite(cause) => {
+                eprintln!("[responder] WARN action {id} NON exécutée ce tour-ci : {INTENTION_NON_ECRITE} ({cause})");
+                continue;
+            }
+        }
         let (status, result) = match &second {
             None => {
                 let (reussi, texte) = executer_pour_le_responder(&prog, &args);
@@ -2301,8 +2441,9 @@ pub(crate) fn respond_run() {
         if let ClotureDeRiposte::NonEcrite(cause) = &cloture {
             // LE REFUS EST NOMMÉ AVANT TOUT FAIT : aucun miroir `net_ban` n'est touché sur ce tour (le
             // `continue` ci-dessous), et la ligne du registre porte son PROPRE genre — elle dit ce qui
-            // n'a pas eu lieu, elle n'affirme pas une clôture. L'action reste `approved`, donc le tour
-            // suivant la reprendra ; l'effet système, lui, a déjà eu lieu et c'est écrit tel quel.
+            // n'a pas eu lieu, elle n'affirme pas une clôture. L'action reste `approved` et porte l'intention
+            // (`P10.21-n`) : passé le délai de réclamation, un passage suivant la trouve commencée et la DIT sans
+            // la rejouer ; l'effet système, lui, a déjà eu lieu et c'est écrit tel quel.
             let maillon = ledger_append(
                 &conn,
                 "action.exec.verdict-non-ecrit",

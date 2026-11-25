@@ -41,7 +41,7 @@ mod verdict_de_dossier_conserve {
         let vues = vdc_selection(&conn, maintenant);
         assert!(vues.contains(&libre), "une action que personne n'a réclamée s'exécute ici");
         assert!(!vues.contains(&reclamee), "une action réclamée il y a dix secondes est à l'agent qui l'a réclamée");
-        assert!(vues.contains(&perimee), "une réclamation périmée (agent planté) est re-remise ici, comme aux agents");
+        assert!(vues.contains(&perimee), "une réclamation périmée (agent planté) est relue ici ; `P10.21-n` : `respond_run` la dit sans l'exécuter");
     }
 
     #[test]

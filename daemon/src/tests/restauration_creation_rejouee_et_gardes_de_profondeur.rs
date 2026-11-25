@@ -217,7 +217,9 @@ mod cj2_restauration_creation_rejouee_et_gardes_de_profondeur {
 
     /// UN NOM DE LA FORME `<x>_<suffixe>` N'EST UNE TABLE FANTÔME QUE SI `x` EST UNE TABLE VIRTUELLE DU FICHIER ET SI LA
     /// LIGNE EST UNE TABLE REJOUÉE : `t_data` (`t` est une table ordinaire), `w_idx` (`w` est une vue) restent des tables
-    /// jugées et rejouées ; le déclencheur `f_config` (à côté de la FTS5 `f`) n'est pas une table. L'archive se restaure.
+    /// jugées et rejouées ; le déclencheur `f_config` (à côté de la FTS5 `f`) n'est pas une table. ET SI LE NOM A LA FORME
+    /// EXACTE `<vt>_<suffixe>` : `fadata` (pas de séparateur `_` après `f`) et `f_autre` (suffixe hors de la liste de
+    /// l'écrivain), tables ordinaires à côté de la FTS5 `f`, restent jugées et rejouées. L'archive se restaure.
     #[test]
     fn ancien_un_nom_de_forme_fantome_hors_d_une_table_virtuelle_reste_une_ligne_ordinaire() {
         let _tmp = crate::tmp_possede::TmpPossede::neuf("cj2-a-nom-ordinaire");
@@ -226,7 +228,8 @@ mod cj2_restauration_creation_rejouee_et_gardes_de_profondeur {
             "cj2-a-nom-ordinaire",
             &racine,
             "CREATE TABLE t_data(x); CREATE VIEW w AS SELECT v FROM t; CREATE TABLE w_idx(x); \
-             CREATE VIRTUAL TABLE f USING fts5(v, content='t'); CREATE TRIGGER f_config AFTER INSERT ON t BEGIN SELECT 1; END;",
+             CREATE VIRTUAL TABLE f USING fts5(v, content='t'); CREATE TRIGGER f_config AFTER INSERT ON t BEGIN SELECT 1; END; \
+             CREATE TABLE fadata(x); CREATE TABLE f_autre(x);",
         );
     }
 

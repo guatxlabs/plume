@@ -61,12 +61,15 @@
 //! relira à la première ouverture : un autoriseur posé sur la connexion de l'export ne verrait jamais ces trois
 //! classes (relevé : il n'y voit ni `CreateView`, ni `CreateTrigger`, ni `CreateVtable`, seulement l'écriture brute de
 //! `sqlite_master`). Chaque ligne de schéma du fichier est donc jugée AVANT l'export, sur une base de brouillon en
-//! mémoire armée de la même liste : une table que l'export rejoue sous la phase `Tables`, toute autre ligne sous la
-//! phase `PostDdl`. Seules exceptions, les tables que le moteur crée lui-même (`TABLES_DU_MOTEUR`), à leur texte exact.
+//! mémoire armée de la même liste : une table que l'export rejoue sous la phase `Tables` (hors tables fantômes,
+//! ci-dessous), toute autre ligne sous la phase `PostDdl`. Seules exceptions, les tables que le moteur crée lui-même
+//! (`TABLES_DU_MOTEUR`), à leur texte exact.
 //! Un refus nomme la phase « format ancien ».
-//! PORTÉE POUR UNE TABLE VIRTUELLE : sa ligne est préparée sur le brouillon (module et classe d'instruction), puis ses
-//! ARGUMENTS sont jugés comme au format courant (ci-dessous) ; ce que le format courant juge de plus en l'exécutant,
-//! c'est-à-dire ce que le module fait à sa création, n'est pas rejoué ici.
+//! UNE TABLE VIRTUELLE Y EST JUGÉE COMME AU FORMAT COURANT : sa ligne est préparée sur le brouillon (module, classe
+//! d'instruction, puis ARGUMENTS, ci-dessous), puis EXÉCUTÉE sous la liste, de sorte que ce que le module fait à sa
+//! création est jugé comme au format courant. Le module y crée ses tables fantômes ; celles que le fichier porte (que
+//! l'export rejoue avec leurs lignes) ne sont donc pas créées comme des tables, et doivent être exactement celles que le
+//! module a créées, nom et texte.
 //!
 //! LES ARGUMENTS D'UNE TABLE VIRTUELLE, DANS LES DEUX FORMATS. L'autoriseur ne voit d'une création de table virtuelle que
 //! son nom et son module (`SQLITE_CREATE_VTABLE`) : les arguments ne lui passent jamais. Une fois la chaîne préparée sous
@@ -168,6 +171,8 @@ pub(super) enum Cause {
     TableNonCreee,
     /// Une création de table virtuelle porte un argument que l'écrivain n'émet pas (`argument_admis`).
     ArgumentDeTableVirtuelleHorsListe,
+    /// Format ancien : les tables fantômes du fichier ne sont pas exactement celles que le module crée, nom et texte.
+    TablesFantomesHorsDeCeQueCreeLeModule,
 }
 
 impl Cause {
@@ -178,6 +183,7 @@ impl Cause {
             Cause::InsertionHorsForme => "insertion qui ne lie pas exactement les valeurs de la ligne",
             Cause::TableNonCreee => "table non créée par cette restauration",
             Cause::ArgumentDeTableVirtuelleHorsListe => "argument de table virtuelle hors de ce que l'écrivain émet",
+            Cause::TablesFantomesHorsDeCeQueCreeLeModule => "tables fantômes autres que celles que le module crée",
         }
     }
 }
@@ -239,13 +245,16 @@ impl Etat {
     /// `nom` est une table fantôme d'une table virtuelle créée par cette restauration (`<vt>_<suffixe>`, suffixes de
     /// l'écrivain, `collect_dump_plan`).
     fn est_une_table_fantome(&self, nom: &str) -> bool {
-        self.tables_virtuelles_creees.iter().any(|vt| {
-            nom.len() > vt.len() + 1
-                && nom.starts_with(vt.as_str())
-                && nom.as_bytes()[vt.len()] == b'_'
-                && SUFFIXES_DES_TABLES_FANTOMES.contains(&&nom[vt.len() + 1..])
-        })
+        self.tables_virtuelles_creees.iter().any(|vt| est_une_table_fantome_de(vt, nom))
     }
+}
+
+/// `nom` est `<vt>_<suffixe>`, l'un des suffixes de l'écrivain (`SUFFIXES_DES_TABLES_FANTOMES`), au texte exact.
+fn est_une_table_fantome_de(vt: &str, nom: &str) -> bool {
+    nom.len() > vt.len() + 1
+        && nom.starts_with(vt)
+        && nom.as_bytes()[vt.len()] == b'_'
+        && SUFFIXES_DES_TABLES_FANTOMES.contains(&&nom[vt.len() + 1..])
 }
 
 /// Les actions qu'un module FTS fait lui-même sur SES tables fantômes (cf. en-tête du module), dans toute phase où une
@@ -369,6 +378,8 @@ impl ListeFermee {
     /// POSE L'AUTORISEUR. À appeler juste après l'ouverture (clé et réglages mémoire posés), avant toute instruction de
     /// la restauration.
     pub(super) fn armer(conn: &Connection) -> ListeFermee {
+        #[cfg(test)]
+        crochets_de_restauration::passer_la_connexion(conn);
         ListeFermee::armer_sous(conn, None)
     }
 
@@ -485,6 +496,10 @@ impl ListeFermee {
     /// jugé par `argument_admis` contre les tables ordinaires créées jusqu'ici par cette restauration. Une chaîne qui ne
     /// crée pas de table virtuelle n'est pas concernée.
     fn juger_les_arguments_de_la_table_virtuelle(&self, phase: Phase, chaine: &str) -> Result<(), String> {
+        #[cfg(test)]
+        if crochets_de_restauration::arguments_non_juges() {
+            return Ok(());
+        }
         let (module, tables_creees) = {
             let e = self.etat();
             (e.module_en_creation.clone(), e.tables_creees.clone())
@@ -642,6 +657,11 @@ const TABLES_DU_MOTEUR: [&str; 3] = [
 struct LigneDuFormatAncien {
     /// `type = 'table' AND rootpage > 0` : l'export rejoue son `sql` comme une création de table.
     table_rejouee: bool,
+    /// `type = 'table'` : avec `table_rejouee` faux, une table virtuelle (ou une ligne qui se dit table sans racine,
+    /// jugée comme toute autre ligne).
+    table: bool,
+    /// `name`, vide s'il manque : le nom sous lequel une table fantôme du fichier se reconnaît.
+    nom: String,
     /// `type = 'view'` : l'export la recopie telle quelle ; un déclencheur `INSTEAD OF` s'y appuie.
     vue: bool,
     sql: String,
@@ -654,12 +674,12 @@ fn lire_le_schema_du_format_ancien(clair: &Connection) -> Result<Vec<LigneDuForm
     let refusee = |e: rusqlite::Error| format!("restore : {}", refusee_par_le_moteur_sous(PHASE_DU_FORMAT_ANCIEN, &e));
     let mut s = clair
         .prepare(
-            "SELECT COALESCE(type = 'table' AND rootpage > 0, 0), COALESCE(type = 'view', 0), sql \
-             FROM sqlite_master WHERE sql IS NOT NULL ORDER BY rowid",
+            "SELECT COALESCE(type = 'table' AND rootpage > 0, 0), COALESCE(type = 'view', 0), sql, \
+             COALESCE(type = 'table', 0), COALESCE(name, '') FROM sqlite_master WHERE sql IS NOT NULL ORDER BY rowid",
         )
         .map_err(refusee)?;
     let lignes = s
-        .query_map([], |r| Ok(LigneDuFormatAncien { table_rejouee: r.get(0)?, vue: r.get(1)?, sql: r.get(2)? }))
+        .query_map([], |r| Ok(LigneDuFormatAncien { table_rejouee: r.get(0)?, vue: r.get(1)?, sql: r.get(2)?, table: r.get(3)?, nom: r.get(4)? }))
         .map_err(refusee)?;
     lignes.collect::<rusqlite::Result<Vec<_>>>().map_err(refusee)
 }
@@ -694,11 +714,20 @@ fn accepter_toute_collation_sur_le_brouillon(brouillon: &Connection) {
 
 /// JUGE LE SCHÉMA D'UN FICHIER DE L'ANCIEN FORMAT, AVANT L'EXPORT (cf. en-tête du module). Sur un brouillon en mémoire
 /// armé de la liste : chaque table que l'export rejoue est jugée sous `Tables` puis créée (index et déclencheurs
-/// s'appuient sur elle) ; chaque vue est jugée sous `PostDdl` puis créée (un déclencheur `INSTEAD OF` s'appuie sur
-/// elle) ; toute autre ligne (index, déclencheur, table virtuelle, et tout autre type) est jugée sous `PostDdl` sans être
-/// jouée — l'autoriseur juge une instruction pendant sa préparation, et aucune table virtuelle n'est créée, donc aucun
-/// module ne travaille sur le brouillon. Les arguments d'une table virtuelle, que l'autoriseur ne voit pas et que l'export
-/// recopierait tels quels, sont jugés par `preparer_une_chaine_de_l_archive` contre les tables créées sur le brouillon.
+/// s'appuient sur elle) ; chaque vue est jugée sous `PostDdl` puis créée (un déclencheur `INSTEAD OF` s'y appuie) ; toute
+/// autre ligne est jugée sous `PostDdl`, et seule une création de table virtuelle y est aussi EXÉCUTÉE, comme au format
+/// courant : ce que le module fait à sa création passe sous la liste (`executer_une_chaine`), et il y crée ses tables
+/// fantômes. Les index et déclencheurs ne sont que préparés : l'autoriseur juge une instruction pendant sa préparation.
+/// Les arguments d'une table virtuelle, que l'autoriseur ne voit pas, sont jugés par `preparer_une_chaine_de_l_archive`
+/// contre les tables créées sur le brouillon.
+///
+/// LES TABLES FANTÔMES DU FICHIER (une table rejouée nommée `<vt>_<suffixe>`, `vt` étant le nom d'une ligne de table non
+/// rejouée du fichier) ne sont pas créées comme des tables : le module les crée sur le brouillon. Une fois toutes les
+/// lignes jugées, l'ensemble de leurs noms et de leurs textes doit être EXACTEMENT celui des tables fantômes que les
+/// modules ont créées sur le brouillon ; une table en trop, une table absente ou un texte réécrit refuse
+/// (`Cause::TablesFantomesHorsDeCeQueCreeLeModule`). Leurs LIGNES, que l'export recopie, ne sont pas jugées : une table
+/// sans contenu (`content=''`) n'a pas d'autre copie de ses données.
+///
 /// Le premier refus arrête le jugement et nomme la phase « format ancien ».
 ///
 /// Un refus du MOTEUR pendant le jugement (une ligne que le brouillon ne sait pas préparer ou créer) reste servi, fermé,
@@ -709,12 +738,14 @@ fn accepter_toute_collation_sur_le_brouillon(brouillon: &Connection) {
 /// vues sont créées avant les déclencheurs qui s'y appuient.
 pub(super) fn juger_le_schema_du_format_ancien(clair: &Connection) -> Result<(), String> {
     let lignes = lire_le_schema_du_format_ancien(clair)?;
-    let brouillon = Connection::open_in_memory()
-        .map_err(|e| format!("restore : {}", refusee_par_le_moteur_sous(PHASE_DU_FORMAT_ANCIEN, &e)))?;
+    let refusee = |e: rusqlite::Error| format!("restore : {}", refusee_par_le_moteur_sous(PHASE_DU_FORMAT_ANCIEN, &e));
+    let brouillon = Connection::open_in_memory().map_err(refusee)?;
     accepter_toute_collation_sur_le_brouillon(&brouillon);
     let liste = ListeFermee::armer_pour_le_format_ancien(&brouillon);
     let jugees: Vec<&LigneDuFormatAncien> = lignes.iter().filter(|l| !TABLES_DU_MOTEUR.contains(&l.sql.as_str())).collect();
-    for l in jugees.iter().filter(|l| l.table_rejouee) {
+    let virtuelles: Vec<&str> = jugees.iter().filter(|l| l.table && !l.table_rejouee).map(|l| l.nom.as_str()).collect();
+    let fantome_du_fichier = |l: &LigneDuFormatAncien| l.table_rejouee && virtuelles.iter().any(|vt| est_une_table_fantome_de(vt, &l.nom));
+    for l in jugees.iter().filter(|l| l.table_rejouee && !fantome_du_fichier(l)) {
         let stmt = liste.preparer_une_chaine_de_l_archive(&brouillon, Phase::Tables, "", &l.sql)?;
         liste.executer_une_chaine(stmt, Phase::Tables)?;
     }
@@ -723,7 +754,74 @@ pub(super) fn juger_le_schema_du_format_ancien(clair: &Connection) -> Result<(),
         liste.executer_une_chaine(stmt, Phase::PostDdl)?;
     }
     for l in jugees.iter().filter(|l| !l.table_rejouee && !l.vue) {
-        liste.preparer_une_chaine_de_l_archive(&brouillon, Phase::PostDdl, "", &l.sql)?;
+        let stmt = liste.preparer_une_chaine_de_l_archive(&brouillon, Phase::PostDdl, "", &l.sql)?;
+        let cree_une_table_virtuelle = liste.etat().module_en_creation.is_some();
+        if cree_une_table_virtuelle {
+            liste.executer_une_chaine(stmt, Phase::PostDdl)?;
+        }
+    }
+    // Le jugement est fait : l'autoriseur est retiré pour relire le schéma du brouillon.
+    brouillon.authorizer(None::<fn(AuthContext<'_>) -> Authorization>);
+    let du_fichier: std::collections::BTreeSet<(String, String)> =
+        jugees.iter().filter(|l| fantome_du_fichier(l)).map(|l| (l.nom.clone(), l.sql.clone())).collect();
+    // HORS D'ATTEINTE par une archive : la relecture vise le brouillon en mémoire, dont toute ligne a été écrite par le
+    // moteur sous la liste ; un échec y serait une panne du moteur, servie fermée sous « format ancien » et son code.
+    let du_brouillon: std::collections::BTreeSet<(String, String)> = {
+        let mut s = brouillon.prepare("SELECT name, sql FROM sqlite_master WHERE type = 'table'").map_err(refusee)?;
+        let lues = s.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))).map_err(refusee)?;
+        let lues = lues.collect::<rusqlite::Result<Vec<_>>>().map_err(refusee)?;
+        let e = liste.etat();
+        lues.into_iter().filter(|(nom, _)| e.est_une_table_fantome(nom)).collect()
+    };
+    if du_fichier != du_brouillon {
+        return Err(liste.refus(Phase::PostDdl, Cause::TablesFantomesHorsDeCeQueCreeLeModule));
     }
     Ok(())
+}
+
+/// CROCHETS DE TEST, propres au fil qui les arme (la restauration se joue sur le fil de son appelant) et désarmés quand
+/// la garde rendue sort de portée :
+///  - `sans_jugement_des_arguments` : `juger_les_arguments_de_la_table_virtuelle` admet tout argument, pour que les deux
+///    gardes de la reconstruction FTS (lecture de la seule table de contenu créée par la restauration, fonctions des
+///    seuls modules), que ce jugement rend inatteignables par une archive, gardent un témoin ;
+///  - `sur_la_connexion` : une fermeture reçoit chaque connexion de restauration du format courant dès son ouverture
+///    (`ListeFermee::armer`), avant toute instruction ; un témoin y abaisse une limite du moteur.
+#[cfg(test)]
+pub(crate) mod crochets_de_restauration {
+    use std::cell::{Cell, RefCell};
+
+    type SurLaConnexion = std::rc::Rc<dyn Fn(&rusqlite::Connection)>;
+
+    thread_local! {
+        static SANS_JUGEMENT: Cell<bool> = const { Cell::new(false) };
+        static SUR_LA_CONNEXION: RefCell<Option<SurLaConnexion>> = const { RefCell::new(None) };
+    }
+
+    /// Désarme les crochets du fil en sortie de portée, panique comprise.
+    pub(crate) struct Arme(());
+
+    impl Drop for Arme {
+        fn drop(&mut self) {
+            SANS_JUGEMENT.with(|c| c.set(false));
+            SUR_LA_CONNEXION.with(|c| *c.borrow_mut() = None);
+        }
+    }
+
+    pub(crate) fn sans_jugement_des_arguments() -> Arme {
+        SANS_JUGEMENT.with(|c| c.set(true));
+        Arme(())
+    }
+
+    pub(crate) fn sur_la_connexion(f: impl Fn(&rusqlite::Connection) + 'static) -> Arme {
+        SUR_LA_CONNEXION.with(|c| *c.borrow_mut() = Some(std::rc::Rc::new(f)));
+        Arme(())
+    }
+
+    pub(super) fn arguments_non_juges() -> bool {
+        SANS_JUGEMENT.with(|c| c.get())
+    }
+
+    pub(super) fn passer_la_connexion(conn: &rusqlite::Connection) {
+        SUR_LA_CONNEXION.with(|c| c.borrow().clone()).into_iter().for_each(|f| f(conn));
+    }
 }

@@ -858,8 +858,9 @@ pub(crate) fn restore_compressed(src: &str, dest_db: &str, key: Option<&str>, ov
         // sans ses compagnons. Un `-wal` trouvé à côté n'a pas été produit avec lui (il vient d'être écrit) ; il
         // n'est pas rejoué.
         // LE SCHÉMA DU FICHIER SUIT LA LISTE DU FORMAT COURANT : il est jugé AVANT l'export
-        // (`restauration_liste_fermee::juger_le_schema_du_format_ancien`), arguments des tables virtuelles compris ; un
-        // refus arrête la restauration avant l'export et avant toute publication. Une erreur du moteur née du fichier (lecture de son schéma, export) rend son code,
+        // (`restauration_liste_fermee::juger_le_schema_du_format_ancien`), arguments et création des tables virtuelles
+        // compris, leurs tables fantômes comparées à celles que le module crée ; un refus arrête la restauration avant
+        // l'export et avant toute publication. Une erreur du moteur née du fichier (lecture de son schéma, export) rend son code,
         // jamais son texte, qui peut citer un nom ou un morceau du schéma lu.
         restaurer_a_cote_puis_publier(dest_db, |en_cours| {
             use super::restauration_liste_fermee::{juger_le_schema_du_format_ancien, refusee_par_le_moteur_sous, PHASE_DU_FORMAT_ANCIEN};

@@ -1000,6 +1000,8 @@ mod restauration_liste_fermee; // la restauration n'accepte que les formes d'ins
 pub(crate) use dump_restauration::{backup_compressed, restore_compressed};
 #[cfg(test)]
 pub(crate) use dump_restauration::{crochet_du_clair_de_restauration, SUFFIXE_RESTAURATION_EN_COURS, SUFFIXE_SAUVEGARDE_EN_COURS};
+#[cfg(test)]
+pub(crate) use restauration_liste_fermee::crochets_de_restauration;
 use dump_restauration::quote_ident; // consommé par `verification` (inventaire) via `use super::*`
 
 mod retention; // RÉTENTION : classification des noms + GFS + plan de purge + helpers purs de l'ordonnanceur natif

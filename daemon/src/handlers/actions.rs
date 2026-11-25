@@ -695,15 +695,40 @@ macro_rules! intention_du_responder_local {
     };
 }
 
+/// `P10.21-n` — LA MÊME RIPOSTE COMMENCÉE, UNE FOIS DITE AU JOURNAL (`SQL_DIRE_UNE_RIPOSTE_COMMENCEE`) : la mention
+/// remplace `intention_du_responder_local!` pour que les passages suivants du minuteur (toutes les 20 s) se taisent
+/// au lieu de redire la ligne sans fin. Elle reste une exécution commencée pour tous les lecteurs : ni ce responder
+/// ni un agent ne l'exécutent. Sans apostrophe, comme la mention d'intention.
+macro_rules! intention_du_responder_local_dite {
+    () => {
+        "[responder local] EXÉCUTION COMMENCÉE, verdict jamais posé, dite au journal du responder : elle ne sera PAS \
+         rejouée, à trancher (annuler la riposte, ou la recréer)."
+    };
+}
+
+/// `P10.21-n` — UNE RIPOSTE RÉCLAMÉE PAR UN AGENT, RÉCLAMATION PÉRIMÉE, UNE FOIS DITE PAR LE RESPONDER LOCAL
+/// (`SQL_DIRE_UNE_RIPOSTE_RECLAMEE`) : les passages suivants se taisent. L'agent peut toujours la réclamer
+/// (`CONDITION_DE_RECLAMATION_D_AGENT` ne lit pas cette mention), et son verdict la remplace. Dite une fois par
+/// LIGNE, pas une fois par réclamation : un agent qui la réclame de nouveau et dont le verdict ne vient pas
+/// davantage n'est pas redit. Sans apostrophe.
+macro_rules! reclamation_d_agent_perimee_dite {
+    () => {
+        "[responder local] réclamée par un agent, verdict pas venu dans le délai de réclamation, dite au journal du \
+         responder : PAS exécutée par le responder local, elle reste réclamable par l agent."
+    };
+}
+
 /// `P10.21-n` — LA CONDITION DE RÉCLAMATION D'UN AGENT, la seule écriture : le SELECT d'`actions_pending`
 /// en dérive, l'UPDATE de réclamation et sa relecture la rejouent (`?1` = hôte du jeton, `?2` =
 /// maintenant, `?3` = délai de péremption, `?4` = identifiant de l'action pour l'UPDATE). Une riposte
 /// dont l'exécution a été commencée par le responder local (`intention_du_responder_local!`) n'est
-/// jamais remise à un agent, même une fois la fenêtre passée : sur un hôte à la fois central et agent,
-/// elle serait exécutée une seconde fois.
+/// jamais remise à un agent, même une fois la fenêtre passée et une fois dite (`intention_du_responder_local_dite!`) :
+/// sur un hôte à la fois central et agent, elle serait exécutée une seconde fois.
 pub(crate) const CONDITION_DE_RECLAMATION_D_AGENT: &str = concat!(
     "(host=?1 OR host IS NULL OR host='') AND status='approved' AND kind IN ('ban_ip','unban_ip') AND result IS NOT '",
     intention_du_responder_local!(),
+    "' AND result IS NOT '",
+    intention_du_responder_local_dite!(),
     "' AND ",
     reclamation_libre_ou_perimee!("?2", "?3")
 );
@@ -2052,16 +2077,23 @@ macro_rules! hote_du_responder_local {
 /// — ET que personne n'a réclamées récemment (`P4.7-f`) : le central ne double plus un agent qui tient
 /// déjà le dossier, lui qui lit la liste d'épargne que le central n'a pas. Paramètres : ?1 = identité,
 /// ?2 = identité lue (0/1), ?3 = maintenant, ?4 = délai de péremption d'une réclamation. Colonnes :
-/// identifiant, genre, cible, simulation, puis `reclamee` (une réclamation, forcément périmée ici) et
-/// `commencee_ici` (la ligne porte `intention_du_responder_local!`) : `respond_run` n'exécute qu'une
-/// ligne où les deux sont faux, et DIT les autres. La fenêtre est celle de l'agent
+/// identifiant, genre, cible, simulation, puis `reclamee` (une réclamation, forcément périmée ici),
+/// `commencee_ici` (la ligne porte `intention_du_responder_local!`) et `deja_dite` (la ligne porte une mention
+/// « dite » : `intention_du_responder_local_dite!` ou `reclamation_d_agent_perimee_dite!`) : `respond_run` se tait
+/// sur une ligne déjà dite, DIT une fois une ligne commencée ou réclamée, et n'exécute que les autres. Les colonnes
+/// sont des `IS`, jamais `IN` : un `result` NULL rendrait NULL, illisible en booléen, et le tour entier serait
+/// sauté. La fenêtre est celle de l'agent
 /// (`reclamation_libre_ou_perimee!`), écrite une fois ; hôte et genre diffèrent À DESSEIN : ce responder
 /// exécute tout le vocabulaire fermé, l'agent ne réclame que ban et levée, et la clause d'hôte suit
 /// l'identité lue (`S33`).
 pub(crate) const ACTIONS_A_RECLAMER_ICI: &str = concat!(
     "SELECT id,kind,target,dry_run,claimed_ts IS NOT NULL,result IS '",
     intention_du_responder_local!(),
-    "' FROM action WHERE status='approved' AND ",
+    "',(result IS '",
+    intention_du_responder_local_dite!(),
+    "' OR result IS '",
+    reclamation_d_agent_perimee_dite!(),
+    "') FROM action WHERE status='approved' AND ",
     hote_du_responder_local!(),
     " AND ",
     reclamation_libre_ou_perimee!("?3", "?4")
@@ -2081,6 +2113,34 @@ pub(crate) const SQL_INTENTION_DU_RESPONDER_LOCAL: &str = concat!(
     " AND ",
     reclamation_libre!()
 );
+
+/// `P10.21-n` — UNE RIPOSTE COMMENCÉE, DITE : sa mention d'intention devient `intention_du_responder_local_dite!`,
+/// sur une ligne encore approuvée qui porte toujours l'intention (un verdict posé entre-temps l'emporte). ?1 =
+/// identifiant de l'action.
+pub(crate) const SQL_DIRE_UNE_RIPOSTE_COMMENCEE: &str = concat!(
+    "UPDATE action SET result='",
+    intention_du_responder_local_dite!(),
+    "' WHERE id=?1 AND status='approved' AND result IS '",
+    intention_du_responder_local!(),
+    "'"
+);
+
+/// `P10.21-n` — UNE RIPOSTE RÉCLAMÉE PAR UN AGENT, DITE : `reclamation_d_agent_perimee_dite!` dans `result`, sur une
+/// ligne encore approuvée et réclamée, qui ne porte pas une mention du responder local (une intention n'est jamais
+/// remplacée par celle-ci). ?1 = identifiant de l'action.
+pub(crate) const SQL_DIRE_UNE_RIPOSTE_RECLAMEE: &str = concat!(
+    "UPDATE action SET result='",
+    reclamation_d_agent_perimee_dite!(),
+    "' WHERE id=?1 AND status='approved' AND claimed_ts IS NOT NULL AND result IS NOT '",
+    intention_du_responder_local!(),
+    "' AND result IS NOT '",
+    intention_du_responder_local_dite!(),
+    "'"
+);
+
+/// `P10.21-n` — la mention « dite » n'a pas été écrite : la riposte sera redite au passage suivant.
+pub(crate) const MENTION_DITE_NON_ECRITE: &str =
+    "la mention « dite » n'a pas été écrite : la riposte sera redite au passage suivant.";
 
 /// `P10.21-n` — ce que l'écriture de l'intention a rendu. Trois issues : seule `Ecrite` laisse exécuter.
 #[derive(Debug, PartialEq, Eq)]
@@ -2105,17 +2165,18 @@ pub(crate) fn ecrire_l_intention_du_responder(conn: &Connection, id: i64, me: &s
 }
 
 /// `P10.21-n` — une riposte dont l'intention est écrite et qu'aucun verdict n'a close dans le délai de
-/// réclamation. Dite au journal (identifiant seul), jamais rejouée.
+/// réclamation. Dite au journal (identifiant seul) UNE fois (`SQL_DIRE_UNE_RIPOSTE_COMMENCEE`), jamais rejouée.
 pub(crate) const RIPOSTE_COMMENCEE_SANS_VERDICT: &str =
     "son exécution a été commencée par un passage du responder local (intention écrite) et aucun verdict \
      n'a été posé dans le délai de réclamation : elle a pu avoir lieu. Elle n'est PAS rejouée ; à trancher \
-     par l'exploitant (annuler la riposte, ou la recréer).";
+     par l'exploitant (annuler la riposte, ou la recréer). Dite une seule fois.";
 
 /// `P10.21-n` — une riposte réclamée par un agent dont le verdict n'est pas venu dans le délai de
-/// réclamation (hôte à la fois central et agent, même identité). Dite, jamais exécutée ici.
+/// réclamation (hôte à la fois central et agent, même identité). Dite UNE fois (`SQL_DIRE_UNE_RIPOSTE_RECLAMEE`),
+/// jamais exécutée ici.
 pub(crate) const RIPOSTE_RECLAMEE_PAR_UN_AGENT: &str =
     "elle a été réclamée par un agent dont le verdict n'est pas venu dans le délai de réclamation : elle a \
-     pu être exécutée. Elle n'est PAS exécutée ici ; elle reste réclamable par l'agent.";
+     pu être exécutée. Elle n'est PAS exécutée ici ; elle reste réclamable par l'agent. Dite une seule fois.";
 
 /// `P10.21-n` — l'intention n'a pris aucune ligne : rien n'est exécuté ce tour-ci.
 pub(crate) const INTENTION_NON_PRISE: &str =
@@ -2220,6 +2281,15 @@ pub(crate) fn verdict_conserve_relu(conn: &Connection, id: i64) -> VerdictConser
     }
 }
 
+/// `P10.21-n` — écrit la mention « dite » d'une ligne écartée (`sql` : `SQL_DIRE_UNE_RIPOSTE_COMMENCEE` ou
+/// `SQL_DIRE_UNE_RIPOSTE_RECLAMEE`). Zéro ligne (verdict posé entre-temps) est juste : rien à redire. Refusée par la
+/// base : dit, et la ligne sera redite au passage suivant.
+fn dire_une_seule_fois(conn: &Connection, id: i64, sql: &str) {
+    if let Err(e) = conn.execute(sql, params![id]) {
+        eprintln!("[responder] WARN action {id} : {MENTION_DITE_NON_ECRITE} ({e})");
+    }
+}
+
 /// Sous-commande `plume-daemon respond` (exécutée en ROOT par plume-respond) : n'exécute QUE les actions
 /// approuvées + allowlistées + validées ; dry-run -> aucune modif ; tout est journalisé dans `action`.
 pub(crate) fn respond_run() {
@@ -2307,12 +2377,12 @@ pub(crate) fn respond_run() {
     // processus par déclenchement de la minuterie), pas une boucle du démon long ; le compteur
     // `TICKS_AVEUGLES` meurt avec le processus et n'atteint pas `/metrics`. C'est la ligne de journal
     // (stderr -> journald) qui est ici l'observable, et le compteur reste posé pour que la forme soit UNE.
-    // `P10.21-n` — chaque ligne porte aussi `reclamee` et `commencee_ici` (`ACTIONS_A_RECLAMER_ICI`).
-    let lues: Vec<(i64, String, String, bool, bool, bool)> = match conn
+    // `P10.21-n` — chaque ligne porte aussi `reclamee`, `commencee_ici` et `deja_dite` (`ACTIONS_A_RECLAMER_ICI`).
+    let lues: Vec<(i64, String, String, bool, bool, bool, bool)> = match conn
         .prepare(ACTIONS_A_RECLAMER_ICI)
         .and_then(|mut s| {
             s.query_map(params![me, i64::from(identite_lue), now(), RECLAMATION_PERIMEE_S], |r| {
-                Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, i64>(3)? != 0, r.get::<_, bool>(4)?, r.get::<_, bool>(5)?))
+                Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, i64>(3)? != 0, r.get::<_, bool>(4)?, r.get::<_, bool>(5)?, r.get::<_, bool>(6)?))
             })?
                 .collect::<rusqlite::Result<Vec<_>>>()
         }) {
@@ -2325,15 +2395,22 @@ pub(crate) fn respond_run() {
     // `P10.21-n` — UNE RIPOSTE DÉJÀ COMMENCÉE N'EST PAS REJOUÉE, ELLE EST DITE, avant toute validation : une
     // ligne commencée ne prend pas non plus un verdict `blocked` qui effacerait son intention. Seules les lignes
     // que personne n'a réclamées entrent dans la liste de travail. L'identifiant seul part au journal, jamais la
-    // cible.
+    // cible. Chaque ligne écartée est dite UNE fois : la mention « dite » écrite dans `result` fait taire les
+    // passages suivants (toutes les 20 s, sans quoi la même ligne revenait sans fin). Une ligne écartée n'arrête
+    // jamais le tour : les suivantes sont examinées.
     let mut pending: Vec<(i64, String, String, bool)> = Vec::with_capacity(lues.len());
-    for (id, kind, target, dry, reclamee, commencee_ici) in lues {
+    for (id, kind, target, dry, reclamee, commencee_ici, deja_dite) in lues {
+        if deja_dite {
+            continue;
+        }
         if commencee_ici {
             eprintln!("[responder] WARN action {id} NON rejouée : {RIPOSTE_COMMENCEE_SANS_VERDICT}");
+            dire_une_seule_fois(&conn, id, SQL_DIRE_UNE_RIPOSTE_COMMENCEE);
             continue;
         }
         if reclamee {
             eprintln!("[responder] action {id} NON exécutée ici : {RIPOSTE_RECLAMEE_PAR_UN_AGENT}");
+            dire_une_seule_fois(&conn, id, SQL_DIRE_UNE_RIPOSTE_RECLAMEE);
             continue;
         }
         pending.push((id, kind, target, dry));

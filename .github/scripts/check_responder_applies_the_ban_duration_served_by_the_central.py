@@ -3583,13 +3583,15 @@ def s_registre_place_partielle_refusee_entiere(script, awk):
 # ----------------------------------------------------------------------------------------------------------
 # `P10.21-n` (vague CI) — HÔTE À LA FOIS CENTRAL ET AGENT : le responder local du démon (`plume-daemon respond`, lancé
 # par `plume-respond.timer`) ne prend ni le verrou ni le registre de l'agent ; l'agent le DIT à chaque tour quand
-# `systemctl` dit ce minuteur actif, et rien d'autre ne change.
+# `systemctl` dit ce minuteur actif, et rien d'autre ne change. La phrase dit ce que fait le démon : il n'exécute pas une
+# riposte réclamée par un agent (il la dit), et une riposte qu'il a commencée n'est pas remise à un agent (`respond_run`,
+# `CONDITION_DE_RECLAMATION_D_AGENT`) ; elle ne dit plus une double exécution que la base empêche.
 # ----------------------------------------------------------------------------------------------------------
 LIGNE_CENTRAL_ET_AGENT = (
     "respond: HOTE A LA FOIS CENTRAL ET AGENT (plume-respond.timer actif) : le responder local du demon (plume-daemon "
-    "respond) ne prend ni ce verrou ni ce registre d execution ; s il porte la meme identite que cet agent, il execute "
-    "aussi une riposte de cet hote dont la reclamation d agent a passe la fenetre, et elle peut alors etre executee deux "
-    "fois")
+    "respond) ne prend ni ce verrou ni ce registre d execution ; il n execute pas une riposte reclamee par un agent, "
+    "meme passe la fenetre (il la dit), et une riposte qu il a commencee n est pas remise a un agent : la separation "
+    "tient dans la base")
 # Faux `systemctl` : trace ses arguments ; `is-active --quiet <unité>` rend le code fixé pour CETTE unité par
 # SYSTEMCTL_ACTIFS (« <unité>=<code> ... »), 4 (unité inconnue) sinon.
 FAUX_SYSTEMCTL = r"""#!/bin/sh

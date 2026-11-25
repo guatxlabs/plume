@@ -1200,12 +1200,12 @@ consequence_de_la_re_presentation() {
 #     n y change rien) et un lancement a la main sort au verrou. Re-servies au tour suivant, elles sont lues au
 #     registre ci-dessus.
 #   - hote a la fois CENTRAL et agent, sous la meme identite : le responder local du demon (`plume-daemon respond`,
-#     sur son propre minuteur) prend aussi une action approuvee dont la reclamation d agent a passe la fenetre et dont
-#     `host` est sa propre identite (`ACTIONS_A_RECLAMER_ICI`, daemon/src/handlers/actions.rs), et il l EXECUTE sans
-#     lire ni ce verrou ni ce registre. Une riposte que l agent tient encore, ou dont le verdict n est pas encore pris
-#     par le central, peut donc etre executee une seconde fois par le demon. Voir « HOTE A LA FOIS CENTRAL ET AGENT »,
-#     plus bas : le partage est impossible depuis ce script, et c est dit au journal a chaque tour ou
-#     `plume-respond.timer` est actif.
+#     sur son propre minuteur) RELIT une action approuvee dont la reclamation d agent a passe la fenetre et dont
+#     `host` est sa propre identite (`ACTIONS_A_RECLAMER_ICI`, daemon/src/handlers/actions.rs), mais il ne l execute
+#     pas : il la dit au journal, une fois (`RIPOSTE_RECLAMEE_PAR_UN_AGENT`). Il n execute qu une ligne que personne
+#     n a reclamee, apres y avoir ecrit son intention, et une ligne qui porte cette intention n est plus remise a un
+#     agent. La separation tient dans la base, sans ce verrou ni ce registre, que le demon ne lit pas. Voir « HOTE A
+#     LA FOIS CENTRAL ET AGENT », plus bas : c est dit au journal a chaque tour ou `plume-respond.timer` est actif.
 # Le lien entre la fenetre et le rythme des unites est tenu par un temoin du demon
 # (daemon/src/tests/fenetre_de_reclamation_et_rythme_des_repondeurs.rs).
 VERROU_FICHIER="$REJEU_DIR/verrou"
@@ -1280,9 +1280,13 @@ prendre_le_verrou() {
 # l aveu `PHRASE_RESPONDER_LOCAL_HORS_VERROU` part au journal. Sans `systemctl`, ou minuteur du demon inactif ou
 # inconnu (hote seulement agent) : rien n est dit. Dans tous les cas l execution des ripostes est la meme : l aveu ne
 # suspend rien.
-# CE QUI N EST PAS TENU : un responder du demon lance autrement que par ce minuteur (cron, a la main) n est pas vu ; et
-# la double execution elle-meme reste possible (reste nomme : elle se ferme cote demon, pas ici).
-PHRASE_RESPONDER_LOCAL_HORS_VERROU="HOTE A LA FOIS CENTRAL ET AGENT (plume-respond.timer actif) : le responder local du demon (plume-daemon respond) ne prend ni ce verrou ni ce registre d execution ; s il porte la meme identite que cet agent, il execute aussi une riposte de cet hote dont la reclamation d agent a passe la fenetre, et elle peut alors etre executee deux fois"
+# CE QUI SEPARE LES DEUX, cote demon (`respond_run`) : le demon n execute pas une riposte reclamee par un agent, meme
+# reclamation perimee (il la dit, une fois) ; il ecrit son intention (`claimed_ts` et une mention dans `result`) avant
+# d executer, sur une ligne que personne n a reclamee ; une ligne qui porte cette intention n est plus remise a un
+# agent, meme la fenetre passee. Une meme riposte n est donc pas executee par les deux.
+# CE QUI N EST PAS TENU : un responder du demon lance autrement que par ce minuteur (cron, a la main) n est pas vu par
+# cet aveu (la separation, elle, tient dans la base quel que soit le lancement).
+PHRASE_RESPONDER_LOCAL_HORS_VERROU="HOTE A LA FOIS CENTRAL ET AGENT (plume-respond.timer actif) : le responder local du demon (plume-daemon respond) ne prend ni ce verrou ni ce registre d execution ; il n execute pas une riposte reclamee par un agent, meme passe la fenetre (il la dit), et une riposte qu il a commencee n est pas remise a un agent : la separation tient dans la base"
 dire_le_responder_local_hors_verrou() {
   # `systemctl` absent : la condition echoue (commande introuvable), rien n est dit.
   if systemctl is-active --quiet plume-respond.timer >/dev/null 2>&1; then

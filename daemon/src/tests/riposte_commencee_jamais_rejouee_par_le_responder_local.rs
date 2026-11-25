@@ -12,7 +12,8 @@
 // CE QUI EST TENU ICI, par sous-processus qui jouent `respond_run` avec un faux `cscli` en tête de PATH :
 //   (1) une exécution interrompue (le faux `cscli` tue le responder) laisse l'intention écrite ; le passage
 //       suivant, dans la fenêtre, ne fait rien et ne dit rien ; passé la fenêtre, il ne rejoue pas et le dit,
-//       ligne ENTIÈRE ; un agent ne la réclame pas non plus ;
+//       ligne ENTIÈRE, une fois (la ligne porte alors la mention « dite ») ; le passage d'après se tait ; un agent
+//       ne la réclame ni avant ni après la mention ;
 //   (2) une intention refusée par la base (déclencheur ABORT sur la PREMIÈRE riposte) : rien n'est exécuté
 //       pour elle, la suivante l'est, la ligne de journal est entière ; le déclencheur retiré, le passage
 //       suivant l'exécute ;
@@ -20,8 +21,12 @@
 //   (4) deux réclamations de la même action, sur deux connexions entrelacées : deux responders, puis un agent
 //       et un responder dans les deux ordres — une seule exécution possible ; une riposte annulée ou
 //       réattribuée à un autre hôte entre la lecture et l'intention ne la prend pas ;
-//   (5) une riposte réclamée par l'agent du même hôte, réclamation périmée : non exécutée ici, dite ;
-//   (6) un verdict refusé après l'exécution : la riposte n'est pas rejouée passé la fenêtre, elle est dite.
+//   (5) une riposte réclamée par l'agent du même hôte, réclamation périmée : non exécutée ici, dite une fois, tue au
+//       passage suivant ; l'agent peut toujours la réclamer ;
+//   (6) un verdict refusé après l'exécution : la riposte n'est pas rejouée passé la fenêtre, elle est dite, et la
+//       riposte libre qui la suit est exécutée (une ligne écartée n'arrête pas le tour) ;
+//   (7) la mention « dite » refusée par la base : la ligne de refus est entière, et la riposte est redite au
+//       passage suivant.
 // Aucune ligne du journal ne porte la cible : chaque témoin à sous-processus le vérifie, cible présente.
 //
 // MUTANTS (interrupteurs temporaires `VERIF_MUT`, retirés avant le commit), chacun vu rouge :
@@ -38,7 +43,14 @@
 //   RCL_M_INTENTION_SANS_HOTE (l'intention ne rejoue plus la clause d'hôte) -> (4) ;
 //   RCL_M_AGENT_SANS_MARQUEUR (la condition d'agent ne lit plus l'intention) -> (1), (4) ;
 //   RCL_M_SELECT_SANS_COMMENCEE (la lecture ne rend plus `commencee_ici`) -> (1), (6) ;
-//   RCL_M_SELECT_SANS_RECLAMEE (la lecture ne rend plus `reclamee`) -> (5).
+//   RCL_M_SELECT_SANS_RECLAMEE (la lecture ne rend plus `reclamee`) -> (5) ;
+//   DIT_M_COMMENCEE_BREAK (le bras `commencee_ici` arrête le tour) -> (6) ;
+//   DIT_M_DITE_IGNOREE (une ligne déjà dite n'est plus tue) -> (1), (5) ;
+//   DIT_M_COMMENCEE_NON_MARQUEE (une ligne commencée dite sans mention) -> (1) ;
+//   DIT_M_RECLAMEE_NON_MARQUEE (une ligne réclamée dite sans mention) -> (5), (7) ;
+//   DIT_M_DIRE_MUET (une mention refusée n'est pas dite) -> (7) ;
+//   DIT_M_AGENT_SANS_DITE (la condition d'agent ne lit plus la mention « dite » d'une intention) -> (1) ;
+//   DIT_M_DEJA_DITE_SANS_AGENT (la lecture ne tient plus pour dite une réclamation d'agent dite) -> (5).
 // Les bras `commencee_ici` et `reclamee` levés, l'intention refuse encore la ligne (elle exige une ligne que
 // personne n'a réclamée) : la riposte n'est pas exécutée, mais elle est dite sous une autre phrase — c'est la
 // ligne de journal, comparée entière, qui rougit sous ces mutants.
@@ -51,8 +63,11 @@ mod riposte_commencee_jamais_rejouee_par_le_responder_local {
 
     /// La mention d'intention, recopiée : le témoin ne relit pas la constante du code pour la juger.
     const RCL_INTENTION: &str = "[responder local] EXÉCUTION COMMENCÉE, verdict pas encore posé. Si cette mention reste, son exécution a été interrompue : elle ne sera PAS rejouée, à trancher (annuler la riposte, ou la recréer).";
-    const RCL_COMMENCEE: &str = "son exécution a été commencée par un passage du responder local (intention écrite) et aucun verdict n'a été posé dans le délai de réclamation : elle a pu avoir lieu. Elle n'est PAS rejouée ; à trancher par l'exploitant (annuler la riposte, ou la recréer).";
-    const RCL_AGENT: &str = "elle a été réclamée par un agent dont le verdict n'est pas venu dans le délai de réclamation : elle a pu être exécutée. Elle n'est PAS exécutée ici ; elle reste réclamable par l'agent.";
+    const RCL_COMMENCEE: &str = "son exécution a été commencée par un passage du responder local (intention écrite) et aucun verdict n'a été posé dans le délai de réclamation : elle a pu avoir lieu. Elle n'est PAS rejouée ; à trancher par l'exploitant (annuler la riposte, ou la recréer). Dite une seule fois.";
+    const RCL_AGENT: &str = "elle a été réclamée par un agent dont le verdict n'est pas venu dans le délai de réclamation : elle a pu être exécutée. Elle n'est PAS exécutée ici ; elle reste réclamable par l'agent. Dite une seule fois.";
+    const RCL_INTENTION_DITE: &str = "[responder local] EXÉCUTION COMMENCÉE, verdict jamais posé, dite au journal du responder : elle ne sera PAS rejouée, à trancher (annuler la riposte, ou la recréer).";
+    const RCL_AGENT_DITE: &str = "[responder local] réclamée par un agent, verdict pas venu dans le délai de réclamation, dite au journal du responder : PAS exécutée par le responder local, elle reste réclamable par l agent.";
+    const RCL_DITE_NON_ECRITE: &str = "la mention « dite » n'a pas été écrite : la riposte sera redite au passage suivant.";
     const RCL_NON_PRISE: &str = "l'intention d'exécution n'a pris aucune ligne (réclamée, close ou annulée entre la lecture et l'intention, ou écriture sans effet) : rien n'est exécuté.";
     const RCL_NON_ECRITE: &str = "INTENTION NON ÉCRITE : la trace qui précède l'exécution n'a pas pu être écrite, donc la riposte n'est PAS exécutée (exécutée sans trace, une interruption la ferait rejouer) ; elle reste approuvée et un passage suivant la relit.";
     const RCL_VERDICT_NON_ECRIT: &str = "VERDICT NON ÉCRIT : la clôture de l'action n'a pas pu être écrite. L'effet système a bien eu lieu, mais la file la porte TOUJOURS comme approuvée et aucun miroir de blocage n'a été synchronisé sur ce tour. Ce n'est PAS « un verdict plus informé était déjà posé » : personne n'a tranché, la base n'a rien pris.";
@@ -181,7 +196,24 @@ mod riposte_commencee_jamais_rejouee_par_le_responder_local {
         let attendue = format!("[responder] WARN action {id} NON rejouée : {RCL_COMMENCEE}");
         assert_eq!(stderr.lines().filter(|l| *l == attendue).count(), 1, "le journal porte « {attendue} » : {stderr}");
         assert!(!stderr.contains(cible), "aucune ligne du journal ne porte la cible : {stderr}");
-        assert_eq!(rcl_ligne(&base, id), ("approved".to_string(), Some(RCL_INTENTION.to_string()), Some(recule), None), "l'état de l'action dit toujours l'intention");
+        assert_eq!(rcl_ligne(&base, id), ("approved".to_string(), Some(RCL_INTENTION_DITE.to_string()), Some(recule), None), "l'état de l'action dit l'intention, dite");
+
+        // Quatrième passage : déjà dite, elle n'est ni rejouée ni redite.
+        let mut cmd = std::process::Command::new(std::env::current_exe().expect("binaire de test"));
+        cmd.args(["--exact", "--nocapture", "--test-threads=1", nom]).env(ENFANT, "1").env("PLUME_DB", &base);
+        let quatrieme = rcl_lancer(cmd, &bac, &path);
+        let stderr = String::from_utf8_lossy(&quatrieme.stderr).into_owned();
+        assert_eq!(quatrieme.status.code(), Some(0), "quatrième passage : sortie 0\n{stderr}");
+        assert_eq!(rcl_appels(&bac), rcl_appel(cible), "quatrième passage : AUCUNE seconde exécution\n{stderr}");
+        assert!(!stderr.contains(&format!("action {id} ")), "déjà dite, elle n'est pas redite : {stderr}");
+        assert_eq!(rcl_ligne(&base, id), ("approved".to_string(), Some(RCL_INTENTION_DITE.to_string()), Some(recule), None), "quatrième passage : ligne intacte");
+        // Dite, elle ne repart pas davantage à un agent.
+        {
+            let c = open_db(&base).unwrap();
+            let rendu = remettre_les_actions_lues(&c, &[(id, "ban_ip".to_string(), cible.to_string(), false)], RCL_HOTE, now(), FormeDeLaFileDActions::Tsv);
+            assert_eq!(rendu, Ok(String::new()), "un agent ne reçoit pas une riposte commencée, dite");
+        }
+        assert_eq!(rcl_ligne(&base, id).2, Some(recule), "dite : ni réclamée ni réattribuée par l'agent");
     }
 
     /// (2) ÉCRITURE DE L'INTENTION REFUSÉE (déclencheur ABORT sur la première riposte).
@@ -344,8 +376,55 @@ mod riposte_commencee_jamais_rejouee_par_le_responder_local {
         let attendue = format!("[responder] action {a} NON exécutée ici : {RCL_AGENT}");
         assert_eq!(stderr.lines().filter(|l| *l == attendue).count(), 1, "le journal porte « {attendue} » : {stderr}");
         assert!(!stderr.contains(reclamee), "aucune ligne du journal ne porte la cible : {stderr}");
-        assert_eq!(rcl_ligne(&base, a), ("approved".to_string(), None, Some(perimee), None), "la riposte de l'agent, intacte");
+        assert_eq!(rcl_ligne(&base, a), ("approved".to_string(), Some(RCL_AGENT_DITE.to_string()), Some(perimee), None), "la riposte de l'agent : dite, réclamation intacte");
         assert_eq!(rcl_ligne(&base, b).0, "done");
+
+        // Second passage : déjà dite, elle n'est ni exécutée ni redite.
+        let mut cmd = std::process::Command::new(std::env::current_exe().expect("binaire de test"));
+        cmd.args(["--exact", "--nocapture", "--test-threads=1", nom]).env(ENFANT, "1").env("PLUME_DB", &base);
+        let second = rcl_lancer(cmd, &bac, &path);
+        let stderr = String::from_utf8_lossy(&second.stderr).into_owned();
+        assert_eq!(second.status.code(), Some(0), "second passage : sortie 0\n{stderr}");
+        assert_eq!(rcl_appels(&bac), rcl_appel(suivante), "second passage : rien de plus n'est exécuté\n{stderr}");
+        assert!(!stderr.contains(&format!("action {a} ")), "déjà dite, elle n'est pas redite : {stderr}");
+        // L'agent peut toujours la réclamer, réclamation périmée : la mention « dite » ne la retient pas.
+        let c = open_db(&base).unwrap();
+        let rendu = remettre_les_actions_lues(&c, &[(a, "ban_ip".to_string(), reclamee.to_string(), false)], RCL_HOTE, now(), FormeDeLaFileDActions::Tsv);
+        assert_eq!(rendu, Ok(format!("{a}\tban_ip\t{reclamee}\t0\n")), "l'agent la réclame de nouveau");
+    }
+
+    /// (7) LA MENTION « DITE » REFUSÉE PAR LA BASE : c'est dit, et la riposte est redite au passage suivant.
+    #[test]
+    fn rcl_mention_dite_refusee_la_riposte_est_redite() {
+        let _env = VERROU_ENV_PROCESSUS.read();
+        if std::env::var(ENFANT).is_ok() {
+            crate::ledger::declarer_la_liste_pour_ce_temoin();
+            crate::handlers::actions::respond_run();
+            return;
+        }
+        let nom = "tests::riposte_commencee_jamais_rejouee_par_le_responder_local::rcl_mention_dite_refusee_la_riposte_est_redite";
+        let (bac, base, path) = rcl_bac("rcl-dite-refusee");
+        let cible = "203.0.113.84";
+        let perimee = now() - RECLAMATION_PERIMEE_S - 60;
+        let a = rcl_inserer(&base, cible, Some(RCL_HOTE), Some(perimee));
+        open_db(&base)
+            .unwrap()
+            .execute_batch("CREATE TRIGGER rcl_dite BEFORE UPDATE OF result ON action BEGIN SELECT RAISE(ABORT, 'mention refusee par le temoin'); END;")
+            .unwrap();
+        for passage in ["premier", "second"] {
+            let mut cmd = std::process::Command::new(std::env::current_exe().expect("binaire de test"));
+            cmd.args(["--exact", "--nocapture", "--test-threads=1", nom]).env(ENFANT, "1").env("PLUME_DB", &base);
+            let sortie = rcl_lancer(cmd, &bac, &path);
+            let stderr = String::from_utf8_lossy(&sortie.stderr).into_owned();
+            assert_eq!(sortie.status.code(), Some(0), "{passage} passage : sortie 0\n{stderr}");
+            assert_eq!(rcl_appels(&bac), "", "{passage} passage : rien n'est exécuté\n{stderr}");
+            let dite = format!("[responder] action {a} NON exécutée ici : {RCL_AGENT}");
+            assert_eq!(stderr.lines().filter(|l| *l == dite).count(), 1, "{passage} passage : le journal porte « {dite} » : {stderr}");
+            let refus = format!("[responder] WARN action {a} : {RCL_DITE_NON_ECRITE} (mention refusee par le temoin)");
+            assert_eq!(stderr.lines().filter(|l| *l == refus).count(), 1, "{passage} passage : le journal porte « {refus} » : {stderr}");
+            assert!(!stderr.contains(cible), "aucune ligne du journal ne porte la cible : {stderr}");
+            assert_eq!(rcl_ligne(&base, a), ("approved".to_string(), None, Some(perimee), None), "{passage} passage : ligne intacte");
+        }
     }
 
     /// (6) VERDICT REFUSÉ APRÈS L'EXÉCUTION : la riposte n'est pas rejouée passé la fenêtre, elle est dite.
@@ -378,16 +457,21 @@ mod riposte_commencee_jamais_rejouee_par_le_responder_local {
         let reclamee = reclamee.expect("intention posée");
         let recule = reclamee - RECLAMATION_PERIMEE_S - 1;
         open_db(&base).unwrap().execute_batch(&format!("DROP TRIGGER rcl_verdict; UPDATE action SET claimed_ts={recule} WHERE id={id};")).unwrap();
+        // Une riposte suivante, libre : la riposte commencée, écartée, n'arrête pas le tour.
+        let suivante = "203.0.113.83";
+        let s = rcl_inserer(&base, suivante, None, None);
+        assert!(id < s, "fixture : la riposte commencée passe la première");
 
         let mut cmd = std::process::Command::new(std::env::current_exe().expect("binaire de test"));
         cmd.args(["--exact", "--nocapture", "--test-threads=1", nom]).env(ENFANT, "1").env("PLUME_DB", &base);
         let second = rcl_lancer(cmd, &bac, &path);
         let stderr = String::from_utf8_lossy(&second.stderr).into_owned();
         assert_eq!(second.status.code(), Some(0), "second passage : sortie 0\n{stderr}");
-        assert_eq!(rcl_appels(&bac), rcl_appel(cible), "le passage suivant ne la rejoue PAS\n{stderr}");
+        assert_eq!(rcl_appels(&bac), format!("{}{}", rcl_appel(cible), rcl_appel(suivante)), "le passage suivant ne la rejoue PAS, et exécute la suivante\n{stderr}");
         let attendue = format!("[responder] WARN action {id} NON rejouée : {RCL_COMMENCEE}");
         assert_eq!(stderr.lines().filter(|l| *l == attendue).count(), 1, "le journal porte « {attendue} » : {stderr}");
-        assert!(!stderr.contains(cible), "aucune ligne du journal ne porte la cible : {stderr}");
+        assert!(!stderr.contains(cible) && !stderr.contains(suivante), "aucune ligne du journal ne porte une cible : {stderr}");
         assert_eq!(rcl_ligne(&base, id).0, "approved");
+        assert_eq!(rcl_ligne(&base, s).0, "done", "la suivante est exécutée et close");
     }
 }

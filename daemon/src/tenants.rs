@@ -149,7 +149,10 @@ pub(crate) fn tenant_provision(mgr: &TenantDbManager, id: &str, name: &str, db_p
             match conn.query_row("SELECT 1 FROM tenant WHERE id=?1", params![id], |_| Ok(())).optional() {
                 Ok(Some(())) => return Err(ProvisionNonFaite::Refusee(format!("tenant '{id}' existe déjà"))),
                 Ok(None) => {}
-                Err(_) => return Err(ProvisionNonFaite::NonPrise(EtapeDeLaCreationNonPrise::ExistenceNonLue)),
+                Err(e) => {
+                    eprintln!("[tenants] WARN création du tenant NON faite, rien n'est créé (existence du tenant non lue) : {e}");
+                    return Err(ProvisionNonFaite::NonPrise(EtapeDeLaCreationNonPrise::ExistenceNonLue));
+                }
             }
             for (quoi, sql) in RESTES_SOUS_UN_IDENTIFIANT_DE_TENANT {
                 if let Err(e) = conn.execute(sql, params![id]) {
@@ -759,11 +762,14 @@ pub(crate) const CAUSE_TENANT_NON_LU_BASCULE_NON_FAITE: &str = "TENANT NON LU, B
      garde l'état qu'il avait (suspendu ou actif), rien n'est tracé. Réessayez une fois le plan de contrôle de nouveau lisible.";
 
 /// `P10.20-b` — la lecture du tenant visé par une destruction a échoué, AVANT la trace et la transaction : ni présent ni
-/// absent n'est affirmé. Ouverture `TENANT NON DÉTRUIT`, celle que la console reconnaît déjà pour ce geste
-/// (`OUVERTURE_DU_TENANT_NON_DETRUIT`, web/multitenant.js).
-pub(crate) const CAUSE_TENANT_NON_DETRUIT_NOM_NON_LU: &str = "TENANT NON DÉTRUIT : le plan de contrôle n'a pas pu lire \
-     le tenant visé avant la destruction — ce n'est PAS « tenant inconnu », son existence n'est ni affirmée ni niée. RIEN \
-     n'est détruit ni tracé : le tenant et sa base sont intacts. Réessayez une fois le plan de contrôle de nouveau lisible.";
+/// absent n'est affirmé. Ouverture `TENANT NON LU, DESTRUCTION NON FAITE`, sur la forme de la bascule : PAS
+/// `TENANT NON DÉTRUIT`, dont la face console (`tenant_non_detruit`, web/multitenant.js) dit une transaction annulée et
+/// une ligne du journal de contrôle déjà écrite — deux faits faux ici, où ni l'une ni l'autre n'a eu lieu. La console
+/// la peint sous sa face propre (`tenant_non_lu_destruction`).
+pub(crate) const CAUSE_TENANT_NON_LU_DESTRUCTION_NON_FAITE: &str = "TENANT NON LU, DESTRUCTION NON FAITE : le plan de \
+     contrôle n'a pas pu lire le tenant visé avant la destruction — ce n'est PAS « tenant inconnu », son existence n'est \
+     ni affirmée ni niée. RIEN n'est détruit ni tracé : le tenant et sa base sont intacts. Réessayez une fois le plan de \
+     contrôle de nouveau lisible.";
 
 /// `P10.21-g` — LA BASCULE DE SUSPENSION QUE LA BASE N'A PAS PRISE EST REFUSÉE : 503, et rien n'est posé
 /// — ni au journal de contrôle, ni dans la base du tenant. L'état du tenant est celui d'avant la demande.
@@ -805,7 +811,10 @@ pub(crate) async fn tenant_delete(State(st): State<AppState>, Extension(au): Ext
     let name = match name {
         Ok(Some(name)) => name,
         Ok(None) => return (StatusCode::NOT_FOUND, "tenant inconnu").into_response(),
-        Err(_) => return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_TENANT_NON_DETRUIT_NOM_NON_LU),
+        Err(e) => {
+            eprintln!("[tenants] WARN destruction du tenant NON faite, rien n'est détruit ni tracé (tenant visé non lu) : {e}");
+            return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_TENANT_NON_LU_DESTRUCTION_NON_FAITE);
+        }
     };
     // CONFIRMATION FORTE : body {confirm} DOIT égaler EXACTEMENT le nom du tenant (anti-suppression accidentelle).
     let confirm = b.str_field("confirm");

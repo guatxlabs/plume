@@ -131,14 +131,17 @@ pub(crate) const CAUSE_CATALOGUE_DES_TENANTS_NON_LU: &str = "CATALOGUE DES TENAN
      pas pu lire la ligne du tenant demandé — ce n'est PAS « tenant inconnu ou indisponible » : son existence n'est ni \
      affirmée ni niée, et aucune base n'est servie. Réessayez une fois le plan de contrôle de nouveau lisible.";
 
-/// `P10.20-b` — le refus des portes d'entrée sur des droits non lus : 503, la phrase fixe, sans le texte du moteur.
-pub(crate) fn refus_des_droits_non_lus() -> (StatusCode, String) {
+/// `P10.20-b` — le refus des portes d'entrée sur des droits non lus : 503, la phrase fixe, sans le texte du moteur ;
+/// ce texte est dit au journal, jamais servi.
+pub(crate) fn refus_des_droits_non_lus(cause_du_moteur: &rusqlite::Error) -> (StatusCode, String) {
+    eprintln!("[rbac] WARN accès ni accordé ni refusé : compte de plateforme ou droits non lus : {cause_du_moteur}");
     (StatusCode::SERVICE_UNAVAILABLE, CAUSE_DROITS_DU_COMPTE_NON_LUS.to_string())
 }
 
 /// `P10.20-b` — le refus des portes d'entrée sur une ligne de catalogue non lue : 503, la phrase fixe, sans le texte
-/// du moteur.
-pub(crate) fn refus_du_catalogue_non_lu() -> (StatusCode, String) {
+/// du moteur ; ce texte est dit au journal, jamais servi.
+pub(crate) fn refus_du_catalogue_non_lu(cause_du_moteur: &rusqlite::Error) -> (StatusCode, String) {
+    eprintln!("[rbac] WARN aucune base servie : ligne du catalogue des tenants non lue : {cause_du_moteur}");
     (StatusCode::SERVICE_UNAVAILABLE, CAUSE_CATALOGUE_DES_TENANTS_NON_LU.to_string())
 }
 
@@ -175,7 +178,7 @@ pub(crate) fn resolve_tenant_access(
         Some(t) => t.to_string(),
         None => match default_grant(st, user, sso_map) {
             Ok(Some((t, _))) => t,
-            Err(_) => return Err(refus_des_droits_non_lus()),
+            Err(e) => return Err(refus_des_droits_non_lus(&e)),
             Ok(None) => {
                 return if is_sa {
                     // super-admin sans tenant par défaut -> sélection explicite requise (jamais un tenant deviné).
@@ -190,7 +193,7 @@ pub(crate) fn resolve_tenant_access(
     match grant_role_for(st, user, &tenant, sso_map) {
         Ok(Some(role)) => return Ok(TenantAccess { tenant, role, is_superadmin: is_sa, cross_tenant: false }),
         Ok(None) => {}
-        Err(_) => return Err(refus_des_droits_non_lus()),
+        Err(e) => return Err(refus_des_droits_non_lus(&e)),
     }
     // 3) Non-membre : seul un super-admin peut accéder (cross-tenant, audité) ; sinon 403.
     if !is_sa {
@@ -200,7 +203,7 @@ pub(crate) fn resolve_tenant_access(
     match st.tenants.tenant_available_lu(&tenant) {
         Ok(true) => {}
         Ok(false) => return Err((StatusCode::FORBIDDEN, "tenant inconnu ou indisponible".into())),
-        Err(_) => return Err(refus_du_catalogue_non_lu()),
+        Err(e) => return Err(refus_du_catalogue_non_lu(&e)),
     }
     if mutating {
         // ÉCRITURE cross-tenant = break-glass EXPLICITE (raison non vide), sinon 403. Jamais silencieuse.

@@ -38,7 +38,11 @@
 // `CJ1_CHAINE` (la version de la chaîne retombant sur « un ») ; `CJ1_CONTRAT` (le contrôle d'entrée de
 // `prepare_schema` retiré) ; `CJ1_TEXTE_NU` (le 503 de `resolve_tenant_access` rendu en texte nu par
 // `auth::resolve_tenant_and_role`, que la console prendrait pour une panne de passerelle — tenu par le témoin
-// inversé `sar_platform_user_illisible_pas_d_acces_inter_tenants`, par la route).
+// inversé `sar_platform_user_illisible_pas_d_acces_inter_tenants`, par la route) ; `CJ1_DESTRUCTION_OUVERTURE` (la
+// destruction non lue servie sous l'ouverture `TENANT NON DÉTRUIT`, que la console peint avec une transaction annulée et
+// une ligne de journal déjà écrite) ; `CJ1_PROVISION` rejoué sur la voie où l'inscription réussirait (le jeton laissé
+// sous l'identifiant effacé, vu rouge AVANT la cause). Et, par édition de source, chaque `eprintln!` de la cause du
+// moteur retiré d'un bras neuf (témoin (9)).
 //
 // CE QUE CES TÉMOINS NE TIENNENT PAS : `TenantDbManager::ready` garde `None` pour une ligne de catalogue non
 // lue comme pour un tenant absent (fail-closed, rien n'est routé, aucune ligne de journal) — la cause est
@@ -65,9 +69,11 @@ mod lectures_d_une_ligne_du_plan_de_controle_et_de_l_estampille {
     const CJ1_CATALOGUE_NON_LU: &str = "CATALOGUE DES TENANTS NON LU : le plan de contrôle n'a pas pu lire la ligne \
          du tenant demandé — ce n'est PAS « tenant inconnu ou indisponible » : son existence n'est ni affirmée ni \
          niée, et aucune base n'est servie. Réessayez une fois le plan de contrôle de nouveau lisible.";
-    const CJ1_DESTRUCTION_NON_LUE: &str = "TENANT NON DÉTRUIT : le plan de contrôle n'a pas pu lire le tenant visé \
-         avant la destruction — ce n'est PAS « tenant inconnu », son existence n'est ni affirmée ni niée. RIEN n'est \
-         détruit ni tracé : le tenant et sa base sont intacts. Réessayez une fois le plan de contrôle de nouveau lisible.";
+    /// Ouverture `TENANT NON LU, …` et non `TENANT NON DÉTRUIT` : la console peint cette dernière avec une transaction
+    /// annulée et une ligne du journal de contrôle déjà écrite, deux faits faux pour un refus posé avant l'une et l'autre.
+    const CJ1_DESTRUCTION_NON_LUE: &str = "TENANT NON LU, DESTRUCTION NON FAITE : le plan de contrôle n'a pas pu lire le \
+         tenant visé avant la destruction — ce n'est PAS « tenant inconnu », son existence n'est ni affirmée ni niée. RIEN \
+         n'est détruit ni tracé : le tenant et sa base sont intacts. Réessayez une fois le plan de contrôle de nouveau lisible.";
     const CJ1_EXISTENCE_NON_LUE: &str = "TENANT NON CRÉÉ : le plan de contrôle n'a pas pu lire si un tenant porte \
          déjà cet identifiant — RIEN n'est créé ni effacé : ni ligne au catalogue, ni base chiffrée. Ce n'est PAS \
          « tenant existant » ni « identifiant libre ». Réessayez une fois le plan de contrôle de nouveau lisible.";
@@ -387,20 +393,36 @@ mod lectures_d_une_ligne_du_plan_de_controle_et_de_l_estampille {
     // (7) `tenant_provision` — l'existence d'un tenant sous l'identifiant demandé.
     // -------------------------------------------------------------------------------------
 
-    /// CE QU'IL TIENT : l'existence non lue — table retirée, puis VUE temporaire `tenant` qui échoue à l'exécution
-    /// (`json_each` d'un texte qui n'est pas du JSON, placé en boucle externe par `CROSS JOIN` : l'erreur survient
-    /// même quand aucune ligne ne porte l'identifiant) —, `POST /api/tenants` `cj1-n` rend `503`, corps entier
-    /// `{error: CJ1_EXISTENCE_NON_LUE, id}` : ni la cause de l'inscription refusée qu'atteignait la forme d'avant, ni un
-    /// succès ; rien n'est créé (aucune ligne, aucune base). Contrôle positif : remis, `cj1-n` se crée (201) ; recréé,
+    /// CE QU'IL TIENT : l'existence non lue, par trois voies — une VUE temporaire `tenant` qui échoue à la LECTURE
+    /// (`json_each` d'un texte qui n'est pas du JSON, placé en boucle externe par `CROSS JOIN` : l'erreur survient même
+    /// quand aucune ligne ne porte l'identifiant) mais accepte l'INSCRIPTION par un déclencheur `INSTEAD OF INSERT` vers
+    /// la table d'origine ; la table retirée ; la même vue sans déclencheur —, `POST /api/tenants` `cj1-n` rend `503`,
+    /// corps entier `{error: CJ1_EXISTENCE_NON_LUE, id}`. Sur la PREMIÈRE voie, effacement et inscription
+    /// RÉUSSIRAIENT si la transaction poursuivait : « aucune ligne », « aucune base » et « le jeton laissé sous
+    /// l'identifiant est toujours là » y sont donc des faits qui rougissent, jugés AVANT la cause. Sur les deux autres,
+    /// l'inscription est impossible et la transaction annulée : seule la cause y discrimine. Contrôle positif : remis,
+    /// `cj1-n` se crée (201) et le jeton laissé sous l'identifiant est effacé — l'observable du reste est vivant ; recréé,
     /// il rend la 409 texte « existe déjà » d'avant.
     ///
     /// LA MUTATION QUI LE FAIT ROUGIR : `CJ1_PROVISION` (l'existence non lue lue « identifiant libre » : la transaction
-    /// poursuit et sert `CAUSE_TENANT_NON_CREE_LIGNE_NON_INSCRITE`).
+    /// poursuit — première voie : le jeton est effacé et la ligne inscrite ; les autres : la cause de l'inscription
+    /// refusée, `CAUSE_TENANT_NON_CREE_LIGNE_NON_INSCRITE`).
     #[tokio::test]
     async fn cj1_creation_dont_l_existence_n_est_pas_lue_est_un_503_nomme() {
         let (st, _dir) = mk_mode1_state();
         let base = tenant_db_path(&st, "cj1-n");
+        cj1_plan(&st, "INSERT INTO token(hash,tenant_id) VALUES('cj1-reste','cj1-n');");
+        let reste = "SELECT COUNT(*) FROM token WHERE hash='cj1-reste'";
         for (voie, pose, remise) in [
+            (
+                "vue qui échoue à la lecture, inscription possible",
+                "ALTER TABLE tenant RENAME TO cj1_tenant; CREATE TEMP VIEW tenant AS \
+                 SELECT t.* FROM json_each('pas du json') CROSS JOIN cj1_tenant AS t; \
+                 CREATE TEMP TRIGGER cj1_inscrire INSTEAD OF INSERT ON tenant BEGIN \
+                 INSERT INTO cj1_tenant(id,name,key_ref,db_path,created,suspended) \
+                 VALUES(NEW.id,NEW.name,NEW.key_ref,NEW.db_path,NEW.created,NEW.suspended); END;",
+                "DROP VIEW temp.tenant; ALTER TABLE cj1_tenant RENAME TO tenant;",
+            ),
             ("table retirée", "ALTER TABLE tenant RENAME TO cj1_tenant;", "ALTER TABLE cj1_tenant RENAME TO tenant;"),
             (
                 "vue qui échoue",
@@ -412,11 +434,13 @@ mod lectures_d_une_ligne_du_plan_de_controle_et_de_l_estampille {
             cj1_plan(&st, pose);
             let (statut, v) = cj1_creer(&st, "cj1-n").await;
             cj1_plan(&st, remise);
+            assert_eq!(cj1_compte(&st, reste), 1, "{voie} : rien n'est effacé sous l'identifiant ({statut} {v})");
+            assert_eq!(cj1_compte(&st, "SELECT COUNT(*) FROM tenant WHERE id='cj1-n'"), 0, "{voie} : aucune ligne ({statut} {v})");
+            assert!(!std::path::Path::new(&base).exists(), "{voie} : aucune base ({statut} {v})");
             cj1_cinq_cent_trois(voie, statut, &v, CJ1_EXISTENCE_NON_LUE);
-            assert_eq!(cj1_compte(&st, "SELECT COUNT(*) FROM tenant WHERE id='cj1-n'"), 0, "{voie} : aucune ligne");
-            assert!(!std::path::Path::new(&base).exists(), "{voie} : aucune base");
         }
         assert_eq!(cj1_creer(&st, "cj1-n").await.0, 201, "remis : la création passe");
+        assert_eq!(cj1_compte(&st, reste), 0, "remis : la création efface le jeton laissé sous l'identifiant (l'observable vit)");
         let (statut, v) = cj1_creer(&st, "cj1-n").await;
         assert_eq!((statut, v.get("_texte").and_then(|x| x.as_str())), (409, Some("tenant 'cj1-n' existe déjà")), "présence établie : {v}");
     }
@@ -510,5 +534,62 @@ mod lectures_d_une_ligne_du_plan_de_controle_et_de_l_estampille {
             assert!(crate::migrate::prepare_schema(&c).is_ok(), "contrôle : base saine, contrat satisfait");
         }
         assert_eq!(eso_inventaire(&p), avant, "contrôle : rien n'est rejoué");
+    }
+
+    // -------------------------------------------------------------------------------------
+    // (9) LA CAUSE DU MOTEUR D'UNE LECTURE NON FAITE EST DITE AU JOURNAL — jamais servie, jamais jetée.
+    // -------------------------------------------------------------------------------------
+
+    /// Le bras qui sert `servi` dans `source` : les lignes depuis son `Err(` jusqu'à la ligne servie, la ligne servie
+    /// comprise. Une seule occurrence du motif servi est admise : deux rendraient le témoin ambigu.
+    fn cj1_bras_qui_sert<'a>(source: &'a str, fichier: &str, servi: &str) -> Vec<&'a str> {
+        let lignes: Vec<&str> = source.lines().collect();
+        let sites: Vec<usize> = lignes.iter().enumerate().filter(|(_, l)| l.contains(servi)).map(|(i, _)| i).collect();
+        assert_eq!(sites.len(), 1, "{fichier} : `{servi}` doit être servi en UN site, trouvé {sites:?} (le témoin ne conclut pas)");
+        let i = sites[0];
+        let debut = (i.saturating_sub(4)..=i).rev().find(|&j| lignes[j].trim_start().starts_with("Err("))
+            .unwrap_or_else(|| panic!("{fichier} : le site de `{servi}` n'est plus le bras `Err(` d'un `match` (le témoin ne conclut pas)"));
+        lignes[debut..=i].to_vec()
+    }
+
+    /// CE QU'IL TIENT : chaque bras neuf qui sert une lecture d'une ligne NON FAITE en 503 nommé garde la cause du moteur
+    /// — liée (`Err(e)`, jamais `Err(_)`) et écrite au journal par `eprintln!` —, comme les étapes voisines de la même
+    /// fonction. La phrase servie reste fixe (jugée par les témoins de route ci-dessus) : le texte du moteur n'a que le
+    /// journal pour se dire, et sans lui l'exploitant ne sait pas POURQUOI le plan de contrôle n'a pas été lu. Sites :
+    /// `tenant_provision` (l'existence), `tenant_delete` (le tenant visé), `rbac::refus_des_droits_non_lus` et
+    /// `rbac::refus_du_catalogue_non_lu` (qui prennent la cause : le compilateur interdit de la jeter à leurs appelants de
+    /// `resolve_tenant_access`), et les deux portes d'`auth.rs`, qui passent par ces mêmes fonctions.
+    ///
+    /// LECTURE DE SOURCE, PAS DE ROUTE : la sortie d'erreur d'un test n'est pas capturable sans dépendance neuve. Ce que
+    /// ce témoin NE TIENT PAS : le texte exact écrit au journal, ni qu'il y parvient à l'exécution.
+    ///
+    /// LES MUTATIONS QUI LE FONT ROUGIR : chaque `eprintln!` retiré d'un de ces quatre sites, ou une porte d'`auth.rs`
+    /// rendue à la constante servie directement.
+    #[test]
+    fn cj1_la_cause_du_moteur_d_une_lecture_non_faite_est_dite_au_journal() {
+        let tenants = include_str!("../tenants.rs");
+        for servi in [
+            "return Err(ProvisionNonFaite::NonPrise(EtapeDeLaCreationNonPrise::ExistenceNonLue));",
+            "return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_TENANT_NON_LU_DESTRUCTION_NON_FAITE);",
+        ] {
+            let bras = cj1_bras_qui_sert(tenants, "tenants.rs", servi);
+            assert!(bras[0].trim_start().starts_with("Err(e) =>"), "tenants.rs : le bras de `{servi}` lie la cause : {bras:?}");
+            assert!(bras.iter().any(|l| l.contains("eprintln!(") && l.contains(": {e}\")")),
+                "tenants.rs : le bras de `{servi}` dit la cause du moteur au journal : {bras:?}");
+        }
+        let rbac = include_str!("../rbac.rs");
+        for refus in ["pub(crate) fn refus_des_droits_non_lus(cause_du_moteur: &rusqlite::Error)", "pub(crate) fn refus_du_catalogue_non_lu(cause_du_moteur: &rusqlite::Error)"] {
+            let corps: Vec<&str> = rbac.split(refus).nth(1).unwrap_or_else(|| panic!("rbac.rs : `{refus}` n'existe plus (le témoin ne conclut pas)"))
+                .lines().take_while(|l| *l != "}").collect();
+            assert!(corps.iter().any(|l| l.contains("eprintln!(") && l.contains("{cause_du_moteur}")), "rbac.rs : `{refus}` dit la cause au journal : {corps:?}");
+        }
+        let auth = include_str!("../auth.rs");
+        for refus in ["crate::rbac::refus_des_droits_non_lus(&e)", "crate::rbac::refus_du_catalogue_non_lu(&e)"] {
+            let bras = cj1_bras_qui_sert(auth, "auth.rs", refus);
+            assert!(bras[0].trim_start().starts_with("Err(e) =>"), "auth.rs : le bras de `{refus}` lie la cause : {bras:?}");
+        }
+        for constante in ["crate::rbac::CAUSE_DROITS_DU_COMPTE_NON_LUS", "crate::rbac::CAUSE_CATALOGUE_DES_TENANTS_NON_LU"] {
+            assert!(!auth.contains(constante), "auth.rs sert `{constante}` sans passer par le refus qui dit la cause au journal");
+        }
     }
 }

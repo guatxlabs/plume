@@ -2001,7 +2001,10 @@ pub(crate) fn resolve_tenant_and_role(
             // `P10.20-b` — des droits NON LUS ne prennent pas le repli non-membre : 503 nommé avant tout jugement.
             Some(t) => match mgmt_grants_role(st, name, t, sso_grant_map, is_sa) {
                 Ok(role) => role,
-                Err(_) => return Err(err_json(StatusCode::SERVICE_UNAVAILABLE, crate::rbac::CAUSE_DROITS_DU_COMPTE_NON_LUS)),
+                Err(e) => {
+                    let (code, cause) = crate::rbac::refus_des_droits_non_lus(&e);
+                    return Err(err_json(code, cause));
+                }
             },
             None => role_floor.clone(),
         };
@@ -2353,7 +2356,10 @@ pub(crate) async fn auth_guard(State(st): State<AppState>, mut req: Request, nex
         match st.tenants.tenant_available_lu(&tenant) {
             Ok(true) => {}
             Ok(false) => return (StatusCode::FORBIDDEN, "tenant indisponible (base non résoluble)").into_response(),
-            Err(_) => return err_json(StatusCode::SERVICE_UNAVAILABLE, crate::rbac::CAUSE_CATALOGUE_DES_TENANTS_NON_LU),
+            Err(e) => {
+                let (code, cause) = crate::rbac::refus_du_catalogue_non_lu(&e);
+                return err_json(code, cause);
+            }
         }
     }
     // #2b/D3/R9 — MARQUEUR STRUCTUREL d'accès OPÉRATEUR cross-tenant : un super-admin consulte/écrit un

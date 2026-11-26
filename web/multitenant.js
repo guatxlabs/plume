@@ -296,6 +296,12 @@ const MOTS_DU_PLAN_DE_CONTROLE = {
   tenant_non_lu_bascule: {
     fr: "Tenant INCHANGÉ : le plan de contrôle n'a pas pu LIRE ce tenant, la bascule n'a PAS été faite — ce n'est pas « tenant inconnu ». Le geste peut être rejoué. Le démon en nomme la cause —",
     en: 'Tenant UNCHANGED: the control plane could not READ this tenant, the switch was NOT made — this is not "unknown tenant". The gesture can be replayed. The daemon names the cause —' },
+  // `P10.20-b` — la destruction dont le tenant visé n'a pas été LU (`CAUSE_TENANT_NON_LU_DESTRUCTION_NON_FAITE`,
+  // daemon/src/tenants.rs) : refusée AVANT la trace et la transaction. Ni transaction annulée, ni ligne au journal de
+  // contrôle : ce que dit `tenant_non_detruit` serait faux ici.
+  tenant_non_lu_destruction: {
+    fr: "Tenant NON DÉTRUIT : le plan de contrôle n'a pas pu LIRE ce tenant, la destruction n'a PAS été tentée — ce n'est pas « tenant inconnu ». Rien n'est tracé au journal de contrôle, le tenant et sa base sont intacts. Le geste peut être rejoué. Le démon en nomme la cause —",
+    en: 'Tenant NOT DESTROYED: the control plane could not READ this tenant, the destruction was NOT attempted — this is not "unknown tenant". Nothing is traced in the control-plane ledger, the tenant and its database are intact. The gesture can be replayed. The daemon names the cause —' },
   droit_non_pose: {
     fr: "Accès NON ACCORDÉ, rien n'a changé : le plan de contrôle n'a pas pris la pose de ce droit, le compte garde le rôle qu'il avait sur ce tenant. Le geste peut être rejoué. Le démon en nomme la cause —",
     en: 'Access NOT GRANTED, nothing changed: the control plane did not take this grant, the account keeps the role it had on this tenant. The gesture can be replayed. The daemon names the cause —' },
@@ -336,6 +342,8 @@ const OUVERTURE_DU_RETRAIT_DE_DROIT_NON_ECRIT = /^RETRAIT NON ENREGISTRÉ, L'ACC
 // `CAUSE_DROIT_NON_LU_RETRAIT_NON_FAIT`, daemon/src/tenants.rs), ancrés sur l'ouverture servie, bornés par Unicode.
 const OUVERTURE_DU_TENANT_NON_LU_BASCULE_NON_FAITE = /^TENANT NON LU, BASCULE NON FAITE(?![\p{L}\p{N}])/u;
 const OUVERTURE_DU_TENANT_NON_LU_DROIT_NON_POSE = /^TENANT NON LU, DROIT NON POSÉ(?![\p{L}\p{N}])/u;
+// `P10.20-b` — `CAUSE_TENANT_NON_LU_DESTRUCTION_NON_FAITE` (daemon/src/tenants.rs), sur la forme de la bascule.
+const OUVERTURE_DU_TENANT_NON_LU_DESTRUCTION_NON_FAITE = /^TENANT NON LU, DESTRUCTION NON FAITE(?![\p{L}\p{N}])/u;
 const OUVERTURE_DU_DROIT_NON_POSE = /^DROIT NON ENREGISTRÉ, RIEN N'A CHANGÉ(?![\p{L}\p{N}])/u;
 const OUVERTURE_DU_DROIT_NON_LU_RETRAIT_NON_FAIT = /^DROIT NON LU, RETRAIT NON FAIT(?![\p{L}\p{N}])/u;
 // `CAUSE_DERNIER_ADMINISTRATEUR_NON_ETABLI` (daemon/src/rbac.rs), servi par `refuser_le_geste_sans_anti_verrouillage_lu` à la
@@ -351,7 +359,7 @@ const OUVERTURE_DU_TENANT_NON_DETRUIT = /^TENANT NON DÉTRUIT(?![\p{L}\p{N}])/u;
 // autre geste, et un refus qu'aucune ne reconnaît garde la phrase du geste refusé (`phraseDuGesteRefuse`).
 const REFUS_NOMMES_DE_LA_BASCULE = [[OUVERTURE_DE_LA_BASCULE_NON_ECRITE, 'bascule_non_ecrite'], [OUVERTURE_DU_TENANT_NON_LU_BASCULE_NON_FAITE, 'tenant_non_lu_bascule']];
 const REFUS_NOMMES_DE_LA_POSE_DE_DROIT = [[OUVERTURE_DU_DROIT_NON_POSE, 'droit_non_pose'], [OUVERTURE_DU_TENANT_NON_LU_DROIT_NON_POSE, 'tenant_non_lu_droit'], [OUVERTURE_DU_DERNIER_ADMINISTRATEUR_NON_ETABLI, 'dernier_administrateur_non_etabli']];
-const REFUS_NOMMES_DE_LA_DESTRUCTION = [[OUVERTURE_DE_LA_DESTRUCTION_SANS_TRACE, 'destruction_sans_trace'], [OUVERTURE_DU_TENANT_NON_DETRUIT, 'tenant_non_detruit']];
+const REFUS_NOMMES_DE_LA_DESTRUCTION = [[OUVERTURE_DE_LA_DESTRUCTION_SANS_TRACE, 'destruction_sans_trace'], [OUVERTURE_DU_TENANT_NON_DETRUIT, 'tenant_non_detruit'], [OUVERTURE_DU_TENANT_NON_LU_DESTRUCTION_NON_FAITE, 'tenant_non_lu_destruction']];
 const REFUS_NOMMES_DU_PROVISIONNEMENT = [[OUVERTURE_DU_TENANT_NON_CREE, 'tenant_non_cree']];
 const REFUS_NOMMES_DU_RETRAIT_DE_DROIT = [[OUVERTURE_DU_RETRAIT_DE_DROIT_NON_ECRIT, 'retrait_de_droit_non_ecrit'], [OUVERTURE_DU_DROIT_NON_LU_RETRAIT_NON_FAIT, 'droit_non_lu_retrait'], [OUVERTURE_DU_DERNIER_ADMINISTRATEUR_NON_ETABLI, 'dernier_administrateur_non_etabli']];
 function refusNommeDuPlanDeControle(phrase, refusNommes) {
@@ -705,5 +713,5 @@ async function loadOperatorAudit() {
 
 // `P10.23-q` — la phrase d'un geste refusé et la destruction refusée, jouées par le témoin 121 sur une réponse hors du démon.
 export { phraseDuGesteRefuse, direLaDestructionRefusee, peindreLeProvisionnementRefuse, OUVERTURE_DU_TENANT_NON_CREE, OUVERTURE_DU_TENANT_NON_DETRUIT };
-export { CLE_DE_L_EVENEMENT_DU_TENANT_NON_ECRIT, OUVERTURE_DU_TENANT_NON_LU_BASCULE_NON_FAITE, OUVERTURE_DU_TENANT_NON_LU_DROIT_NON_POSE, OUVERTURE_DU_DROIT_NON_POSE, OUVERTURE_DU_DROIT_NON_LU_RETRAIT_NON_FAIT, OUVERTURE_DU_DERNIER_ADMINISTRATEUR_NON_ETABLI };
+export { CLE_DE_L_EVENEMENT_DU_TENANT_NON_ECRIT, OUVERTURE_DU_TENANT_NON_LU_BASCULE_NON_FAITE, OUVERTURE_DU_TENANT_NON_LU_DESTRUCTION_NON_FAITE, OUVERTURE_DU_TENANT_NON_LU_DROIT_NON_POSE, OUVERTURE_DU_DROIT_NON_POSE, OUVERTURE_DU_DROIT_NON_LU_RETRAIT_NON_FAIT, OUVERTURE_DU_DERNIER_ADMINISTRATEUR_NON_ETABLI };
 export { CLE_DU_PREMIER_ADMINISTRATEUR_NON_POSE, OUVERTURE_DE_LA_BASCULE_NON_ECRITE, OUVERTURE_DE_LA_DESTRUCTION_SANS_TRACE, OUVERTURE_DU_RETRAIT_DE_DROIT_NON_ECRIT, avouerLeProvisionnement, initEnvironments, initTenants, loadOperatorAudit, loadTenantsView, motDuPlanDeControle, multiTenantMode, uiIsAdmin };

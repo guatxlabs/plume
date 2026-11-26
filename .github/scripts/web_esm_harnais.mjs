@@ -29972,6 +29972,8 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
   const NOUVEAUX = {
     tenant_non_lu_bascule: ["CAUSE_TENANT_NON_LU_BASCULE_NON_FAITE", modTW.OUVERTURE_DU_TENANT_NON_LU_BASCULE_NON_FAITE, TENANTSW],
     tenant_non_lu_droit: ["CAUSE_TENANT_NON_LU_DROIT_NON_POSE", modTW.OUVERTURE_DU_TENANT_NON_LU_DROIT_NON_POSE, TENANTSW],
+    // `P10.20-b` — la destruction dont le tenant visé n'est pas lu, sur la forme de la bascule (sa face est jugée en 153-h).
+    tenant_non_lu_destruction: ["CAUSE_TENANT_NON_LU_DESTRUCTION_NON_FAITE", modTW.OUVERTURE_DU_TENANT_NON_LU_DESTRUCTION_NON_FAITE, TENANTSW],
     droit_non_pose: ["CAUSE_DROIT_NON_POSE", modTW.OUVERTURE_DU_DROIT_NON_POSE, TENANTSW],
     droit_non_lu_retrait: ["CAUSE_DROIT_NON_LU_RETRAIT_NON_FAIT", modTW.OUVERTURE_DU_DROIT_NON_LU_RETRAIT_NON_FAIT, TENANTSW],
     dernier_administrateur_non_etabli: ["CAUSE_DERNIER_ADMINISTRATEUR_NON_ETABLI", modTW.OUVERTURE_DU_DERNIER_ADMINISTRATEUR_NON_ETABLI, RBACW],
@@ -30031,6 +30033,7 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
   const CONSEQUENCES_W = {
     bascule_non_ecrite: { fr: "la bascule n'a pas été enregistrée", en: "the switch was not recorded" },
     tenant_non_lu_bascule: { fr: "n'a pas pu LIRE ce tenant, la bascule n'a PAS été faite", en: "could not READ this tenant, the switch was NOT made" },
+    tenant_non_lu_destruction: { fr: "n'a pas pu LIRE ce tenant, la destruction n'a PAS été tentée", en: "could not READ this tenant, the destruction was NOT attempted" },
     droit_non_pose: { fr: "n'a pas pris la pose de ce droit", en: "did not take this grant" },
     tenant_non_lu_droit: { fr: "Accès NON ACCORDÉ, rien n'a changé : le plan de contrôle n'a pas pu LIRE ce tenant", en: "Access NOT GRANTED, nothing changed: the control plane could not READ this tenant" },
     retrait_de_droit_non_ecrit: { fr: "le retrait n'a pas été enregistré", en: "the removal was not recorded" },
@@ -30419,6 +30422,12 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
   const DETRUIT153 = ["TRANSACTION_NON_OUVERTE", "NON_LU", "EFFACEMENT_NON_PRIS", "NON_VALIDE"].map((s) => ["CAUSE_TENANT_NON_DETRUIT_" + s, litteral153("CAUSE_TENANT_NON_DETRUIT_" + s)]);
   for (const [nom, c] of CREE153) instrument153(c.startsWith("TENANT NON CRÉÉ : ") && new RegExp("err_json\\(StatusCode::SERVICE_UNAVAILABLE, " + nom + "\\)").test(TENANTS153), `\`${nom}\` n'est plus servie en cinq cent trois par daemon/src/tenants.rs`);
   for (const [nom, c] of DETRUIT153) instrument153(c.startsWith("TENANT NON DÉTRUIT : ") && new RegExp("err_json\\(StatusCode::SERVICE_UNAVAILABLE, " + nom + "\\)").test(TENANTS153), `\`${nom}\` n'est plus servie en cinq cent trois par daemon/src/tenants.rs`);
+  // `P10.20-b` — LA DESTRUCTION DONT LE TENANT VISÉ N'EST PAS LU est refusée AVANT la trace et la transaction : aucune
+  // transaction annulée, aucune ligne au journal de contrôle. La face `tenant_non_detruit` dit les deux ; servie ici, elle
+  // ferait chercher au journal une ligne qui n'existe pas. Cette cause a SA face (153-h), qui ne dit ni l'un ni l'autre.
+  const NON_LU153 = litteral153("CAUSE_TENANT_NON_LU_DESTRUCTION_NON_FAITE");
+  instrument153(NON_LU153.startsWith("TENANT NON LU, DESTRUCTION NON FAITE : ") && /err_json\(StatusCode::SERVICE_UNAVAILABLE, CAUSE_TENANT_NON_LU_DESTRUCTION_NON_FAITE\)/.test(TENANTS153),
+    "`CAUSE_TENANT_NON_LU_DESTRUCTION_NON_FAITE` n'est plus servie en cinq cent trois par daemon/src/tenants.rs");
   // Les fragments propres à chaque face, écrits ICI (jamais relus de la table jugée).
   const FRAGMENTS153 = {
     tenant_non_cree: { fr: ["Tenant NON CRÉÉ", "RIEN n'est créé", "peut être rejoué"], en: ["Tenant NOT CREATED", "NOTHING is created", "can be replayed"] },
@@ -30523,6 +30532,18 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
         exiger(aveuJuste153(r, l, "tenant_non_detruit", cause) && !avis.some((a) => a.startsWith(generiqueDestruction)),
           `(153-a) destruction refusée \`${nom}\` (${l}) : pas UN aveu « tenant_non_detruit » au puits du panneau avec sa face et la phrase servie, ou l'avis générique part encore : « ${r.map(nu153).join(" | ").slice(0, 300)} » ${JSON.stringify(avis).slice(0, 200)}`);
       }
+      // (h) LE TENANT NON LU À LA DESTRUCTION : SA face, qui dit la lecture ratée et « rien n'est tracé », jamais la
+      // transaction annulée ni la ligne du journal déjà écrite de `tenant_non_detruit`.
+      {
+        const avis = await DETRUIRE[l](NON_LU153);
+        const r = refusDuPanneau153();
+        const f = face153(l, "tenant_non_lu_destruction");
+        const dit = l === "fr" ? ["Tenant NON DÉTRUIT", "n'a pas pu LIRE ce tenant", "Rien n'est tracé", "peut être rejoué"] : ["Tenant NOT DESTROYED", "could not READ this tenant", "Nothing is traced", "can be replayed"];
+        const faux = l === "fr" ? ["déjà écrite", "annulée"] : ["already written", "rolled it back"];
+        exiger(aveuJuste153(r, l, "tenant_non_lu_destruction", NON_LU153) && dit.every((x) => f.includes(x)) && !faux.some((x) => nu153(r[0]).includes(x))
+          && !avis.some((a) => a.startsWith(generiqueDestruction)),
+          `(153-h) destruction refusée, tenant NON LU (${l}) : pas UN aveu « tenant_non_lu_destruction » avec sa face et la phrase servie, ou il dit une transaction annulée / une ligne déjà écrite : « ${r.map(nu153).join(" | ").slice(0, 400)} » ${JSON.stringify(avis).slice(0, 200)}`);
+      }
       for (const [nom, cause] of CREE153) {
         const puits = await PROVISIONNER[l](cause);
         const r = refusNommes153(puits);
@@ -30571,7 +30592,7 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
       }
       // (g) SANS PUITS (`#tenant-list` détaché) : la destruction non prise part à l'avis avec SA face puis la phrase servie, et la
       // destruction sans trace avec la sienne — jamais la face de l'autre.
-      for (const [cle, phrase] of [["tenant_non_detruit", DETRUIT153[0][1]], ["destruction_sans_trace", "DESTRUCTION REFUSÉE, RIEN N'EST DÉTRUIT : x"]]) {
+      for (const [cle, phrase] of [["tenant_non_detruit", DETRUIT153[0][1]], ["destruction_sans_trace", "DESTRUCTION REFUSÉE, RIEN N'EST DÉTRUIT : x"], ["tenant_non_lu_destruction", NON_LU153]]) {
         if (!phrase) continue;
         const e = await erreur153(l, phrase);
         instrument153(!!e, "`apiSend` ne rejette plus un cinq cent trois");
@@ -30582,8 +30603,8 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
         try { mod153[l].direLaDestructionRefusee(e); await laisser153(); }
         finally { parent.insertBefore(liste, suivant); }
         const avis = avis153().slice(avant);
-        const autre = cle === "tenant_non_detruit" ? "destruction_sans_trace" : "tenant_non_detruit";
-        exiger(avis.length === 1 && avis[0] === nu153({ textContent: face153(l, cle) + " « " + phrase + " »" }) && !avis[0].includes(face153(l, autre)) && refusDuPanneau153().length === 0,
+        const autres = ["tenant_non_detruit", "destruction_sans_trace", "tenant_non_lu_destruction"].filter((k) => k !== cle);
+        exiger(avis.length === 1 && avis[0] === nu153({ textContent: face153(l, cle) + " « " + phrase + " »" }) && !autres.some((k) => avis[0].includes(face153(l, k))) && refusDuPanneau153().length === 0,
           `(153-g) sans puits du panneau, la destruction refusée « ${cle} » (${l}) ne part plus à l'avis avec SA face puis la phrase servie : ${JSON.stringify(avis).slice(0, 300)}`);
       }
     }
@@ -30595,7 +30616,7 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
     vider153();
   }
   if (echecs.length !== echecsAvant153) console.log(`(153) EN ÉCHEC — ${echecs.length - echecsAvant153} écart(s), dits ci-dessus`);
-  else console.log("(153) OK — `P10.34-h` (console) : les huit cinq cent trois de la création et de la destruction non prises (relus dans tenants.rs) donnent chacun la face nommée de SON geste, en français et en anglais — destruction : tenant INTACT, ligne du journal déjà écrite, rejouable, au puits du panneau ; création : rien n'est créé, rejouable, au puits du formulaire — la phrase servie en texte littéral ; la phrase de l'autre geste et une phrase non reconnue gardent la face générique ; une phrase hostile ne crée aucun IMG ; un refus du secret des gestes ou une demande non aboutie ouverts sur « TENANT NON CRÉÉ » gardent leur forme ; sans puits du panneau, la destruction refusée part à l'avis avec SA face. Ce qu'il NE tient PAS : la route (témoins Rust), la phrase servie reste française sous LANG='en'.");
+  else console.log("(153) OK — `P10.34-h` (console) : les huit cinq cent trois de la création et de la destruction non prises (relus dans tenants.rs) donnent chacun la face nommée de SON geste, en français et en anglais — destruction : tenant INTACT, ligne du journal déjà écrite, rejouable, au puits du panneau ; création : rien n'est créé, rejouable, au puits du formulaire — la phrase servie en texte littéral ; la phrase de l'autre geste et une phrase non reconnue gardent la face générique ; une phrase hostile ne crée aucun IMG ; un refus du secret des gestes ou une demande non aboutie ouverts sur « TENANT NON CRÉÉ » gardent leur forme ; sans puits du panneau, la destruction refusée part à l'avis avec SA face ; la destruction dont le tenant n'est pas lu (`P10.20-b`) a SA face, sans transaction annulée ni ligne déjà écrite. Ce qu'il NE tient PAS : la route (témoins Rust), la phrase servie reste française sous LANG='en'.");
 }
 
 // ---------------------------------------------------------------------------------------------

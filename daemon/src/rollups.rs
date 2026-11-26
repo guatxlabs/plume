@@ -1302,7 +1302,8 @@ fn banned_ip_upsert_sqls(cond: &str) -> [String; 3] {
 /// (défaut 7 j — les bans persistent plus longtemps qu'un rollup de trafic) -> on ne scanne que
 /// [recent-backfill, recent) des PETITES sources de ban (fail2ban/crowdsec/ufw/portscan), pas les 140k web.
 /// Purge OPTIONNELLE (PLUME_BANNED_IP_RETENTION>0) des entrées dont le dernier ban remonte au-delà de la
-/// rétention (bans expirés) — OFF par défaut (0). Bornes = i64 (pas d'injection).
+/// rétention (bans expirés) — OFF par défaut (absent ou 0) ; une valeur illisible ne purge pas et se dit
+/// (`RetentionDesBans`). Bornes = i64 (pas d'injection).
 pub(crate) fn materialize_banned_ip(conn: &Connection) {
     let n = now();
     let cur = (n / 3600) * 3600;
@@ -1366,16 +1367,141 @@ pub(crate) fn materialize_banned_ip(conn: &Connection) {
             }
         }
     }
-    // purge OPTIONNELLE des bans expirés (last_seen trop ancien). OFF par défaut (0 -> no-op).
+    // purge OPTIONNELLE des bans expirés (last_seen trop ancien). OFF par défaut (absent ou 0 -> no-op).
     // `P10.32-a` — son issue est LUE. Avant, `let _` : un refus laissait les bans expirés dans `banned_ip` sans un mot.
-    // Refusée : le ban expiré reste, le refus est compté sous « rollup : purge des bans expirés de banned_ip : purge
-    // refusée » (/api/system/metrics) et dit au journal avec la cause du moteur.
-    let retention: i64 = cfg(&conf, "PLUME_BANNED_IP_RETENTION", "0").parse().unwrap_or(0);
-    if retention > 0 {
-        if let Err(e) = conn.execute("DELETE FROM banned_ip WHERE last_seen < ?1", params![n - retention]) {
-            compter_un_geste_de_fond_non_valide(conn, JOURNAL_DU_PLI, GESTE_PURGE_DES_BANS_EXPIRES, ETAPE_PURGE_REFUSEE, &e);
-            eprintln!("[rollup] WARN purge des bans expirés de banned_ip NON faite ({e}) — bans expirés gardés, purge reprise au prochain passage");
+    // Refusée : le ban expiré reste, le refus est compté à CHAQUE passage sous « rollup : purge des bans expirés de
+    // banned_ip : purge refusée » (/api/system/metrics) et dit au journal avec la cause du moteur.
+    // `P11.25-a` — la ligne de journal du refus n'est écrite qu'au CHANGEMENT d'état de la purge de CETTE base
+    // (`ligne_de_la_purge_des_bans`), et le réglage illisible est dit (`ligne_du_reglage_de_retention_des_bans`) au lieu
+    // de valoir 0 en silence.
+    let lecture = retention_des_bans_selon(&cfg(&conf, REGLAGE_RETENTION_DES_BANS, "0"));
+    dire_la_lecture_du_reglage_de_retention_des_bans(&lecture);
+    if let RetentionDesBans::Active(retention) = lecture {
+        let issue = conn.execute("DELETE FROM banned_ip WHERE last_seen < ?1", params![n - retention]);
+        if let Err(e) = &issue {
+            compter_un_geste_de_fond_non_valide(conn, JOURNAL_DU_PLI, GESTE_PURGE_DES_BANS_EXPIRES, ETAPE_PURGE_REFUSEE, e);
         }
+        dire_l_issue_de_la_purge_des_bans(conn, &issue);
+    }
+}
+
+/// `P11.25-a` — le réglage de la purge optionnelle des bans expirés de `banned_ip`, en secondes.
+const REGLAGE_RETENTION_DES_BANS: &str = "PLUME_BANNED_IP_RETENTION";
+
+/// `P11.25-a` — CE QUE LE RÉGLAGE DE RÉTENTION DES BANS DIT, lu à chaque passage (rechargement à chaud de la
+/// configuration). ABSENT et `0` gardent leur sens d'avant : purge désactivée. Un entier strictement positif (blancs
+/// autour admis, comme les autres réglages qui rognent) active la purge des lignes dont `last_seen` est plus ancien que
+/// `maintenant - rétention` ; un entier très grand ne déborde pas (`maintenant - i64::MAX` reste représentable) et ne
+/// purge simplement rien. TOUT LE RESTE EST ILLISIBLE — vide, négatif, non entier (`1.5`, `30j`, texte), hors de
+/// l'entier 64 bits — et son effet est celui d'avant (aucune purge), mais DIT au journal. AVANT : `.parse().unwrap_or(0)`
+/// rendait ces valeurs identiques à l'absence, sans un mot : la purge que l'exploitant croyait poser ne tournait pas.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RetentionDesBans {
+    /// Absent ou `0` : aucune purge (le défaut).
+    Desactivee,
+    /// Rétention en secondes, strictement positive.
+    Active(i64),
+    /// Valeur posée mais illisible ; la cause est un mot d'un vocabulaire fermé, jamais la valeur.
+    Illisible(&'static str),
+}
+
+pub(crate) const CAUSE_RETENTION_VIDE: &str = "vide";
+pub(crate) const CAUSE_RETENTION_NEGATIVE: &str = "négative";
+pub(crate) const CAUSE_RETENTION_NON_ENTIERE: &str = "non entière";
+pub(crate) const CAUSE_RETENTION_HORS_BORNE: &str = "hors de l'entier 64 bits";
+
+/// PURE : la lecture de `brut`, la valeur rendue par `cfg` (un réglage absent y vaut le défaut `"0"`).
+pub(crate) fn retention_des_bans_selon(brut: &str) -> RetentionDesBans {
+    match brut.trim().parse::<i64>() {
+        Ok(0) => RetentionDesBans::Desactivee,
+        Ok(r) if r > 0 => RetentionDesBans::Active(r),
+        Ok(_) => RetentionDesBans::Illisible(CAUSE_RETENTION_NEGATIVE),
+        Err(e) => RetentionDesBans::Illisible(match e.kind() {
+            std::num::IntErrorKind::Empty => CAUSE_RETENTION_VIDE,
+            std::num::IntErrorKind::PosOverflow | std::num::IntErrorKind::NegOverflow => CAUSE_RETENTION_HORS_BORNE,
+            _ => CAUSE_RETENTION_NON_ENTIERE,
+        }),
+    }
+}
+
+/// PURE : la ligne `[rollup]` que la lecture `lecture` doit écrire après l'état `dernier` (`Some(cause)` : la dernière
+/// lecture dite était illisible pour cette cause), et l'état posé. `None` quand rien ne change : une lecture illisible
+/// s'écrit une fois, pas à chaque passage, et le retour à une valeur lisible se dit aussi. Une valeur lisible au premier
+/// passage n'écrit rien (le journal du cas nominal reste celui d'avant).
+pub(crate) fn ligne_du_reglage_de_retention_des_bans(dernier: &mut Option<&'static str>, lecture: &RetentionDesBans) -> Option<String> {
+    let etat = match lecture {
+        RetentionDesBans::Illisible(cause) => Some(*cause),
+        _ => None,
+    };
+    if etat == *dernier {
+        return None;
+    }
+    *dernier = etat;
+    Some(match lecture {
+        RetentionDesBans::Illisible(cause) => format!(
+            "[rollup] WARN {REGLAGE_RETENTION_DES_BANS} illisible ({cause}) : ni absent, ni un entier positif ou nul — \
+             purge des bans expirés de banned_ip NON faite tant qu'il l'est"
+        ),
+        RetentionDesBans::Desactivee => format!("[rollup] {REGLAGE_RETENTION_DES_BANS} relu : purge des bans expirés de banned_ip désactivée"),
+        RetentionDesBans::Active(r) => format!("[rollup] {REGLAGE_RETENTION_DES_BANS} relu : purge des bans expirés de banned_ip active, rétention de {r} s"),
+    })
+}
+
+/// La dernière lecture illisible dite, pour tout le processus : le réglage est le même pour toutes les bases (variable
+/// d'environnement ou fichier de configuration), une lecture par base et par passage ne le redit donc pas. Départ :
+/// rien de dit, un redémarrage redit donc une fois un réglage toujours illisible.
+static DERNIERE_LECTURE_DU_REGLAGE_DE_RETENTION_DES_BANS: std::sync::Mutex<Option<&'static str>> = std::sync::Mutex::new(None);
+
+fn dire_la_lecture_du_reglage_de_retention_des_bans(lecture: &RetentionDesBans) {
+    let mut dernier = DERNIERE_LECTURE_DU_REGLAGE_DE_RETENTION_DES_BANS.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(ligne) = ligne_du_reglage_de_retention_des_bans(&mut dernier, lecture) {
+        eprintln!("{ligne}");
+    }
+}
+
+/// PURE : la ligne `[rollup]` que l'issue `issue` de la purge des bans expirés doit écrire après l'état `dernier`
+/// (`None` : la dernière purge a été faite ; `Some(code)` : refusée, avec le code ÉTENDU du moteur, `None` intérieur
+/// pour une erreur sans code SQLite — un code neuf est un état neuf), et l'état posé. La forme est celle de la purge des
+/// bans échus de `net_ban` (`server::boucles_de_fond::netban_ligne_de_la_purge`). `None` quand l'état ne change pas :
+/// un refus qui persiste s'écrit une fois ; le retour à une purge faite se dit aussi. Le COMPTE du refus, lui, est posé à
+/// chaque passage par l'appelant.
+pub(crate) fn ligne_de_la_purge_des_bans(dernier: &mut Option<Option<i32>>, issue: &rusqlite::Result<usize>) -> Option<String> {
+    let etat = match issue {
+        Ok(_) => None,
+        Err(e) => Some(e.sqlite_error().map(|f| f.extended_code)),
+    };
+    if etat == *dernier {
+        return None;
+    }
+    *dernier = etat;
+    Some(match issue {
+        Ok(_) => "[rollup] purge des bans expirés de banned_ip rétablie".to_string(),
+        Err(e) => format!("[rollup] WARN purge des bans expirés de banned_ip NON faite ({e}) — bans expirés gardés, purge reprise au prochain passage"),
+    })
+}
+
+/// L'état de la dernière purge des bans expirés, PAR BASE (chemin du fichier : une base de tenant n'efface pas l'état
+/// d'une autre). Seules les bases dont la dernière purge a été refusée y figurent ; une purge faite retire l'entrée. Un
+/// passage où la purge ne tourne pas (réglage absent, `0` ou illisible) ne touche pas l'état. Départ : vide, un
+/// redémarrage redit donc une fois un refus qui persiste.
+static ETAT_DE_LA_PURGE_DES_BANS: std::sync::Mutex<Option<HashMap<String, Option<i32>>>> = std::sync::Mutex::new(None);
+
+fn dire_l_issue_de_la_purge_des_bans(conn: &Connection, issue: &rusqlite::Result<usize>) {
+    let cle = conn.path().unwrap_or("").to_string();
+    let mut etats = ETAT_DE_LA_PURGE_DES_BANS.lock().unwrap_or_else(|e| e.into_inner());
+    let etats = etats.get_or_insert_with(HashMap::new);
+    let mut dernier = etats.get(&cle).copied();
+    let ligne = ligne_de_la_purge_des_bans(&mut dernier, issue);
+    match dernier {
+        Some(code) => {
+            etats.insert(cle, code);
+        }
+        None => {
+            etats.remove(&cle);
+        }
+    }
+    if let Some(ligne) = ligne {
+        eprintln!("{ligne}");
     }
 }
 

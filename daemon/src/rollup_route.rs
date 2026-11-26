@@ -51,11 +51,11 @@ pub(crate) fn rollup_source_ok(s: &str) -> bool {
 
 // =====================================================================================
 // B2 (fix#2) — GROUP-BY MULTI-DIM HOT sur le grain EXACT d'`event_rollup`. Un `stats count by
-// source,severity,action` sur le HOT (SQLite) scanne+agrège en une trentaine de secondes : MESURÉ sur une
-// base réelle AU PLUS TARD le 2026-07-23 (date du commit c784f75 qui consigne la mesure ; la date de la
-// mesure elle-même n'est pas consignée). ATTENTION à ce que cette mesure dit et ne dit pas — le volume que
-// portait la base à cet instant n'a PAS été relevé (l'estimation qui accompagnait ce chiffre n'était pas une
-// mesure, et le relevé du 2026-08-05 par `db-stats --par-objet` l'a réfutée d'un facteur six) ; la latence
+// source,severity,action` sur le HOT (SQLite) scanne+agrège en quelques dizaines de secondes : ordre de
+// grandeur MESURÉ sur une base réelle. ATTENTION à ce que cette mesure dit et ne dit
+// pas — le volume que portait la base à cet instant n'a PAS été relevé (l'estimation qui accompagnait ce
+// chiffre n'était pas une mesure, et un relevé ultérieur par `db-stats --par-objet` l'a réfutée, largement) ;
+// la latence vaut donc pour une base réelle de taille inconnue, sans courbe en fonction du volume, et
 // n'a pas été re-mesurée depuis. ROUTE A-multi le
 // réécrit vers les compteurs PRÉ-AGRÉGÉS d'`event_rollup` (réponse en ms). GÉNÉRALISE la ROUTE A
 // single-`source` existante à un SOUS-ENSEMBLE du grain exact.

@@ -245,19 +245,34 @@ fn poser_meta(conn: &Connection, cle: &str, valeur: &str) -> rusqlite::Result<us
 /// AU DÉMARRAGE — compare le jeu d'unités que CE binaire livre à celui noté sur la base, et date le
 /// changement s'il y en a un. Appelé une fois par base préparée, après les migrations.
 ///
-/// TROIS CAS, ET DEUX D'ENTRE EUX N'OUVRENT RIEN :
+/// QUATRE CAS, ET TROIS D'ENTRE EUX N'OUVRENT RIEN :
 ///   • signature IDENTIQUE -> aucun déploiement, on recharge simplement le fait déjà connu ;
 ///   • AUCUNE signature notée (base neuve) -> première pose SILENCIEUSE, aucune fenêtre : il n'y a pas
 ///     de build antérieur avec quoi corroborer, et le capteur construit sa baseline après l'installation ;
 ///   • signature DIFFÉRENTE -> un autre build tourne. Le fait est AUDITÉ D'ABORD (ledger tamper-evident
 ///     + event `plume-config`), et la fenêtre n'est ouverte QUE si cet audit a réussi : pas de trace,
 ///     pas d'atténuation. En cas d'échec la signature n'est pas non plus mise à jour -> le prochain
-///     démarrage réessaie au lieu d'oublier en silence.
+///     démarrage réessaie au lieu d'oublier en silence ;
+///   • signature NON LUE (`P10.20-b` : table illisible, valeur d'un autre type, lecture refusée) -> RIEN
+///     n'est écrit dans `meta`, aucune fenêtre n'est ouverte, aucun audit n'est fabriqué, et la ligne
+///     `[unites]` le dit avec la cause du moteur ; le fait déjà persisté est rechargé comme ailleurs. Une
+///     lecture ratée n'est pas une base neuve : y poser la signature de ce build effacerait celle du build
+///     d'avant, et le déploiement ne serait jamais audité. Le prochain démarrage dont la lecture aboutit
+///     retrouve la signature d'avant et constate le changement.
 pub(crate) fn noter_le_build_en_cours(conn: &Connection, db_path: &str) {
     let signature = signature_des_unites_livrees();
-    let precedente: Option<String> = conn
-        .query_row("SELECT value FROM meta WHERE key=?1", params![CLE_META_SIGNATURE], |r| r.get(0))
-        .ok();
+    let precedente = match signature_notee_lue(conn) {
+        Ok(precedente) => precedente,
+        Err(e) => {
+            eprintln!(
+                "[unites] signature du jeu d'unités notée sur cette base NON LUE -> rien n'est écrit dans \
+                 `meta`, aucune fenêtre de corroboration n'est ouverte et aucun déploiement n'est audité ; un \
+                 changement de build sera constaté au prochain démarrage dont la lecture aboutit : {e}"
+            );
+            faits_de_deploiement_cell().write().insert(db_path.to_string(), fait_persiste(conn));
+            return;
+        }
+    };
     let mut fait = fait_persiste(conn);
     match precedente {
         Some(p) if p == signature => {}
@@ -303,6 +318,13 @@ pub(crate) fn noter_le_build_en_cours(conn: &Connection, db_path: &str) {
         }
     }
     faits_de_deploiement_cell().write().insert(db_path.to_string(), fait);
+}
+
+/// `P10.20-b` — LA SIGNATURE NOTÉE, EN TROIS ISSUES : `Ok(Some(_))` lue, `Ok(None)` absente (base neuve),
+/// `Err(_)` non lue, avec la cause du moteur pour le journal. Une seule requête, quelle que soit l'issue.
+fn signature_notee_lue(conn: &Connection) -> rusqlite::Result<Option<String>> {
+    use rusqlite::OptionalExtension as _;
+    conn.query_row("SELECT value FROM meta WHERE key=?1", params![CLE_META_SIGNATURE], |r| r.get(0)).optional()
 }
 
 /// LA DÉCISION, PURE. Reclasse `row` si — et seulement si — c'est un dépôt d'unité systemd dont le

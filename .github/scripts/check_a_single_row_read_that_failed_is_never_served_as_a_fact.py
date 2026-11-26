@@ -329,7 +329,11 @@ PROPAGATEURS = ("?", "unwrap", "expect")
 # correctif, MESURÉ par cette garde — 55 sites sur 21 fichiers (`controles_de_defense.rs` perd ses deux sites et SORT du
 # relevé ; `migrate.rs::read_schema_version` perd le sien, `migrate.rs` reste par ses étapes historiques ; le reclassement
 # de `case_runbooks_json` ne change pas la population). Même règle : 55 -> 37 (69 % = 37,95), 21 -> 13 (65 % = 13,65).
-RELEVE_SITES = 55
+# RE-DÉRIVÉS le 2026-11-26 (`P10.20-b`, le dernier défaut connu : `maj_corroboree.rs::noter_le_build_en_cours`) : relevé
+# de l'arbre ce jour-là, après le correctif, MESURÉ par cette garde — 54 sites sur 21 fichiers (le site perd sa forme ;
+# `maj_corroboree.rs` reste dans le relevé par `fait_persiste`). Même règle : 54 -> 37 (69 % = 37,26), 21 -> 13
+# (65 % = 13,65) : les planchers ne bougent pas.
+RELEVE_SITES = 54
 RELEVE_FICHIERS = 21
 PLANCHER_SITES = 37
 PLANCHER_FICHIERS = 13
@@ -676,6 +680,11 @@ DEFAUTS_RANG_4_FAIL_CLOSED = {
 # `.ok().and_then(..).unwrap_or(1)` remis dans `read_schema_version` -> FORME NEUVE (code 1) ; l'entrée de
 # `case_runbooks_json` retirée de la classe 1 -> FORME NEUVE (code 1) ; l'entrée retirée de `dernier_etat_different`
 # remise dans la classe 7 -> EXEMPTION SANS OBJET (code 1).
+#
+# LE 2026-11-26 TOUJOURS (`P10.20-b`), la classe 7 se VIDE : `maj_corroboree.rs::noter_le_build_en_cours` lit la
+# signature notée en trois issues, et il ne reste AUCUN défaut connu dans cette garde. ÉPROUVÉ PAR MUTATION ce jour-là,
+# sur l'arbre : l'entrée laissée dans la classe 7 sur le site corrigé -> EXEMPTION SANS OBJET (code 1) ; le `.ok()` remis
+# sur la lecture de la signature, entrée retirée -> FORME NEUVE (code 1).
 
 # --- CLASSE 6 : HORS `handlers/`, LE REPLI NE DÉCIDE RIEN. Journal, statistique d'affichage, valeur recalculée
 # au passage suivant, repli qui part du côté bruyant ou fail-closed, ou lecture qui n'est que le premier essai
@@ -769,9 +778,14 @@ DEFAUTS_HORS_HANDLERS_A_CORRIGER = {
     #     réécrit ; les messages disent `NON LUE`. `read_schema_version` n'est plus compilée que pour les témoins
     #     (`#[cfg(test)]`), sans repli sur une lecture ratée.
     # Témoins : `daemon/src/tests/lectures_d_une_ligne_du_plan_de_controle_et_de_l_estampille.rs` (préfixe `cj10_`).
-    # Une signature d'unités non lue se lit « base neuve » : la signature est réécrite SANS audit du
-    # déploiement (aucune fenêtre n'est ouverte, mais le changement de build est oublié en silence).
-    ("daemon/src/maj_corroboree.rs", "noter_le_build_en_cours"): ("ok",),
+    # ENTRÉE RETIRÉE PAR `P10.20-b` (2026-11-26), la forme a disparu du site — c'était la dernière de la classe :
+    #   * `maj_corroboree.rs::noter_le_build_en_cours` (`ok`) — une signature d'unités non lue se lisait « base neuve » :
+    #     la signature de ce build était posée SANS audit, celle du build d'avant effacée, et le déploiement oublié en
+    #     silence (mesuré : signature en BLOB réécrite, aucun audit au démarrage suivant). La signature se lit par
+    #     `signature_notee_lue` (`.optional()`, trois issues) : non lue, rien n'est écrit dans `meta`, aucune fenêtre ni
+    #     aucun audit, la ligne `[unites]` porte la cause du moteur, et le démarrage suivant dont la lecture aboutit
+    #     audite le changement. Témoins : même fichier, préfixe `ck1_`.
+    # La classe reste déclarée : un défaut connu neuf hors de `handlers/` s'y écrit sans qu'on ait à la ré-inventer.
 }
 
 CLASSES = (
@@ -1439,6 +1453,13 @@ def main():
     print(f"[{ETIQUETTE}] l'ensemble nommé est EXACTEMENT ce que l'arbre porte ({len(sites)} site(s)) — "
           "ni forme neuve, ni exemption sans objet, ni forme CHANGÉE.")
     restants = sum(len(f) for f in DEFAUTS_CONNUS.values())
+    if restants == 0:
+        print(f"[{ETIQUETTE}] AUCUN DÉFAUT CONNU : toutes les classes « défaut connu » sont VIDES. CE QUE CE VERT NE DIT "
+              "PAS : les sites admis restants sont des ARBITRAGES ASSUMÉS ou des replis classés « ne décide rien », "
+              "chacun avec sa raison lue à la main ; la garde ne sait pas les recalculer. Le vert dit qu'aucune forme "
+              "absorbante n'existe hors de ces deux classes — un site neuf rougit, une entrée sans objet aussi.")
+        ce_qui_n_est_pas_tenu()
+        return 0
     print(f"[{ETIQUETTE}] CE QUE CE VERT NE DIT PAS : les {restants} accusations des classes « défaut connu » "
           "sont des DÉFAUTS CONNUS ET NON CORRIGÉS, admis pour que cette garde puisse être câblée "
           "VERTE le jour où elle est écrite plutôt que d'attendre une campagne — une garde qui naît "

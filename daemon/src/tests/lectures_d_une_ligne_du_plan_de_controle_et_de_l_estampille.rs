@@ -71,6 +71,20 @@
 // `ddl_de_reference`) prennent la même description, mais leur connexion est ouverte en mémoire DANS la fonction et
 // aucun témoin ne peut y rendre `meta` illisible (hors d'atteinte) ; le dossier supprimé entre les deux lectures de
 // la fiche de runbooks (dit « non lu ») n'est pas fabriqué.
+//
+// LES SECTIONS (14) ET (15) (préfixe `ck1_`) tiennent le dernier défaut connu de la même famille hors de `handlers/`,
+// mesuré ROUGE sur la base avant son correctif : `maj_corroboree::noter_le_build_en_cours` lisait la signature du jeu
+// d'unités notée par `.ok()`, et une lecture ratée valait « base neuve » — la signature d'un autre build, rendue
+// illisible (BLOB), était réécrite par celle de ce build sans audit, et le démarrage suivant ne voyait plus aucun
+// déploiement. Elle se lit désormais en trois issues : non lue, rien n'est écrit dans `meta`, aucun audit, une ligne
+// `[unites]` avec la cause du moteur, et le démarrage suivant dont la lecture aboutit audite le changement ; lue, les
+// gestes de la fonction sur `meta` sont ceux d'avant, à l'élément près.
+// MUTANTS JOUÉS (posés sous `cfg!(test)` et `VERIF_MUT`, retirés avant le commit), chacun vu rouge seul : `CK1_REPLI`
+// (le repli « aucune signature » remis), `CK1_POSE` (la signature posée sur une lecture non faite), `CK1_AUDIT` (la
+// lecture non faite prise pour une signature différente : audit fabriqué), `CK1_FAIT` (le fait persisté non rechargé),
+// `CK1_JOURNAL` (la ligne de journal retirée).
+// CE QU'ILS NE TIENNENT PAS : une signature lue dont le fait persisté ne se lit pas recharge zéro, sans ligne de journal
+// (`fait_persiste`, repli fail-closed classé « ne décide rien » par la garde, inchangé).
 // =====================================================================================
 mod lectures_d_une_ligne_du_plan_de_controle_et_de_l_estampille {
     use super::revocation_globale_sans_cookie_et_comptes_du_mode_un::{rgsc_connexion, rgsc_envoyer, rgsc_plateforme, RGSC_TENANT_A};
@@ -1118,6 +1132,273 @@ mod lectures_d_une_ligne_du_plan_de_controle_et_de_l_estampille {
             let prefixe = attendu["prefixe"].as_str().unwrap_or_else(|| panic!("contrôle : préfixe de {nom}"));
             let vues: Vec<Value> = fenetre.lines().filter(|l| l.starts_with(prefixe)).map(|l| json!(l)).collect();
             assert_eq!(&Value::Array(vues), &attendu["lignes"], "phase {nom} : chaque ligne de journal entière");
+        }
+    }
+
+    // -------------------------------------------------------------------------------------
+    // (14) LA SIGNATURE DU JEU D'UNITÉS NOTÉE EN BASE (`maj_corroboree::noter_le_build_en_cours`) — une lecture qui
+    // n'a pas eu lieu n'est pas une base neuve : rien n'est posé, rien n'est audité, et le démarrage suivant audite.
+    // -------------------------------------------------------------------------------------
+
+    /// L'énoncé de la lecture de la signature notée, celui de la production : les causes du moteur attendues au
+    /// journal sont rendues par CET énoncé, jamais écrites à la main.
+    const CK1_LECTURE: &str = "SELECT value FROM meta WHERE key=?1";
+    /// La signature d'un build ANTÉRIEUR, notée sur la base avant le démarrage.
+    const CK1_SIGNATURE_ANTERIEURE: &str = "signature-du-build-anterieur";
+    /// Un fait de déploiement déjà persisté (instant inventé), que chaque démarrage recharge.
+    const CK1_FAIT_ANTERIEUR: i64 = 1_700_000_000;
+    /// La ligne `[unites]` d'une signature non lue, écrite ici en toutes lettres ; la cause du moteur la suit.
+    const CK1_LIGNE_SIGNATURE_NON_LUE: &str = "[unites] signature du jeu d'unités notée sur cette base NON LUE -> rien \
+         n'est écrit dans `meta`, aucune fenêtre de corroboration n'est ouverte et aucun déploiement n'est audité ; un \
+         changement de build sera constaté au prochain démarrage dont la lecture aboutit : ";
+    const CK1_PREFIXE_UNITES: &str = "[unites]";
+
+    /// Rend la lecture de la signature notée IMPOSSIBLE par la voie nommée, sur la connexion `c` qui porte `meta` :
+    /// valeur d'un autre type (un BLOB dans une colonne lue en TEXT), lecture refusée par un autorisateur (la
+    /// PREMIÈRE lecture de `meta.value` seulement : les écritures et la lecture du fait passent), vue temporaire qui
+    /// échoue à l'exécution (`json_each` d'un texte qui n'est pas du JSON, en boucle externe), table retirée.
+    fn ck1_poser_la_voie(c: &Connection, voie: &str) {
+        match voie {
+            "valeur d'un autre type" => {
+                c.execute("UPDATE meta SET value=CAST(value AS BLOB) WHERE key=?1", params![CLE_META_SIGNATURE])
+                    .expect("fixture : signature en BLOB");
+            }
+            "lecture refusée" => {
+                cj10_compter_et_refuser(c, vec![1]);
+            }
+            "vue qui échoue" => c
+                .execute_batch(
+                    "CREATE TEMP VIEW meta AS SELECT m.key AS key, m.value AS value \
+                     FROM json_each('pas du json') CROSS JOIN main.meta AS m;",
+                )
+                .expect("fixture : vue temporaire"),
+            "table retirée" => c.execute_batch("ALTER TABLE meta RENAME TO meta_ck1;").expect("fixture : table retirée"),
+            autre => panic!("voie inconnue : {autre}"),
+        }
+    }
+
+    /// Rend la lecture de nouveau possible, sans rien réécrire d'autre que ce que la voie a posé.
+    fn ck1_retirer_la_voie(c: &Connection, voie: &str) {
+        match voie {
+            "valeur d'un autre type" => {
+                c.execute("UPDATE meta SET value=CAST(value AS TEXT) WHERE key=?1", params![CLE_META_SIGNATURE])
+                    .expect("fixture : signature remise en TEXT");
+            }
+            "lecture refusée" => c.authorizer::<fn(AuthContext<'_>) -> Authorization>(None),
+            "vue qui échoue" => c.execute_batch("DROP VIEW temp.meta;").expect("fixture : vue retirée"),
+            "table retirée" => c.execute_batch("ALTER TABLE meta_ck1 RENAME TO meta;").expect("fixture : table remise"),
+            autre => panic!("voie inconnue : {autre}"),
+        }
+    }
+
+    /// La cause que le moteur rend pour la voie, par le MÊME énoncé et le même mappeur que la production, sur une
+    /// table `meta` en mémoire qui porte la signature antérieure.
+    fn ck1_cause_du_moteur(voie: &str) -> String {
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch("CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);").unwrap();
+        c.execute("INSERT INTO meta(key,value) VALUES(?1,?2)", params![CLE_META_SIGNATURE, CK1_SIGNATURE_ANTERIEURE]).unwrap();
+        ck1_poser_la_voie(&c, voie);
+        c.query_row(CK1_LECTURE, params![CLE_META_SIGNATURE], |r| r.get::<_, String>(0))
+            .expect_err("fixture : la lecture de la signature échoue")
+            .to_string()
+    }
+
+    /// Une base migrée qui porte la signature d'un AUTRE build et un fait de déploiement déjà persisté.
+    fn ck1_base_d_un_autre_build(nom: &str) -> (crate::tmp_possede::TmpDb, Connection) {
+        let (p, conn) = mc_base(nom);
+        for (cle, valeur) in [(CLE_META_SIGNATURE, CK1_SIGNATURE_ANTERIEURE.to_string()), (CLE_META_FAIT, CK1_FAIT_ANTERIEUR.to_string())] {
+            conn.execute(
+                "INSERT INTO meta(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                params![cle, valeur],
+            )
+            .expect("fixture : meta posée");
+        }
+        (p, conn)
+    }
+
+    /// Toute la table `meta`, valeurs citées par `quote` (le type compris).
+    fn ck1_meta(c: &Connection) -> Vec<(String, String)> {
+        let mut s = c.prepare("SELECT key, quote(value) FROM meta ORDER BY key").unwrap();
+        let lignes = s.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().collect::<Result<Vec<_>, _>>();
+        lignes.expect("fixture : meta relue")
+    }
+
+    /// `(événements plume-config du jeu d'unités, entrées de ledger du même genre)`.
+    fn ck1_audits(c: &Connection) -> (i64, i64) {
+        let evenements: i64 = c
+            .query_row(
+                "SELECT COUNT(*) FROM event WHERE source='plume-config' AND json_extract(fields,'$.kind')='unites_livrees'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let ledger: i64 = c.query_row("SELECT COUNT(*) FROM ledger WHERE kind=?1", params![KIND_AUDIT], |r| r.get(0)).unwrap();
+        (evenements, ledger)
+    }
+
+    /// CE QU'IL TIENT (issue NON LUE, puis le démarrage SUIVANT) : sur une base qui porte la signature d'un AUTRE build
+    /// et un fait déjà persisté, la signature rendue illisible par quatre voies (valeur d'un autre type, lecture
+    /// refusée, vue qui échoue, table retirée) — le démarrage n'écrit RIEN dans `meta` (table entière comparée, types
+    /// compris), n'audite rien (ni événement `plume-config`, ni ledger), et recharge le fait persisté tel que
+    /// `fait_persiste` le lit (l'instant antérieur quand sa ligne est lisible, zéro quand la voie la rend illisible
+    /// aussi). La lecture rétablie, le démarrage suivant retrouve la signature d'avant et AUDITE le déploiement : un
+    /// événement, une entrée de ledger, la signature de ce build notée, un fait neuf persisté et chargé.
+    ///
+    /// LES MUTATIONS QUI LE FONT ROUGIR : `CK1_REPLI` (la lecture non faite rendue à « aucune signature » : pose
+    /// silencieuse, le déploiement est perdu), `CK1_POSE` (la signature posée sur une lecture non faite), `CK1_AUDIT`
+    /// (la lecture non faite prise pour une signature différente : audit fabriqué), `CK1_FAIT` (le fait persisté non
+    /// rechargé).
+    #[test]
+    fn ck1_une_signature_non_lue_n_est_ni_posee_ni_auditee_et_le_demarrage_suivant_audite() {
+        for (voie, fait_recharge) in [
+            ("valeur d'un autre type", CK1_FAIT_ANTERIEUR),
+            ("lecture refusée", CK1_FAIT_ANTERIEUR),
+            ("vue qui échoue", 0),
+            ("table retirée", 0),
+        ] {
+            let (p, conn) = ck1_base_d_un_autre_build("ck1-non-lue");
+            let avant = ck1_meta(&conn);
+            ck1_poser_la_voie(&conn, voie);
+            noter_le_build_en_cours(&conn, p.as_str());
+            let charge = fait_de_deploiement(p.as_str());
+            ck1_retirer_la_voie(&conn, voie);
+            assert_eq!(ck1_audits(&conn), (0, 0), "{voie} : aucun audit n'est fabriqué");
+            assert_eq!(ck1_meta(&conn), avant, "{voie} : rien n'est écrit dans `meta`, ni signature ni fait");
+            assert_eq!(charge, fait_recharge, "{voie} : le fait persisté est rechargé comme `fait_persiste` le lit");
+
+            noter_le_build_en_cours(&conn, p.as_str());
+            assert_eq!(ck1_audits(&conn), (1, 1), "{voie} : lecture rétablie, le démarrage suivant audite le déploiement");
+            let notee: String = conn
+                .query_row(CK1_LECTURE, params![CLE_META_SIGNATURE], |r| r.get(0))
+                .expect("fixture : signature relue");
+            assert_eq!(notee, signature_des_unites_livrees(), "{voie} : la signature de ce build est notée après l'audit");
+            let fait = fait_de_deploiement(p.as_str());
+            let persiste: i64 = conn
+                .query_row("SELECT CAST(value AS INTEGER) FROM meta WHERE key=?1", params![CLE_META_FAIT], |r| r.get(0))
+                .expect("fixture : fait relu");
+            assert!(fait > CK1_FAIT_ANTERIEUR, "{voie} : un fait neuf est chargé ({fait})");
+            assert_eq!(persiste, fait, "{voie} : le fait neuf est persisté");
+        }
+    }
+
+    /// Les gestes de `noter_le_build_en_cours` sur `meta`, dans l'ordre où la connexion les prépare (autorisateur qui
+    /// accorde tout et note chaque lecture de colonne, insertion et modification de `meta`).
+    fn ck1_gestes_sur_meta(c: &Connection, db_path: &str) -> Vec<String> {
+        let gestes = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let g = gestes.clone();
+        c.authorizer(Some(move |ctx: AuthContext<'_>| {
+            let geste = match ctx.action {
+                AuthAction::Read { table_name: "meta", column_name } => Some(format!("lit meta.{column_name}")),
+                AuthAction::Insert { table_name: "meta" } => Some("insère meta".to_string()),
+                AuthAction::Update { table_name: "meta", column_name } => Some(format!("modifie meta.{column_name}")),
+                _ => None,
+            };
+            g.lock().unwrap().extend(geste);
+            Authorization::Allow
+        }));
+        noter_le_build_en_cours(c, db_path);
+        c.authorizer::<fn(AuthContext<'_>) -> Authorization>(None);
+        let vus = gestes.lock().unwrap().clone();
+        vus
+    }
+
+    /// CE QU'IL TIENT (mode nominal, lecture réussie) : la suite des gestes de la fonction sur `meta` est, à l'élément
+    /// près, celle du code d'avant `P10.20-b` (relevée sur lui), pour chaque issue lue — base neuve (aucune ligne), même
+    /// build, autre build — : aucune requête de plus, aucune de moins. Les issues elles-mêmes (pose silencieuse, rien,
+    /// audit) sont tenues par les témoins de `tests/maj_corroboree.rs` ; l'absence de ligne de journal, par (15).
+    #[test]
+    fn ck1_une_signature_lue_garde_les_gestes_d_avant() {
+        let mut vus = Vec::new();
+        for (issue, pose) in [
+            ("base neuve", format!("DELETE FROM meta WHERE key='{CLE_META_SIGNATURE}';")),
+            ("même build", format!("UPDATE meta SET value='{}' WHERE key='{CLE_META_SIGNATURE}';", signature_des_unites_livrees())),
+            ("autre build", String::new()),
+        ] {
+            let (p, conn) = ck1_base_d_un_autre_build("ck1-nominal");
+            conn.execute_batch(&pose).expect("fixture : issue posée");
+            vus.push((issue, ck1_gestes_sur_meta(&conn, p.as_str())));
+        }
+        let lire = ["lit meta.value", "lit meta.key"];
+        let poser = ["insère meta", "lit meta.key", "modifie meta.value"];
+        let suite = |morceaux: &[&[&str]]| morceaux.concat().iter().map(|g| g.to_string()).collect::<Vec<String>>();
+        // La suite du code d'avant `P10.20-b`, relevée sur lui : la signature lue, le fait lu, puis les poses de `poser_meta`.
+        let attendus: Vec<(&str, Vec<String>)> = vec![
+            ("base neuve", suite(&[&lire, &lire, &poser])),
+            ("même build", suite(&[&lire, &lire])),
+            ("autre build", suite(&[&lire, &lire, &poser, &poser])),
+        ];
+        assert_eq!(vus, attendus, "chaque issue lue prépare les gestes d'avant sur `meta`");
+    }
+
+    // -------------------------------------------------------------------------------------
+    // (15) LA LIGNE `[unites]` D'UNE SIGNATURE NON LUE — capturée dans un processus enfant, comparée ENTIÈRE.
+    // -------------------------------------------------------------------------------------
+
+    const CK1_ENFANT: &str = "CK1_ENFANT_JOURNAL";
+    const CK1_PHASE: &str = "CK1-PHASE:";
+
+    /// CE QU'IL TIENT : un démarrage dont la lecture de la signature notée n'a pas lieu écrit au journal UNE ligne
+    /// `[unites]`, entière, qui porte la cause du moteur (rendue par le même énoncé), pour chacune des quatre voies ; un
+    /// démarrage dont la lecture réussit n'écrit AUCUNE ligne `[unites]` — base neuve, même build, autre build audité.
+    ///
+    /// LES MUTATIONS QUI LE FONT ROUGIR : `CK1_JOURNAL` (la ligne retirée), `CK1_REPLI` (la lecture non faite rendue à
+    /// « aucune signature » : aucune ligne).
+    #[test]
+    fn ck1_une_signature_non_lue_est_dite_au_journal_ligne_entiere() {
+        let _env = crate::tests::VERROU_ENV_PROCESSUS.read();
+        if std::env::var(CK1_ENFANT).is_ok() {
+            let mut attendus = serde_json::Map::new();
+            for (phase, pose) in [
+                ("n_base_neuve", format!("DELETE FROM meta WHERE key='{CLE_META_SIGNATURE}';")),
+                ("n_meme_build", format!("UPDATE meta SET value='{}' WHERE key='{CLE_META_SIGNATURE}';", signature_des_unites_livrees())),
+                ("n_autre_build", String::new()),
+            ] {
+                let (p, conn) = ck1_base_d_un_autre_build("ck1-journal-nominal");
+                conn.execute_batch(&pose).expect("fixture : issue posée");
+                eprintln!("{CK1_PHASE}{phase}");
+                noter_le_build_en_cours(&conn, p.as_str());
+                attendus.insert(phase.into(), json!([]));
+            }
+            for (phase, voie) in [
+                ("v_autre_type", "valeur d'un autre type"),
+                ("v_refusee", "lecture refusée"),
+                ("v_vue", "vue qui échoue"),
+                ("v_table", "table retirée"),
+            ] {
+                let cause = ck1_cause_du_moteur(voie);
+                let (p, conn) = ck1_base_d_un_autre_build("ck1-journal-non-lue");
+                ck1_poser_la_voie(&conn, voie);
+                eprintln!("{CK1_PHASE}{phase}");
+                noter_le_build_en_cours(&conn, p.as_str());
+                ck1_retirer_la_voie(&conn, voie);
+                attendus.insert(phase.into(), json!([format!("{CK1_LIGNE_SIGNATURE_NON_LUE}{cause}")]));
+            }
+            eprintln!("{CK1_PHASE}fin");
+            println!("CK1-ATTENDUS:{}", Value::Object(attendus));
+            return;
+        }
+        let sortie = std::process::Command::new(std::env::current_exe().expect("binaire de test"))
+            .args([
+                "--exact",
+                "--nocapture",
+                "--test-threads=1",
+                "tests::lectures_d_une_ligne_du_plan_de_controle_et_de_l_estampille::ck1_une_signature_non_lue_est_dite_au_journal_ligne_entiere",
+            ])
+            .env(CK1_ENFANT, "1")
+            .output()
+            .expect("ré-exécution du binaire de test");
+        let stdout = String::from_utf8_lossy(&sortie.stdout).into_owned();
+        let stderr = String::from_utf8_lossy(&sortie.stderr).into_owned();
+        assert_eq!(sortie.status.code(), Some(0), "l'enfant sort en 0 : {stdout}\n{stderr}");
+        let reste = stdout.split_once("CK1-ATTENDUS:").unwrap_or_else(|| panic!("contrôle : attendus : {stdout}")).1;
+        let attendus: serde_json::Map<String, Value> =
+            serde_json::from_str(reste.lines().next().unwrap_or("")).unwrap_or_else(|e| panic!("contrôle : attendus JSON ({e}) : {stdout}"));
+        assert!(attendus.len() >= 7, "plancher : sept phases jouées, {} rendues", attendus.len());
+        for (nom, lignes) in &attendus {
+            let debut = stderr.split_once(&format!("{CK1_PHASE}{nom}\n")).unwrap_or_else(|| panic!("contrôle : phase {nom} : {stderr}")).1;
+            let fenetre = debut.split_once(CK1_PHASE).map(|(c, _)| c).unwrap_or(debut);
+            let vues: Vec<Value> = fenetre.lines().filter(|l| l.starts_with(CK1_PREFIXE_UNITES)).map(|l| json!(l)).collect();
+            assert_eq!(&Value::Array(vues), lignes, "phase {nom} : chaque ligne `[unites]` entière");
         }
     }
 }

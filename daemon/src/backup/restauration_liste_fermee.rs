@@ -71,6 +71,39 @@
 //! l'export rejoue avec leurs lignes) ne sont donc pas créées comme des tables, et doivent être exactement celles que le
 //! module a créées, nom et texte.
 //!
+//! AUCUN INDEX NI AUCUN DÉCLENCHEUR SUR UNE TABLE FANTÔME, DANS LES DEUX FORMATS. Le module écrit lui-même dans ses tables
+//! fantômes à chaque écriture dans la table virtuelle, après la restauration sur la connexion du démon, où aucun
+//! autoriseur n'est posé : un index (`UNIQUE`, partiel) posé sur l'une d'elles y bornerait ou refuserait ces écritures,
+//! un déclencheur y ferait jouer son corps. L'écrivain n'en émet jamais (le schéma de la tête n'en porte aucun). Sous la
+//! phase post-DDL, l'autoriseur refuse donc la création d'un index (hors index automatique, que seul le moteur nomme) ou
+//! d'un déclencheur dont la CIBLE, telle que le moteur la lui passe, est une table fantôme d'une table virtuelle créée par
+//! cette restauration (`Cause::IndexOuDeclencheurSurUneTableFantome`) ; le format ancien juge ses index et ses
+//! déclencheurs sous la même phase, sur le brouillon où ses tables virtuelles sont déjà créées.
+//!
+//! AUCUN OBJET DE L'ARCHIVE NE PREND LE NOM D'UNE TABLE FANTÔME, QUEL QUE SOIT SON GENRE, DANS LES DEUX FORMATS. La règle
+//! porte sur le nom `<vt>_<suffixe>` (suffixes de l'écrivain) d'une table virtuelle de cette restauration, casse ASCII
+//! ignorée du côté de la table virtuelle comme de celui de l'objet, comme le moteur résout les noms. Elle juge toute
+//! création que porte une chaîne de l'archive et qui prend un nom dans l'espace de noms des tables (table, vue, index,
+//! table virtuelle : `nom_dans_l_espace_des_tables`), jamais les tables que le module crée lui-même à l'exécution.
+//! L'autoriseur refuse, sous sa propre cause (`Cause::ObjetAuNomDUneTableFantome`) :
+//!  - la création d'une table virtuelle quand un objet créé AVANT elle porte le nom de l'une de ses tables fantômes : FTS4
+//!    crée sa table `<vt>_stat` par `CREATE TABLE IF NOT EXISTS` et adopterait l'objet déjà là, table, vue ou table
+//!    virtuelle, avec l'index ou le déclencheur qu'on y aurait posé (un déclencheur `INSTEAD OF` sur une vue y jouerait à
+//!    chaque écriture du module, sur la connexion du démon) ;
+//!  - la création d'un objet APRÈS la table virtuelle sous le nom de l'une de ses tables fantômes, dès que l'autoriseur en
+//!    voit le nom.
+//! Le moteur cherche le nom d'un INDEX ou d'une TABLE VIRTUELLE avant de montrer leur création à l'autoriseur
+//! (`sqlite3CreateIndex`, `sqlite3StartTable`) : créés après la table virtuelle sous le nom d'une table fantôme qu'elle a
+//! déjà créée, ils sont arrêtés par lui, et la chaîne, sans tête, est refusée comme hors classe ; sous un nom que ce module
+//! ne crée pas, la liste les refuse sous la cause nommée. Au format ancien, le brouillon crée les tables, puis les vues,
+//! avant toute table virtuelle : une table ou une vue du fichier y est toujours jugée avant elles, quel que soit son rang
+//! dans le fichier ; une table rejouée au nom EXACT d'une table fantôme est une table fantôme du fichier, comparée à celles
+//! que le module crée (ci-dessus). Un déclencheur ne prend aucun nom dans cet espace (les déclencheurs ont le leur) :
+//! nommé comme une table fantôme, il reste admis sur une table ordinaire. L'écrivain ne rejoue pas une table dont le nom
+//! est, AU TEXTE EXACT, celui d'une table fantôme d'une table virtuelle de la base (`collect_dump_plan` la tient pour
+//! fantôme, le `rebuild` la recrée) ; une table dont le nom n'en diffère que par la casse est rejouée comme table
+//! ordinaire, et la restauration la refuse ici.
+//!
 //! LES ARGUMENTS D'UNE TABLE VIRTUELLE, DANS LES DEUX FORMATS. L'autoriseur ne voit d'une création de table virtuelle que
 //! son nom et son module (`SQLITE_CREATE_VTABLE`) : les arguments ne lui passent jamais. Une fois la chaîne préparée sous
 //! la liste (une instruction, une tête, un module émis), `preparer_une_chaine_de_l_archive` relève donc les arguments
@@ -173,6 +206,13 @@ pub(super) enum Cause {
     ArgumentDeTableVirtuelleHorsListe,
     /// Format ancien : les tables fantômes du fichier ne sont pas exactement celles que le module crée, nom et texte.
     TablesFantomesHorsDeCeQueCreeLeModule,
+    /// Un index ou un déclencheur dont la cible est une table fantôme d'une table virtuelle créée par cette restauration
+    /// (`admettre`).
+    IndexOuDeclencheurSurUneTableFantome,
+    /// Un objet de l'espace de noms des tables (table, vue, index, table virtuelle) qui porte, casse ASCII ignorée, le nom
+    /// d'une table fantôme d'une table virtuelle de cette restauration : créé avant elle, sa création à elle est refusée ;
+    /// créé après, la sienne (`admettre`, `prend_le_nom_d_une_table_fantome`).
+    ObjetAuNomDUneTableFantome,
 }
 
 impl Cause {
@@ -184,6 +224,8 @@ impl Cause {
             Cause::TableNonCreee => "table non créée par cette restauration",
             Cause::ArgumentDeTableVirtuelleHorsListe => "argument de table virtuelle hors de ce que l'écrivain émet",
             Cause::TablesFantomesHorsDeCeQueCreeLeModule => "tables fantômes autres que celles que le module crée",
+            Cause::IndexOuDeclencheurSurUneTableFantome => "index ou déclencheur posé sur une table fantôme",
+            Cause::ObjetAuNomDUneTableFantome => "objet au nom d'une table fantôme d'une table virtuelle",
         }
     }
 }
@@ -233,12 +275,19 @@ struct Etat {
     tables_creees: std::collections::HashSet<String>,
     /// Tables virtuelles créées par la section 4 de CETTE restauration.
     tables_virtuelles_creees: std::collections::HashSet<String>,
+    /// LES NOMS PRIS dans l'espace de noms des tables par une chaîne de l'archive de CETTE restauration (table, vue, index,
+    /// table virtuelle ; `nom_dans_l_espace_des_tables`), au texte que le moteur passe à l'autoriseur. Un index du
+    /// format ancien, que le brouillon prépare sans le créer, y entre comme les autres : l'export le créera.
+    noms_pris: std::collections::HashSet<String>,
     /// Actions « tête » vues depuis l'entrée dans la phase (cf. en-tête du module).
     tetes: u32,
     /// Une chaîne lue dans l'archive est en cours de préparation : aucune action interne d'un module n'y est admise.
     preparation_de_l_archive: bool,
     /// L'autoriseur a refusé au moins une action depuis l'entrée dans la phase.
     refus: bool,
+    /// Parmi ces refus, celui qui nomme sa propre cause (index ou déclencheur sur une table fantôme, objet au nom d'une
+    /// table fantôme). Jamais remis à zéro : un refus arrête la restauration ou le jugement du format ancien.
+    cause_nommee: Option<Cause>,
 }
 
 impl Etat {
@@ -255,6 +304,38 @@ fn est_une_table_fantome_de(vt: &str, nom: &str) -> bool {
         && nom.starts_with(vt)
         && nom.as_bytes()[vt.len()] == b'_'
         && SUFFIXES_DES_TABLES_FANTOMES.contains(&&nom[vt.len() + 1..])
+}
+
+/// `nom` désigne, POUR LE MOTEUR, une table fantôme de `vt` : même règle, casse ASCII ignorée (le moteur résout les noms
+/// de table sans elle, et un module qui crée `<vt>_stat` par `IF NOT EXISTS` trouve `<VT>_STAT`).
+fn designe_une_table_fantome_de(vt: &str, nom: &str) -> bool {
+    est_une_table_fantome_de(&vt.to_ascii_lowercase(), &nom.to_ascii_lowercase())
+}
+
+/// LE NOM QUE PREND, dans l'espace de noms des tables, la création que porte `action` : table, vue, index, table
+/// virtuelle. Un déclencheur n'y prend aucun nom : les déclencheurs ont leur propre espace de noms (le module crée sa
+/// table sous le nom d'un déclencheur déjà là).
+fn nom_dans_l_espace_des_tables<'a>(action: &AuthAction<'a>) -> Option<&'a str> {
+    use AuthAction as A;
+    match *action {
+        A::CreateTable { table_name } => Some(table_name),
+        A::CreateView { view_name } => Some(view_name),
+        A::CreateIndex { index_name, .. } => Some(index_name),
+        A::CreateVtable { table_name, .. } => Some(table_name),
+        _ => None,
+    }
+}
+
+/// `nom`, que prend la création `action` d'une chaîne de l'archive, est celui d'une table fantôme, casse ASCII ignorée des
+/// deux côtés (`designe_une_table_fantome_de`) :
+///  - AVANT : `action` crée une table virtuelle et un nom déjà pris (`noms_pris`) est celui de l'une de ses tables
+///    fantômes ; un module qui crée sa table par `CREATE TABLE IF NOT EXISTS` (FTS4 et sa table `<vt>_stat`) adopterait
+///    l'objet déjà là, quel que soit son genre, avec ce qu'on y a posé ;
+///  - APRÈS : `nom` est celui d'une table fantôme d'une table virtuelle déjà créée par cette restauration.
+fn prend_le_nom_d_une_table_fantome(e: &Etat, action: &AuthAction<'_>, nom: &str) -> bool {
+    let avant = matches!(*action, AuthAction::CreateVtable { .. }) && e.noms_pris.iter().any(|pris| designe_une_table_fantome_de(nom, pris));
+    let apres = e.tables_virtuelles_creees.iter().any(|vt| designe_une_table_fantome_de(vt, nom));
+    avant || apres
 }
 
 /// Les actions qu'un module FTS fait lui-même sur SES tables fantômes (cf. en-tête du module), dans toute phase où une
@@ -280,6 +361,15 @@ fn action_interne_d_un_module(e: &Etat, action: &AuthAction<'_>) -> bool {
     }
 }
 
+/// Le crochet de test `crochets_de_restauration::sans_refus_sur_les_tables_fantomes` est armé sur ce fil ; toujours faux
+/// hors des tests.
+fn tables_fantomes_ouvertes() -> bool {
+    #[cfg(test)]
+    return crochets_de_restauration::refus_sur_les_tables_fantomes_leve();
+    #[cfg(not(test))]
+    false
+}
+
 /// `sqlite_master`, que le moteur écrit et relit lui-même pour toute création.
 fn action_interne_d_une_creation(action: &AuthAction<'_>) -> bool {
     use AuthAction as A;
@@ -295,6 +385,21 @@ fn admettre(e: &mut Etat, ctx: &AuthContext<'_>) -> bool {
     // sont créés en dernier, après les données) : une action portée par l'un d'eux n'est pas dans la liste.
     if ctx.accessor.is_some() {
         return false;
+    }
+    // UN OBJET AU NOM D'UNE TABLE FANTÔME : jugé sur toute création que porte une chaîne de l'archive, quels que soient sa
+    // phase et son genre, avant le bras qui l'admettrait ; refusé sous sa propre cause. Le module crée ses tables
+    // fantômes à l'exécution, jamais pendant la préparation d'une chaîne de l'archive : elles ne passent pas ici.
+    if e.preparation_de_l_archive {
+        match nom_dans_l_espace_des_tables(&ctx.action) {
+            Some(nom) if prend_le_nom_d_une_table_fantome(e, &ctx.action, nom) => {
+                e.cause_nommee = Some(Cause::ObjetAuNomDUneTableFantome);
+                return false;
+            }
+            Some(nom) => {
+                e.noms_pris.insert(nom.to_string());
+            }
+            None => {}
+        }
     }
     match (e.phase, ctx.action) {
         // ── Démon ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -329,6 +434,21 @@ fn admettre(e: &mut Etat, ctx: &AuthContext<'_>) -> bool {
             true
         }
         // ── Archive, section 4 ────────────────────────────────────────────────────────────────────────────────
+        // UN INDEX OU UN DÉCLENCHEUR SUR UNE TABLE FANTÔME : refusé, sous sa propre cause. Le module écrit lui-même dans
+        // ses tables fantômes, après la restauration sur la connexion du démon et sans autoriseur ; un index (`UNIQUE`,
+        // partiel) y bornerait ses écritures, un déclencheur y ferait jouer son corps à chacune. La cible est celle que
+        // le moteur passe à l'autoriseur (le nom de la table telle qu'il l'a trouvée), jamais lue dans le texte. Les
+        // index automatiques d'une table fantôme, que seul le moteur nomme, restent des actions internes du module.
+        (Phase::PostDdl, A::CreateIndex { index_name, table_name })
+            if !index_name.starts_with(PREFIXE_DES_INDEX_AUTOMATIQUES) && e.est_une_table_fantome(table_name) && !tables_fantomes_ouvertes() =>
+        {
+            e.cause_nommee = Some(Cause::IndexOuDeclencheurSurUneTableFantome);
+            false
+        }
+        (Phase::PostDdl, A::CreateTrigger { table_name, .. }) if e.est_une_table_fantome(table_name) && !tables_fantomes_ouvertes() => {
+            e.cause_nommee = Some(Cause::IndexOuDeclencheurSurUneTableFantome);
+            false
+        }
         (Phase::PostDdl, A::CreateIndex { index_name, table_name }) if !index_name.starts_with(PREFIXE_DES_INDEX_AUTOMATIQUES) => {
             e.tetes += 1;
             e.cible = table_name.to_string();
@@ -397,9 +517,11 @@ impl ListeFermee {
             module_en_creation: None,
             tables_creees: Default::default(),
             tables_virtuelles_creees: Default::default(),
+            noms_pris: Default::default(),
             tetes: 0,
             preparation_de_l_archive: false,
             refus: false,
+            cause_nommee: None,
         }));
         let pour_le_moteur = etat.clone();
         conn.authorizer(Some(move |ctx: AuthContext<'_>| {
@@ -470,11 +592,14 @@ impl ListeFermee {
         let mut lot = rusqlite::Batch::new(conn, chaine);
         self.etat().preparation_de_l_archive = true;
         let premiere = lot.next();
-        let hors_liste = {
+        let (hors_liste, cause_nommee) = {
             let mut e = self.etat();
             e.preparation_de_l_archive = false;
-            e.refus || e.tetes != 1
+            (e.refus || e.tetes != 1, e.cause_nommee)
         };
+        if let Some(cause) = cause_nommee {
+            return Err(self.refus(phase, cause));
+        }
         let premiere = match premiere {
             _ if hors_liste => return Err(self.refus(phase, Cause::ClasseHorsListe)),
             Err(e) => return Err(self.refusee_par_le_moteur(phase, &e)),
@@ -725,8 +850,12 @@ fn accepter_toute_collation_sur_le_brouillon(brouillon: &Connection) {
 /// rejouée du fichier) ne sont pas créées comme des tables : le module les crée sur le brouillon. Une fois toutes les
 /// lignes jugées, l'ensemble de leurs noms et de leurs textes doit être EXACTEMENT celui des tables fantômes que les
 /// modules ont créées sur le brouillon ; une table en trop, une table absente ou un texte réécrit refuse
-/// (`Cause::TablesFantomesHorsDeCeQueCreeLeModule`). Leurs LIGNES, que l'export recopie, ne sont pas jugées : une table
-/// sans contenu (`content=''`) n'a pas d'autre copie de ses données.
+/// (`Cause::TablesFantomesHorsDeCeQueCreeLeModule`). Un index ou un déclencheur du fichier dont la cible est l'une
+/// d'elles est refusé pendant sa préparation (`admettre`, `Cause::IndexOuDeclencheurSurUneTableFantome`) ; une table
+/// rejouée dont le nom n'en diffère que par la casse est créée comme une table ordinaire, et tout objet au nom d'une table
+/// fantôme (table, vue, index, table virtuelle) est refusé à la création de la table virtuelle ou à la sienne
+/// (`Cause::ObjetAuNomDUneTableFantome`, cf. en-tête du module). Leurs LIGNES,
+/// que l'export recopie, ne sont pas jugées : une table sans contenu (`content=''`) n'a pas d'autre copie de ses données.
 ///
 /// Le premier refus arrête le jugement et nomme la phase « format ancien ».
 ///
@@ -785,7 +914,10 @@ pub(super) fn juger_le_schema_du_format_ancien(clair: &Connection) -> Result<(),
 ///    gardes de la reconstruction FTS (lecture de la seule table de contenu créée par la restauration, fonctions des
 ///    seuls modules), que ce jugement rend inatteignables par une archive, gardent un témoin ;
 ///  - `sur_la_connexion` : une fermeture reçoit chaque connexion de restauration du format courant dès son ouverture
-///    (`ListeFermee::armer`), avant toute instruction ; un témoin y abaisse une limite du moteur.
+///    (`ListeFermee::armer`), avant toute instruction ; un témoin y abaisse une limite du moteur ;
+///  - `sans_refus_sur_les_tables_fantomes` : `admettre` admet un index ou un déclencheur posé sur une table fantôme, pour
+///    que les gardes qu'un tel objet était seul à atteindre (aucun déclencheur ne joue pendant la restauration, `COMMIT`
+///    refusé par la liste ou par le moteur), devenues une défense en profondeur, gardent un témoin.
 #[cfg(test)]
 pub(crate) mod crochets_de_restauration {
     use std::cell::{Cell, RefCell};
@@ -795,6 +927,7 @@ pub(crate) mod crochets_de_restauration {
     thread_local! {
         static SANS_JUGEMENT: Cell<bool> = const { Cell::new(false) };
         static SUR_LA_CONNEXION: RefCell<Option<SurLaConnexion>> = const { RefCell::new(None) };
+        static FANTOMES_OUVERTES: Cell<bool> = const { Cell::new(false) };
     }
 
     /// Désarme les crochets du fil en sortie de portée, panique comprise.
@@ -804,6 +937,7 @@ pub(crate) mod crochets_de_restauration {
         fn drop(&mut self) {
             SANS_JUGEMENT.with(|c| c.set(false));
             SUR_LA_CONNEXION.with(|c| *c.borrow_mut() = None);
+            FANTOMES_OUVERTES.with(|c| c.set(false));
         }
     }
 
@@ -815,6 +949,15 @@ pub(crate) mod crochets_de_restauration {
     pub(crate) fn sur_la_connexion(f: impl Fn(&rusqlite::Connection) + 'static) -> Arme {
         SUR_LA_CONNEXION.with(|c| *c.borrow_mut() = Some(std::rc::Rc::new(f)));
         Arme(())
+    }
+
+    pub(crate) fn sans_refus_sur_les_tables_fantomes() -> Arme {
+        FANTOMES_OUVERTES.with(|c| c.set(true));
+        Arme(())
+    }
+
+    pub(super) fn refus_sur_les_tables_fantomes_leve() -> bool {
+        FANTOMES_OUVERTES.with(|c| c.get())
     }
 
     pub(super) fn arguments_non_juges() -> bool {

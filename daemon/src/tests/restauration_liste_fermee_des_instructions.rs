@@ -508,8 +508,11 @@ mod restauration_liste_fermee_des_instructions {
 
     /// Un déclencheur posé sur une table fantôme joue quand le module y écrit pendant la reconstruction : une action
     /// portée par un déclencheur n'est pas dans la liste (aucun déclencheur ne joue pendant une restauration conforme).
+    /// Un tel déclencheur est désormais refusé dès sa création (P10.34-t, témoins de CJ8) : cette garde devient une
+    /// défense en profondeur, jouée ici sous le crochet qui lève ce refus.
     #[test]
     fn un_declencheur_ne_joue_jamais_pendant_la_restauration() {
+        let _arme = crate::backup::crochets_de_restauration::sans_refus_sur_les_tables_fantomes();
         let d = post(vec![
             Post::Sql("CREATE VIRTUAL TABLE f USING fts5(v, content='t')"),
             Post::Sql("CREATE TRIGGER g AFTER INSERT ON f_data BEGIN SELECT 1; END"),
@@ -518,11 +521,13 @@ mod restauration_liste_fermee_des_instructions {
         refusee("cc6b-p-declencheur", &d, "reconstruction FTS", CLASSE);
     }
 
-    /// LE `COMMIT` FINAL REFUSÉ, CHEMIN QUI RESTE ATTEIGNABLE : un module FTS4 vide au `COMMIT` les termes de sa
-    /// reconstruction dans `f_segdir`, où un déclencheur l'attend ; l'action du déclencheur est hors liste, le `COMMIT`
-    /// échoue avec le refus nommé de la phase de validation, et la destination reste intacte.
+    /// LE `COMMIT` FINAL REFUSÉ : un module FTS4 vide au `COMMIT` les termes de sa reconstruction dans `f_segdir`, où un
+    /// déclencheur l'attend ; l'action du déclencheur est hors liste, le `COMMIT` échoue avec le refus nommé de la phase
+    /// de validation, et la destination reste intacte. Un déclencheur sur une table fantôme étant désormais refusé dès sa
+    /// création (P10.34-t), ce chemin n'est plus atteint par une archive : il est joué sous le crochet qui lève ce refus.
     #[test]
     fn le_commit_refuse_par_la_liste_laisse_la_destination_intacte() {
+        let _arme = crate::backup::crochets_de_restauration::sans_refus_sur_les_tables_fantomes();
         let d = post(vec![
             Post::Sql("CREATE VIRTUAL TABLE f USING fts4(v, content='t')"),
             Post::Sql("CREATE TRIGGER g AFTER INSERT ON f_segdir BEGIN SELECT 1; END"),

@@ -563,11 +563,13 @@ mod restauration_format_ancien_liste_fermee {
         refusee("cd1-b-reconstruction", &d.octets(), moteur("reconstruction FTS", 1));
     }
 
-    /// Validation : un module FTS4 vide au `COMMIT` les termes de sa reconstruction dans `f_segdir`, où un index (admis :
-    /// `json_extract`, sur la table fantôme) lit la racine binaire du segment comme du JSON ; le moteur refuse l'écriture,
-    /// donc le `COMMIT`.
+    /// Validation : un module FTS4 vide au `COMMIT` les termes de sa reconstruction dans `f_segdir`, où un index
+    /// (`json_extract`, sur la table fantôme) lit la racine binaire du segment comme du JSON ; le moteur refuse l'écriture,
+    /// donc le `COMMIT`. Un index sur une table fantôme étant désormais refusé dès sa création (P10.34-t), ce chemin n'est
+    /// plus atteint par une archive : il est joué sous le crochet qui lève ce refus.
     #[test]
     fn courant_validation_refusee_par_le_moteur_rend_son_code() {
+        let _arme = crate::backup::crochets_de_restauration::sans_refus_sur_les_tables_fantomes();
         let mut d = Dump::conforme();
         d.post = vec![
             Post::Sql("CREATE VIRTUAL TABLE f USING fts4(v, content='t')"),

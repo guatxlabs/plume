@@ -956,11 +956,82 @@ enum Sort {
     Abandonne,
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+//  `P10.20-b` — UN LOT DONT LA LIGNE DU CATALOGUE N'A PAS ÉTÉ LUE N'EST PAS UN LOT NON ROUTABLE.
+//
+//  Avant : `resolve_ingest_target` rendait `None` pour une ligne de catalogue NON LUE comme pour un tenant
+//  absent ou suspendu, et le lot partait en QUARANTAINE sous « tenant inconnu/suspendu » — ou était DÉTRUIT
+//  si le déplacement échouait (`quarantine_spool_file`). Une panne de lecture passagère du plan de contrôle
+//  écartait donc des événements valides d'un tenant qui existe.
+//
+//  Maintenant : le lot RESTE au spool, intact (ni quarantaine, ni effacement, rien d'ingéré ni compté comme
+//  consommé), et il est COMPTÉ parmi les abandons du passage, comme un lot dont la transaction n'a pas été
+//  prise — c'est ce compte que publie le bilan de la boucle d'ingestion et que lit la santé du composant
+//  `ingest`. Le passage suivant (la boucle repasse à son rythme) relit la ligne et l'ingère sans geste.
+//
+//  LE JOURNAL, SANS UNE LIGNE PAR FICHIER ET PAR PASSAGE : la forme est celle du mémo CIM ci-dessus (un
+//  ensemble BORNÉ, une ligne à la PREMIÈRE occurrence de la clé), avec le tenant pour clé. Une seule
+//  différence, et elle est voulue : l'entrée est OUBLIÉE dès que la ligne du même tenant se relit (qu'elle
+//  route le lot ou l'écarte), si bien qu'une panne SUIVANTE est dite à son tour au lieu de se taire pour la
+//  vie du processus. Au plafond, on cesse de mémoriser ET de dire ; les lots restent comptés.
+//
+//  CE QUI BORNE L'ATTENTE : rien n'est jeté pendant la panne, donc le spool grossit. Deux gardes existantes
+//  le voient sans rien ajouter ici : la profondeur de file (`metrics::spool_queue_depth`, composant `ingest`
+//  jaune au-delà de son seuil de retard) et l'occupation du volume de données (composant `store`, jaune
+//  puis rouge).
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+
+/// BORNE DU MÉMO des tenants dont la ligne non lue a déjà été dite. La clé vient du NOM du fichier de spool
+/// (marqueur `#T#…#T#`) : la borne empêche un spool garni de noms distincts de faire croître le mémo sans fin.
+pub(crate) const CATALOGUE_NON_LU_MEMO_MAX: usize = 256;
+
+/// PREMIÈRE fois, depuis la dernière lecture réussie, que la ligne de ce tenant ne se lit pas ? Seam PUR
+/// sur l'ensemble passé (le mémo du processus est `catalogues_non_lus_dits`). Au plafond : `false`.
+pub(crate) fn noter_un_catalogue_non_lu(memo: &mut std::collections::HashSet<String>, tenant: &str) -> bool {
+    if memo.len() >= CATALOGUE_NON_LU_MEMO_MAX {
+        return false;
+    }
+    memo.insert(tenant.to_string())
+}
+
+/// Le mémo du processus. Un verrou empoisonné est repris tel quel (`PoisonError::into_inner`) : le mémo n'est
+/// qu'un frein du journal, il n'a pas de raison de paniquer sur le chemin d'ingestion.
+fn catalogues_non_lus_dits() -> &'static std::sync::RwLock<std::collections::HashSet<String>> {
+    static DITS: std::sync::OnceLock<std::sync::RwLock<std::collections::HashSet<String>>> = std::sync::OnceLock::new();
+    DITS.get_or_init(Default::default)
+}
+
+/// LA LIGNE, une fois par tenant et par panne. Le tenant est cité sous sa forme échappée (`{:?}`) : il vient
+/// d'un nom de fichier, et un saut de ligne, un retour chariot, un NUL ou un guillemet n'y forgent pas de ligne.
+fn dire_le_catalogue_non_lu(tenant: &str, cause: &rusqlite::Error) {
+    let premiere = noter_un_catalogue_non_lu(
+        &mut catalogues_non_lus_dits().write().unwrap_or_else(std::sync::PoisonError::into_inner),
+        tenant,
+    );
+    if premiere {
+        eprintln!(
+            "[ingest] tenant {tenant:?} : ligne du catalogue des tenants NON LUE ({cause}) -> ses lots RESTENT au \
+             spool, intacts (ni quarantaine, ni effacement, rien d'ingéré) et seront repris sans geste dès qu'elle \
+             se relira. Dit une fois jusqu'à la prochaine lecture réussie de cette ligne ; chaque lot laissé est \
+             compté à chaque passage parmi les abandons de l'ingestion (santé)."
+        );
+    }
+}
+
+/// La ligne de ce tenant s'est relue : la prochaine panne sera dite à son tour.
+fn oublier_le_catalogue_non_lu(tenant: &str) {
+    let dits = catalogues_non_lus_dits();
+    if dits.read().unwrap_or_else(std::sync::PoisonError::into_inner).contains(tenant) {
+        dits.write().unwrap_or_else(std::sync::PoisonError::into_inner).remove(tenant);
+    }
+}
+
 /// UN PASSAGE SUR LE SPOOL. REND SON BILAN (`P4.1-r`) : `Illisible` si le répertoire n'a pas pu être
 /// énuméré — la voie fichier de l'ingestion est alors MORTE pour ce passage, et le dire vaut mieux qu'un
 /// retour muet qui laissait la boucle tourner « normalement » ; `Lue(n)` sinon, `n` = fichiers
-/// abandonnés (entrée illisible, spool non routable, fichier illisible ou indécodable, batch refusé,
-/// panic capturé). Chaque abandon est aussi mis en quarantaine ou laissé en place, comme avant.
+/// abandonnés (entrée illisible, spool non routable, ligne du catalogue non lue, fichier illisible ou
+/// indécodable, batch refusé, panic capturé). Chaque abandon est aussi mis en quarantaine ou laissé en
+/// place, comme avant ; un lot dont la ligne du catalogue n'a pas été lue est TOUJOURS laissé en place.
 pub(crate) fn ingest_once(mgr: &TenantDbManager, spool: &str) -> crate::bilan_de_tick::BilanDeTick {
     use crate::mesure_environnement::{cause_io, Mesure};
     let rd = match std::fs::read_dir(spool) {
@@ -992,18 +1063,34 @@ pub(crate) fn ingest_once(mgr: &TenantDbManager, spool: &str) -> crate::bilan_de
         // ROUTING FAIL-CLOSED (R8) : le tenant PORTEUR est encodé dans le nom (marqueur #T#…#T#, posé par
         // ingest_post/journal/minio) -> on résout SA base (writer + db_path). Mode 0 -> toujours (st.db,
         // st.db_path). Mode 1, tenant inconnu/suspendu/clé non résolue -> QUARANTAINE (jamais d'insert dans
-        // une base client, jamais de repli sur `default`). Fichier sans marqueur -> `default` (collecteurs
-        // hôte centraux / mode 0 / fichiers en vol pré-migration = base opérateur/self, pas un client).
+        // une base client, jamais de repli sur `default`) ; ligne du catalogue NON LUE -> le lot RESTE au
+        // spool (`P10.20-b`, cf. le bandeau de `dire_le_catalogue_non_lu`). Fichier sans marqueur -> `default`
+        // (collecteurs hôte centraux / mode 0 / fichiers en vol pré-migration = base opérateur/self).
         let tenant = spool_file_tenant(&name);
         // M2 : host LIÉ au token de l'agent émetteur (marqueur `#H#…#H#`, posé par ingest_post/journal_post
         // pour un agent à token lié). Some(h) -> ÉCRASE `event.host` de tous les events du fichier (un agent
         // ne peut donc pas forger le host d'un AUTRE agent). None -> comportement historique (host de l'event).
         let forced_host = spool_file_host(&name);
-        let (handle, tdb_path) = match resolve_ingest_target(mgr, &tenant) {
-            Some(t) => t,
-            None => {
+        let (handle, tdb_path) = match resolve_ingest_target_lu(mgr, &tenant) {
+            Ok(Some(t)) => {
+                oublier_le_catalogue_non_lu(&tenant);
+                t
+            }
+            Ok(None) => {
+                oublier_le_catalogue_non_lu(&tenant);
                 quarantine_spool_file(spool, &path, &name, "spool non routable (tenant inconnu/suspendu)");
                 return Sort::Abandonne; // (closure CONC-2 : ex-`continue`)
+            }
+            // `P10.20-b` — ni quarantaine ni effacement : le lot reste où il est, intact, et compte parmi les
+            // abandons du passage ; le suivant relit la ligne. Une entrée qui n'est PAS un lot (le sous-répertoire
+            // de quarantaine lui-même, tout nom hors convention) n'a rien à laisser ni à dire : elle passe comme
+            // plus bas, sans abandon, et la profondeur de file l'ignore de même (`entree_de_spool_comptee`).
+            Err(cause) => {
+                if !crate::mesure_environnement::entree_de_spool_comptee(&name) {
+                    return Sort::Ingere;
+                }
+                dire_le_catalogue_non_lu(&tenant, &cause);
+                return Sort::Abandonne;
             }
         };
         let db = &handle;

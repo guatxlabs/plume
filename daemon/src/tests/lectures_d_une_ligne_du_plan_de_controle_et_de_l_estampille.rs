@@ -44,10 +44,10 @@
 // sous l'identifiant effacé, vu rouge AVANT la cause). Et, par édition de source, chaque `eprintln!` de la cause du
 // moteur retiré d'un bras neuf (témoin (9)).
 //
-// CE QUE CES TÉMOINS NE TIENNENT PAS : `TenantDbManager::ready` garde `None` pour une ligne de catalogue non
-// lue comme pour un tenant absent (fail-closed, rien n'est routé, aucune ligne de journal) — la cause est
-// servie en amont par les deux portes témoignées ici, et un job de fond qui passerait par `ready` saute le
-// tenant sans le dire ; `migrate_step` relit encore la version d'avant l'étape par `read_schema_version` (une
+// CE QUE CES TÉMOINS NE TIENNENT PAS : les appelants de `TenantDbManager::ready_lu` qui ne passent pas par les deux
+// portes témoignées ici — l'ingestion du spool, le parcours des tenants des tâches de fond, `req_db`, `req_db_path`
+// et la projection `handle_for` — sont tenus par `catalogue_non_lu_a_l_ingestion_et_aux_taches_de_fond.rs` ;
+// `migrate_step` relit encore la version d'avant l'étape par `read_schema_version` (une
 // lecture ratée ENTRE deux étapes ferait réécrire « 1 » par `restore_schema_version` si l'étape échouait
 // ensuite : double panne non fabriquée ici, la fonction est privée au module) ; le message de
 // `prepare_schema` sur une chaîne interrompue cite `read_schema_version`, qui DÉCRIT et peut dire « 1 ».

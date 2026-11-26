@@ -46,11 +46,31 @@
 //
 // CE QUE CES TÉMOINS NE TIENNENT PAS : les appelants de `TenantDbManager::ready_lu` qui ne passent pas par les deux
 // portes témoignées ici — l'ingestion du spool, le parcours des tenants des tâches de fond, `req_db`, `req_db_path`
-// et la projection `handle_for` — sont tenus par `catalogue_non_lu_a_l_ingestion_et_aux_taches_de_fond.rs` ;
-// `migrate_step` relit encore la version d'avant l'étape par `read_schema_version` (une
-// lecture ratée ENTRE deux étapes ferait réécrire « 1 » par `restore_schema_version` si l'étape échouait
-// ensuite : double panne non fabriquée ici, la fonction est privée au module) ; le message de
-// `prepare_schema` sur une chaîne interrompue cite `read_schema_version`, qui DÉCRIT et peut dire « 1 ».
+// et la projection `handle_for` — sont tenus par `catalogue_non_lu_a_l_ingestion_et_aux_taches_de_fond.rs`.
+//
+// LES SECTIONS (10) À (13) (préfixe `cj10_`) tiennent les derniers défauts connus de la même famille hors de
+// `handlers/`, mesurés ROUGES sur la base avant leur correctif :
+//   * l'alerte `control.catalog` écrivait en base « aucun état DIFFÉRENT n'a jamais été relevé » pour une machine dont
+//     l'état précédent n'avait pas été lu (instant REAL) ; elle dit désormais l'ancienneté NON ÉTABLIE (deux phrases
+//     fixes : état précédent non lu, jour non calculé), la cause du moteur au journal, et reste toujours écrite ;
+//   * `migrate_step` réécrivait « 1 » dans `meta` après une version d'avant l'étape non lue suivie d'un échec de
+//     l'étape (mesuré : estampille « 1 », une réécriture restée en base) ; l'étape n'est plus jouée, rien n'est
+//     réécrit, et les messages (échec d'étape, contrat de schéma) disent `NON LUE` au lieu de « 1 » ;
+//   * la fiche de runbooks d'un dossier (`case_runbooks_json`) : déjà un 503 nommé sur sa lecture ratée, VERT sur la
+//     base ; le témoin par la route prouve le reclassement de son `.ok()?` parmi les arbitrages assumés de la garde.
+// MUTANTS JOUÉS (posés sous `cfg!(test)` le temps de la mesure, retirés avant le commit), chacun vu rouge seul :
+// `CJ10_ETAT`, `CJ10_JOUR`, `CJ10_JOUR_NUL` (le repli « jamais relevé » remis à chaque site et à chaque bras),
+// `CJ10_PHRASE` (l'état non lu dit avec la phrase du jour), `CJ10_ETAT_JOURNAL`, `CJ10_JOUR_JOURNAL` (la ligne de
+// journal retirée),
+// `CJ10_AVANT` (la version non lue rendue à « 1 » et l'étape jouée), `CJ10_DECRIT` (un message qui dit « 1 » pour
+// « non lue »), `CJ10_ESTAMPILLE`, `CJ10_COMMIT`, `CJ10_RESTAURE`, `CJ10_ANOMALIE`, `CJ10_FICHE`,
+// `CJ10_CONTRAT_MANQUES` (le refus des manques du contrat dit « 1 » pour « non lue »), `CJ10_RELUE_ENTIER`
+// (la valeur non entière relue « 1 »), `CJ10_AVANT_ABSENTE`, `CJ10_DECRIT_ABSENTE` (la ligne absente prise pour une
+// lecture ratée, au moteur puis au message).
+// CE QU'ILS NE TIENNENT PAS : les messages d'échec des deux bases de référence (`build_reference_shape`,
+// `ddl_de_reference`) prennent la même description, mais leur connexion est ouverte en mémoire DANS la fonction et
+// aucun témoin ne peut y rendre `meta` illisible (hors d'atteinte) ; le dossier supprimé entre les deux lectures de
+// la fiche de runbooks (dit « non lu ») n'est pas fabriqué.
 // =====================================================================================
 mod lectures_d_une_ligne_du_plan_de_controle_et_de_l_estampille {
     use super::revocation_globale_sans_cookie_et_comptes_du_mode_un::{rgsc_connexion, rgsc_envoyer, rgsc_plateforme, RGSC_TENANT_A};
@@ -590,6 +610,514 @@ mod lectures_d_une_ligne_du_plan_de_controle_et_de_l_estampille {
         }
         for constante in ["crate::rbac::CAUSE_DROITS_DU_COMPTE_NON_LUS", "crate::rbac::CAUSE_CATALOGUE_DES_TENANTS_NON_LU"] {
             assert!(!auth.contains(constante), "auth.rs sert `{constante}` sans passer par le refus qui dit la cause au journal");
+        }
+    }
+
+    // -------------------------------------------------------------------------------------
+    // (10) L'ANCIENNETÉ D'UN ÉTAT DE CONTRÔLES — « jamais relevé » seulement quand c'est LU.
+    // -------------------------------------------------------------------------------------
+
+    use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
+
+    const CJ10_HOTE: &str = "srv01";
+    const CJ10_TS: i64 = 1_785_600_000;
+    const CJ10_TETE_DU_TITRE: &str = "1 contrôle(s) de défense MANQUANT(S) sur srv01 : auditd_active";
+    const CJ10_JAMAIS: &str = " — aucun état DIFFÉRENT n'a jamais été relevé pour cette machine";
+    const CJ10_DEPUIS_LE_31: &str = " — même état depuis au moins le 2026-07-31";
+    const CJ10_ETAT_NON_LU: &str =
+        " — ancienneté de cet état NON ÉTABLIE : l'état précédent de cette machine n'a pas pu être lu";
+    const CJ10_JOUR_NON_CALCULE: &str =
+        " — ancienneté de cet état NON ÉTABLIE : le jour de l'état précédent n'a pas pu être calculé";
+    /// L'état précédent de la série, lisible, un jour avant le rapport.
+    const CJ10_ETAT_LU: &str = "INSERT INTO snapshot(ts,kind,host,hash,data) VALUES(1785513600,'controls','srv01','etat_ancien','{}');";
+    /// Le même, instant en REAL : `MAX(ts)` rend un REAL que le mappeur entier refuse (la ligne existe, elle ne se lit pas).
+    const CJ10_ETAT_ILLISIBLE: &str =
+        "INSERT INTO snapshot(ts,kind,host,hash,data) VALUES(1785513600.5,'controls','srv01','etat_ancien','{}');";
+    /// Le même, instant au-delà de l'an 9999 : `date(…,'unixepoch')` rend NULL (aucune erreur du moteur).
+    const CJ10_ETAT_HORS_CALENDRIER: &str =
+        "INSERT INTO snapshot(ts,kind,host,hash,data) VALUES(300000000000,'controls','srv01','etat_ancien','{}');";
+    const CJ10_LIGNE_ETAT_NON_LU: &str = "[controles] WARN état précédent d'une série de contrôles de défense NON lu, \
+         ancienneté NON ÉTABLIE dans le titre de l'alerte : ";
+    const CJ10_LIGNE_JOUR_NON_CALCULE: &str = "[controles] WARN jour de l'état précédent d'une série de contrôles de défense \
+         NON calculé, ancienneté NON ÉTABLIE dans le titre de l'alerte : ";
+
+    /// Ingère par le spool UN rapport `controls` de `srv01` (un contrôle manquant) après avoir posé `prealable` sur la
+    /// base du démon ; `refuser_le_jour` installe sur la connexion d'ingestion un autorisateur qui refuse la fonction
+    /// `date` (la lecture de l'état précédent passe, le calcul du jour échoue). Rend le titre de L'UNIQUE alerte
+    /// `control.catalog` (`ctl_titre` échoue s'il n'y en a pas exactement une : l'alerte est toujours écrite).
+    fn cj10_titre_apres(prealable: &str, refuser_le_jour: bool) -> String {
+        let (st, spool) = ing_state_with_spool();
+        if !prealable.is_empty() {
+            st.db.lock().execute_batch(prealable).unwrap_or_else(|e| panic!("fixture : `{prealable}` ({e})"));
+        }
+        if refuser_le_jour {
+            st.db.lock().authorizer(Some(|ctx: AuthContext<'_>| match ctx.action {
+                AuthAction::Function { function_name } if function_name.eq_ignore_ascii_case("date") => Authorization::Deny,
+                _ => Authorization::Allow,
+            }));
+        }
+        let data = json!({ "failed": 1, "controls": [ctl_item("auditd_active", Some(false))] });
+        depose_spool(&spool, CJ10_HOTE, 0, &ctl_enveloppe(CJ10_HOTE, CJ10_TS, "etat_courant", data));
+        ingest_once(&st.tenants, &st.spool);
+        let c = st.db.lock();
+        c.authorizer::<fn(AuthContext<'_>) -> Authorization>(None);
+        let titre = ctl_titre(&c, "control.catalog");
+        drop(c);
+        let _ = std::fs::remove_dir_all(&spool);
+        titre
+    }
+
+    /// CE QU'IL TIENT (par l'ingestion réelle, titre ENTIER écrit en base) : l'alerte `control.catalog` est écrite dans
+    /// les cinq cas ; « aucun état DIFFÉRENT n'a jamais été relevé » n'est écrit que si la série ne porte réellement
+    /// aucun autre état (à l'octet d'avant) ; un état précédent LU donne son jour ; un état précédent présent mais
+    /// illisible, un jour hors du calendrier de SQLite et un jour que le moteur refuse de calculer disent l'ancienneté
+    /// NON ÉTABLIE, par une phrase fixe, sans le texte du moteur.
+    ///
+    /// LES MUTATIONS QUI LE FONT ROUGIR : `CJ10_ETAT` (l'état précédent non lu rendu à « jamais relevé »), `CJ10_JOUR`
+    /// et `CJ10_JOUR_NUL` (le jour refusé par le moteur, puis le jour NULL, rendus à « jamais relevé »), `CJ10_PHRASE`
+    /// (l'état précédent non lu dit avec la phrase du jour non calculé).
+    #[test]
+    fn cj10_l_anciennete_d_un_etat_n_est_dite_jamais_relevee_que_si_c_est_lu() {
+        let _env = crate::tests::VERROU_ENV_PROCESSUS.read();
+        for (voie, prealable, refuser, attendu) in [
+            ("aucun autre état (absence établie)", "", false, CJ10_JAMAIS),
+            ("état précédent lu", CJ10_ETAT_LU, false, CJ10_DEPUIS_LE_31),
+            ("état précédent illisible (instant REAL)", CJ10_ETAT_ILLISIBLE, false, CJ10_ETAT_NON_LU),
+            ("jour hors du calendrier (date NULL)", CJ10_ETAT_HORS_CALENDRIER, false, CJ10_JOUR_NON_CALCULE),
+            ("jour refusé par le moteur", CJ10_ETAT_LU, true, CJ10_JOUR_NON_CALCULE),
+        ] {
+            assert_eq!(cj10_titre_apres(prealable, refuser), format!("{CJ10_TETE_DU_TITRE}{attendu}"), "{voie} : titre entier");
+        }
+    }
+
+    /// La cause que le moteur rend pour l'état précédent en REAL (même énoncé, même mappeur que la production).
+    fn cj10_moteur_de_l_instant_reel() -> String {
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch("CREATE TABLE snapshot(ts INTEGER NOT NULL, kind TEXT, host TEXT, hash TEXT, data TEXT);").unwrap();
+        c.execute_batch(CJ10_ETAT_ILLISIBLE).unwrap();
+        c.query_row(
+            "SELECT MAX(ts) FROM snapshot WHERE kind='controls' AND host IS ?1 AND COALESCE(hash,'')<>?2",
+            params![CJ10_HOTE, "etat_courant"],
+            |r| r.get::<_, Option<i64>>(0),
+        )
+        .expect_err("fixture : l'instant REAL ne se lit pas en entier")
+        .to_string()
+    }
+
+    /// La cause que le moteur rend quand l'autorisateur refuse la fonction `date`.
+    fn cj10_moteur_du_jour_refuse() -> String {
+        let c = Connection::open_in_memory().unwrap();
+        c.authorizer(Some(|ctx: AuthContext<'_>| match ctx.action {
+            AuthAction::Function { function_name } if function_name.eq_ignore_ascii_case("date") => Authorization::Deny,
+            _ => Authorization::Allow,
+        }));
+        c.query_row("SELECT date(?1,'unixepoch')", params![1_785_513_600i64], |r| r.get::<_, Option<String>>(0))
+            .expect_err("fixture : la fonction date est refusée")
+            .to_string()
+    }
+
+    // -------------------------------------------------------------------------------------
+    // (11) `migrate_step` NE RESTAURE JAMAIS UNE VERSION QU'IL N'A PAS LUE, ET NE DIT JAMAIS « 1 » POUR « NON LUE ».
+    // -------------------------------------------------------------------------------------
+
+    const CJ10_CAUSE_AVANT: &str = "version d'avant l'étape NON LUE, l'étape n'est pas jouée et rien n'est réécrit dans `meta`";
+    const CJ10_CAUSE_ESTAMPILLE: &str = "estampille de l'étape NON RELUE après son corps, l'étape n'est pas commitée";
+
+    /// Une base MIGRÉE, estampillée à la version d'avant la dernière étape (la chaîne ne joue donc que v126, étape
+    /// idempotente), avec un déclencheur qui COMPTE chaque `UPDATE` de `meta` qui reste en base (`cj10_reecritures`) :
+    /// une réécriture annulée par un ROLLBACK n'y laisse rien, une restauration jouée hors transaction y laisse une ligne.
+    fn cj10_base_a_la_veille(nom: &str) -> (crate::tmp_possede::TmpPossede, String) {
+        let (t, p) = eso_base_migree(nom);
+        cj1_poser_l_estampille(
+            &p,
+            &format!(
+                "UPDATE meta SET value='{}' WHERE key='schema_version'; CREATE TABLE cj10_reecritures(n INTEGER); \
+                 CREATE TRIGGER cj10_trace AFTER UPDATE ON meta BEGIN INSERT INTO cj10_reecritures(n) VALUES(1); END;",
+                CODE_SCHEMA_MAX - 1
+            ),
+        );
+        (t, p)
+    }
+
+    /// Installe un autorisateur qui COMPTE les lectures de `meta.value` (rang à partir de un, dans l'ordre où la
+    /// connexion les prépare) et REFUSE celles dont le rang est dans `refusees` ; rend le compteur.
+    fn cj10_compter_et_refuser(c: &Connection, refusees: Vec<usize>) -> Arc<std::sync::atomic::AtomicUsize> {
+        let vues = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let compteur = vues.clone();
+        c.authorizer(Some(move |ctx: AuthContext<'_>| match ctx.action {
+            AuthAction::Read { table_name: "meta", column_name: "value" } => {
+                let rang = compteur.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                if refusees.contains(&rang) { Authorization::Deny } else { Authorization::Allow }
+            }
+            _ => Authorization::Allow,
+        }));
+        vues
+    }
+
+    /// La chaîne de migrations (`migrate()`) jouée sous l'autorisateur ; rend son verdict et le nombre de lectures de
+    /// `meta.value` qu'elle a préparées.
+    fn cj10_migrer(p: &str, refusees: Vec<usize>) -> (bool, usize) {
+        let c = crate::db_open::open_db(p).unwrap();
+        let vues = cj10_compter_et_refuser(&c, refusees);
+        let ok = crate::migrate::migrate(&c);
+        c.authorizer::<fn(AuthContext<'_>) -> Authorization>(None);
+        (ok, vues.load(std::sync::atomic::Ordering::SeqCst))
+    }
+
+    /// L'estampille telle que la base la porte APRÈS le geste, et le nombre de réécritures de `meta` restées en base.
+    fn cj10_apres(p: &str) -> (String, i64) {
+        let c = crate::db_open::open_db(p).unwrap();
+        let v: String = c.query_row("SELECT value FROM meta WHERE key='schema_version'", [], |r| r.get(0)).expect("fixture : estampille relue");
+        let n: i64 = c.query_row("SELECT COUNT(*) FROM cj10_reecritures", [], |r| r.get(0)).expect("fixture : réécritures comptées");
+        (v, n)
+    }
+
+    /// La cause que le moteur rend quand l'autorisateur refuse la lecture de `meta.value` (sqlite3.c : « access to
+    /// %z is prohibited » sur un SQLITE_READ refusé).
+    fn cj10_moteur_de_l_estampille_refusee() -> String {
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch("CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT); INSERT INTO meta VALUES('schema_version','1');").unwrap();
+        cj10_compter_et_refuser(&c, vec![1]);
+        c.query_row("SELECT value FROM meta WHERE key='schema_version'", [], |r| r.get::<_, String>(0))
+            .expect_err("fixture : la lecture est refusée")
+            .to_string()
+    }
+
+    /// La ligne d'échec d'étape d'`abort_step`, entière, pour v126.
+    fn cj10_ligne_d_echec(cause: &str, version_relue: &str) -> String {
+        cj10_ligne_d_echec_de(CODE_SCHEMA_MAX, cause, version_relue)
+    }
+
+    /// La ligne d'échec d'étape d'`abort_step`, entière, pour l'étape `cible`.
+    fn cj10_ligne_d_echec_de(cible: i64, cause: &str, version_relue: &str) -> String {
+        format!(
+            "[migration] v{cible} ÉCHEC ({cause}) — le message « schéma -> v{cible} » éventuellement affiché \
+             ci-dessus est ANNULÉ ; version RELUE en base : {version_relue}, étape RE-TENTÉE au prochain démarrage (migrate interrompu)"
+        )
+    }
+
+    /// CE QU'IL TIENT : le contrat de schéma (`prepare_schema`) sur une base à la veille de la dernière étape, dont la
+    /// version d'avant l'étape ne se lit plus (toutes les lectures de `meta.value` refusées à partir de celle-là) : il
+    /// REFUSE, sa phrase dit `schema_version=NON LUE` — jamais « 1 » —, l'estampille reste celle d'avant et aucune
+    /// réécriture de `meta` n'est restée en base. Le rang de la lecture refusée est DÉRIVÉ d'un passage nominal sur une
+    /// base jumelle (la version d'avant l'étape est l'avant-dernière lecture d'un contrat qui réussit) ; ce passage
+    /// nominal est le contrôle positif.
+    ///
+    /// LES MUTATIONS QUI LE FONT ROUGIR : `CJ10_AVANT` (la version non lue rendue à « 1 » et l'étape jouée), `CJ10_DECRIT`
+    /// (la version non lue décrite « 1 » dans un message).
+    #[test]
+    fn cj10_le_contrat_dit_la_version_non_lue_sans_chiffre_et_ne_reecrit_rien() {
+        let (_t1, jumelle) = cj10_base_a_la_veille("cj10-contrat-nominal");
+        let n = {
+            let c = crate::db_open::open_db(&jumelle).unwrap();
+            let vues = cj10_compter_et_refuser(&c, vec![]);
+            let r = crate::migrate::prepare_schema(&c);
+            c.authorizer::<fn(AuthContext<'_>) -> Authorization>(None);
+            assert_eq!(r, Ok(()), "contrôle : le contrat nominal passe");
+            vues.load(std::sync::atomic::Ordering::SeqCst)
+        };
+        assert!(n >= 4, "contrôle : entrée du contrat, chaîne, version d'avant et estampille lues ({n})");
+        assert_eq!(cj10_apres(&jumelle), (CODE_SCHEMA_MAX.to_string(), 1), "contrôle : l'étape est commitée, une réécriture");
+
+        let (_t2, p) = cj10_base_a_la_veille("cj10-contrat-non-lu");
+        let refus = {
+            let c = crate::db_open::open_db(&p).unwrap();
+            cj10_compter_et_refuser(&c, (n - 1..n + 32).collect());
+            let r = crate::migrate::prepare_schema(&c);
+            c.authorizer::<fn(AuthContext<'_>) -> Authorization>(None);
+            r
+        };
+        assert_eq!(
+            refus,
+            Err(format!(
+                "migration INTERROMPUE (cause détaillée ci-dessus) — base en schema_version=NON LUE alors que ce binaire \
+                 attend v{CODE_SCHEMA_MAX} : le schéma est INCOMPLET. La migration sera RE-TENTÉE au prochain démarrage"
+            )),
+            "le refus dit la version NON LUE, jamais un chiffre"
+        );
+        assert_eq!(cj10_apres(&p), ((CODE_SCHEMA_MAX - 1).to_string(), 0), "rien n'est réécrit dans `meta`");
+    }
+
+    /// Une base MIGRÉE et estampillée `CODE_SCHEMA_MAX` (aucune étape ne se rejoue) dont la table `net_ban` — que seule
+    /// l'étape v111 crée, `db/schema.sql` ne la déclare pas — est supprimée : le contrat de schéma y voit un manque.
+    fn cj10_base_a_jour_sans_net_ban(nom: &str) -> (crate::tmp_possede::TmpPossede, String) {
+        let (t, p) = eso_base_migree(nom);
+        cj1_poser_l_estampille(&p, "DROP TABLE net_ban;");
+        (t, p)
+    }
+
+    /// Le contrat de schéma joué sous l'autorisateur ; rend son verdict et le nombre de lectures de `meta.value`.
+    fn cj10_contrat(p: &str, refusees: Vec<usize>) -> (Result<(), String>, usize) {
+        let c = crate::db_open::open_db(p).unwrap();
+        let vues = cj10_compter_et_refuser(&c, refusees);
+        let r = crate::migrate::prepare_schema(&c);
+        c.authorizer::<fn(AuthContext<'_>) -> Authorization>(None);
+        (r, vues.load(std::sync::atomic::Ordering::SeqCst))
+    }
+
+    /// CE QU'IL TIENT : le SECOND refus du contrat de schéma — celui des manques, après une chaîne menée au bout — dit
+    /// `schema_version=NON LUE` quand la relecture faite pour son message n'a pas lieu, jamais « 1 ». Le rang refusé est
+    /// DÉRIVÉ d'un passage sur une base jumelle : la relecture du message est la DERNIÈRE lecture de `meta.value` du
+    /// contrat (ses arguments s'évaluent après `schema_gaps`). Ce passage, qui refuse en disant la version LUE et nomme
+    /// la table, est le contrôle positif ; le refus non lu lui est comparé ENTIER, la version seule diffère. L'estampille
+    /// n'est pas réécrite et la table n'est pas recréée.
+    ///
+    /// LA MUTATION QUI LE FAIT ROUGIR : `CJ10_CONTRAT_MANQUES` (ce seul site rend « 1 » pour une version non lue).
+    #[test]
+    fn cj10_le_refus_des_manques_dit_la_version_non_lue_sans_chiffre() {
+        let (_t1, jumelle) = cj10_base_a_jour_sans_net_ban("cj10-manques-lu");
+        let (lu, n) = cj10_contrat(&jumelle, vec![]);
+        let lu = lu.expect_err("contrôle : la table supprimée est un manque");
+        let tete_lue = format!("base estampillée schema_version={CODE_SCHEMA_MAX} mais ");
+        assert!(lu.starts_with(&tete_lue) && lu.contains("table net_ban"), "contrôle : refus des manques, version lue : {lu}");
+        assert!(n >= 3, "contrôle : entrée du contrat, chaîne et message lus ({n})");
+
+        let (_t2, p) = cj10_base_a_jour_sans_net_ban("cj10-manques-non-lu");
+        let (refus, vues) = cj10_contrat(&p, vec![n]);
+        assert_eq!(vues, n, "même parcours que la jumelle, sa dernière lecture refusée");
+        assert_eq!(
+            refus,
+            Err(lu.replacen(&tete_lue, "base estampillée schema_version=NON LUE mais ", 1)),
+            "le refus des manques dit la version NON LUE, jamais un chiffre"
+        );
+        let c = crate::db_open::open_db(&p).unwrap();
+        let v: String = c.query_row("SELECT value FROM meta WHERE key='schema_version'", [], |r| r.get(0)).expect("fixture : estampille relue");
+        assert_eq!(v, CODE_SCHEMA_MAX.to_string(), "l'estampille n'est pas réécrite");
+        let recreee: i64 = c.query_row("SELECT COUNT(*) FROM sqlite_master WHERE name='net_ban'", [], |r| r.get(0)).unwrap();
+        assert_eq!(recreee, 0, "le contrat constate, il ne recrée rien");
+    }
+
+    /// CE QU'IL TIENT : la relecture du moteur de migration (`relire_la_version_de_schema`) rend ses trois issues, la
+    /// valeur non entière comprise — bras qu'aucun appelant de production n'atteint aujourd'hui (la porte, l'entrée du
+    /// contrat et la chaîne refusent avant `migrate_step` une estampille non entière, et chaque étape estampille un
+    /// entier), tenu ici pour ce qu'il rend : une version NON LUE avec la valeur brute, jamais un nombre.
+    ///
+    /// LA MUTATION QUI LE FAIT ROUGIR : `CJ10_RELUE_ENTIER` (la valeur non entière rendue lue à « 1 »).
+    #[test]
+    fn cj10_la_version_relue_par_le_moteur_a_trois_issues() {
+        use crate::migrate::{relire_la_version_de_schema, VersionDeSchemaRelue};
+        let issue = |c: &Connection| match relire_la_version_de_schema(c) {
+            VersionDeSchemaRelue::Lue(v) => format!("lue {v}"),
+            VersionDeSchemaRelue::Absente => "absente".to_string(),
+            VersionDeSchemaRelue::NonLue(cause) => format!("non lue : {cause}"),
+        };
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch("CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);").unwrap();
+        assert_eq!(issue(&c), "absente", "aucune ligne : absence établie");
+        c.execute("INSERT INTO meta VALUES('schema_version','42')", []).unwrap();
+        assert_eq!(issue(&c), "lue 42", "contrôle : un entier se lit");
+        c.execute("UPDATE meta SET value='abc' WHERE key='schema_version'", []).unwrap();
+        assert_eq!(issue(&c), "non lue : la ligne `meta.schema_version` ne porte pas un entier : \"abc\"", "valeur non entière");
+        c.execute_batch("DROP TABLE meta;").unwrap();
+        assert_eq!(issue(&c), "non lue : no such table: meta", "lecture qui n'a pas lieu");
+    }
+
+    /// Un fichier qui ne porte que `meta`, sans ligne `schema_version` : la forme legacy que la chaîne reprend à la
+    /// version un (`JamaisEstampillee`).
+    fn cj10_base_meta_seule(nom: &str) -> (crate::tmp_possede::TmpPossede, String) {
+        let tmp = crate::tmp_possede::TmpPossede::neuf(nom);
+        let chemin = tmp.sous("plume.db").chemin().to_path_buf();
+        let _ = std::fs::remove_file(&chemin);
+        let p = chemin.to_str().unwrap().to_string();
+        cj1_poser_l_estampille(&p, "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);");
+        (tmp, p)
+    }
+
+    // -------------------------------------------------------------------------------------
+    // (12) LA FICHE DE RUNBOOKS D'UN DOSSIER — sa lecture ratée est déjà un 503 nommé, jamais une absence.
+    // -------------------------------------------------------------------------------------
+
+    const CJ10_VIEWER: &str = "vwr:viewerpw12345";
+    const CJ10_DOSSIER_INTROUVABLE: &str = "DOSSIER INTROUVABLE : aucun dossier ne porte cet identifiant (la lecture a abouti \
+         et n'a trouvé aucune ligne). Rien n'a été fait.";
+    const CJ10_DOSSIER_NON_LU: &str = "DOSSIER NON LU, GESTE NON FAIT : la base n'a pas pu dire si ce dossier existe \
+         (lecture refusée ou table illisible) — ce n'est PAS « dossier introuvable ». Rien n'est écrit, ni dans le dossier \
+         ni au registre. Réessayez.";
+
+    /// GET par le routeur réel avec le rôle le plus faible admis (viewer) : statut et corps JSON.
+    async fn cj10_get(addr: std::net::SocketAddr, chemin: &str) -> (u16, Value) {
+        let authz = format!("Basic {}", base64::engine::general_purpose::STANDARD.encode(CJ10_VIEWER));
+        let (code, brut) = router_probe_envoi(addr, "GET", chemin, Some(&authz), &[], "").await;
+        let (tete, corps) = brut.split_once("\r\n\r\n").unwrap_or_else(|| panic!("réponse HTTP entière pour {chemin} : {brut}"));
+        let corps = if tete.to_ascii_lowercase().contains("transfer-encoding: chunked") {
+            String::from_utf8(shell_decouper(corps.as_bytes()).unwrap_or_else(|| panic!("trame chunked pour {chemin}"))).expect("corps UTF-8")
+        } else {
+            corps.to_string()
+        };
+        (code, if corps.is_empty() { Value::Null } else { serde_json::from_str(&corps).unwrap_or(Value::String(corps)) })
+    }
+
+    /// CE QU'IL TIENT (par la route, rôle viewer) : `GET /api/cases/{id}/runbooks` sur un dossier dont l'existence se
+    /// lit mais dont la ligne lue par `case_runbooks_json` ne se lit pas (`incident_type` en BLOB) sert le 503 nommé
+    /// `{error, id}` de la lecture de dossier non faite — ni un 404, ni une fiche vide en 200. Contrôles : le dossier
+    /// lisible sert sa fiche (200), un dossier absent garde son 404 d'avant, et la ligne remise rend la fiche d'avant.
+    /// C'est ce qui reclasse le `.ok()?` de `case_runbooks_json` parmi les arbitrages assumés de la garde des lectures
+    /// d'une ligne : son unique appelant de production ne sert jamais son `None` comme une absence.
+    ///
+    /// LA MUTATION QUI LE FAIT ROUGIR : `CJ10_FICHE` (le `None` servi en 404 « dossier introuvable »).
+    #[tokio::test]
+    async fn cj10_la_fiche_de_runbooks_d_un_dossier_non_lu_est_un_503_jamais_une_absence() {
+        let _env = crate::tests::VERROU_ENV_PROCESSUS.read();
+        let (st, _base) = router_test_state("cj10-fiche");
+        let dossier = dossier_seme(&st.db.lock(), "adm", "intrusion", 4, "", None, 2);
+        let origine: String = st
+            .db
+            .lock()
+            .query_row("SELECT quote(incident_type) FROM incident WHERE id=?1", params![dossier], |r| r.get(0))
+            .expect("fixture : type d'incident lu");
+        let addr = router_serve(st.clone()).await;
+        let chemin = format!("/api/cases/{dossier}/runbooks");
+
+        let nominal = cj10_get(addr, &chemin).await;
+        assert_eq!(nominal.0, 200, "contrôle : la fiche se lit : {:?}", nominal.1);
+        assert!(nominal.1.get("available").is_some(), "contrôle : c'est la fiche de runbooks : {:?}", nominal.1);
+        assert_eq!(
+            cj10_get(addr, &format!("/api/cases/{}/runbooks", dossier + 99_999)).await,
+            (404, json!({ "error": CJ10_DOSSIER_INTROUVABLE })),
+            "absence établie : le 404 d'avant, à l'octet"
+        );
+
+        st.db.lock().execute("UPDATE incident SET incident_type=x'00' WHERE id=?1", params![dossier]).expect("fixture : ligne illisible");
+        let (statut, corps) = cj10_get(addr, &chemin).await;
+        cj1_cinq_cent_trois("fiche de runbooks, ligne du dossier illisible", statut, &corps, CJ10_DOSSIER_NON_LU);
+
+        st.db
+            .lock()
+            .execute_batch(&format!("UPDATE incident SET incident_type={origine} WHERE id={dossier};"))
+            .expect("fixture : ligne remise");
+        assert_eq!(cj10_get(addr, &chemin).await, nominal, "rétabli : la fiche d'avant");
+    }
+
+    // -------------------------------------------------------------------------------------
+    // (13) LES LIGNES DE JOURNAL — capturées dans un processus enfant, comparées ENTIÈRES.
+    // -------------------------------------------------------------------------------------
+
+    const CJ10_ENFANT: &str = "CJ10_ENFANT_JOURNAL";
+    const CJ10_PHASE: &str = "CJ10-PHASE:";
+    const CJ10_PREFIXE_CONTROLES: &str = "[controles]";
+
+    /// CE QU'IL TIENT : (a) l'ingestion d'un rapport de contrôles écrit au journal UNE ligne entière, avec la cause du
+    /// moteur, quand l'état précédent n'est pas lu ou que son jour n'est pas calculé par le moteur ; aucune ligne quand
+    /// la série n'a pas d'autre état, quand l'état précédent est lu, ni quand le jour est hors du calendrier (NULL, aucune
+    /// erreur). (b) La chaîne de migrations, sur une base à la veille de la dernière étape, sous un autorisateur qui
+    /// refuse des lectures de `meta.value` par leur rang (ordre de préparation : 1 la chaîne, 2 la version d'avant
+    /// l'étape, 3 l'estampille après le corps, 4 et 5 les deux lectures de la restauration, 6 celle du message d'échec) :
+    ///   * nominal : trois lectures, l'étape commitée, aucune ligne d'échec ;
+    ///   * 2 et 3 refusées : l'étape n'est PAS jouée, la ligne d'échec nomme la version d'avant non lue et dit la version
+    ///     relue « NON LUE », l'estampille reste celle d'avant et rien n'est réécrit (avant ce lot : « 1 » réécrit) ;
+    ///   * 3 refusée : l'étape n'est pas commitée, la ligne d'échec nomme l'estampille non relue, version relue lue ;
+    ///   * 3 et 4 refusées : la restauration RÉÉCRIT la version d'avant (lue) — une réécriture restée en base ;
+    ///   * 3 et 5 refusées : la ligne d'anomalie dit l'estampille NON RELUE après sa remise, avec la cause du moteur.
+    /// (c) La chaîne sur un fichier qui ne porte que `meta`, sans ligne (forme legacy, reprise à la version un) : la
+    /// ligne ABSENTE n'est pas une lecture ratée — l'étape v2 est jouée, échoue faute d'estampille posée, et sa ligne
+    /// d'échec dit la version relue « 1 » ; six lectures, rien d'écrit dans `meta`.
+    ///
+    /// LES MUTATIONS QUI LE FONT ROUGIR : `CJ10_ETAT_JOURNAL`, `CJ10_JOUR_JOURNAL` (la ligne retirée), `CJ10_AVANT`,
+    /// `CJ10_DECRIT`, `CJ10_ESTAMPILLE` (l'estampille non relue décrite « non estampillée »), `CJ10_COMMIT` (l'estampille
+    /// non relue prise pour posée), `CJ10_RESTAURE` (la version d'avant non réécrite sur une relecture ratée),
+    /// `CJ10_ANOMALIE` (la relecture ratée tue), `CJ10_AVANT_ABSENTE` (une version d'avant ABSENTE traitée comme non
+    /// lue : l'étape n'est pas jouée), `CJ10_DECRIT_ABSENTE` (une ligne absente décrite « NON LUE »).
+    #[test]
+    fn cj10_la_cause_d_une_lecture_non_faite_va_au_journal_ligne_entiere() {
+        let _env = crate::tests::VERROU_ENV_PROCESSUS.read();
+        if std::env::var(CJ10_ENFANT).is_ok() {
+            let mut attendus = serde_json::Map::new();
+            let (moteur_reel, moteur_jour) = (cj10_moteur_de_l_instant_reel(), cj10_moteur_du_jour_refuse());
+            for (phase, prealable, refuser, lignes) in [
+                ("c_jamais", "", false, vec![]),
+                ("c_lu", CJ10_ETAT_LU, false, vec![]),
+                ("c_illisible", CJ10_ETAT_ILLISIBLE, false, vec![format!("{CJ10_LIGNE_ETAT_NON_LU}{moteur_reel}")]),
+                ("c_hors_calendrier", CJ10_ETAT_HORS_CALENDRIER, false, vec![]),
+                ("c_jour_refuse", CJ10_ETAT_LU, true, vec![format!("{CJ10_LIGNE_JOUR_NON_CALCULE}{moteur_jour}")]),
+            ] {
+                eprintln!("{CJ10_PHASE}{phase}");
+                let _ = cj10_titre_apres(prealable, refuser);
+                attendus.insert(phase.into(), json!({ "prefixe": CJ10_PREFIXE_CONTROLES, "lignes": lignes }));
+            }
+
+            let moteur = cj10_moteur_de_l_estampille_refusee();
+            let veille = (CODE_SCHEMA_MAX - 1).to_string();
+            let prefixe = format!("[migration] v{CODE_SCHEMA_MAX} ");
+            let echec_estampille = cj10_ligne_d_echec(&format!("{CJ10_CAUSE_ESTAMPILLE} ({moteur})"), &veille);
+            for (phase, refusees, verdict, lectures, apres, lignes) in [
+                ("m_nominal", vec![], true, 3, (CODE_SCHEMA_MAX.to_string(), 1), vec![]),
+                (
+                    "m_avant",
+                    vec![2, 3],
+                    false,
+                    3,
+                    (veille.clone(), 0),
+                    vec![cj10_ligne_d_echec(&format!("{CJ10_CAUSE_AVANT} ({moteur})"), "NON LUE")],
+                ),
+                ("m_estampille", vec![3], false, 6, (veille.clone(), 0), vec![echec_estampille.clone()]),
+                ("m_restauration", vec![3, 4], false, 6, (veille.clone(), 1), vec![echec_estampille.clone()]),
+                (
+                    "m_relue",
+                    vec![3, 5],
+                    false,
+                    6,
+                    (veille.clone(), 0),
+                    vec![
+                        echec_estampille.clone(),
+                        format!(
+                            "[migration] v{CODE_SCHEMA_MAX} ANOMALIE GRAVE : schema_version n'a PAS pu être RELUE après sa remise \
+                             à {veille} ({moteur}) — la base est peut-être estampillée pour un schéma qu'elle n'a pas. Restaurer \
+                             la sauvegarde antérieure."
+                        ),
+                    ],
+                ),
+            ] {
+                let (_t, p) = cj10_base_a_la_veille(&format!("cj10-{phase}"));
+                eprintln!("{CJ10_PHASE}{phase}");
+                let (ok, vues) = cj10_migrer(&p, refusees);
+                assert_eq!((ok, cj10_apres(&p)), (verdict, apres), "{phase} : verdict de la chaîne, estampille et réécritures");
+                assert_eq!(vues, lectures, "{phase} : lectures de `meta.value` préparées (le rang des refus en dépend)");
+                attendus.insert(phase.into(), json!({ "prefixe": prefixe, "lignes": lignes }));
+            }
+            {
+                let (_t, p) = cj10_base_meta_seule("cj10-m_absente");
+                eprintln!("{CJ10_PHASE}m_absente");
+                let (ok, vues) = cj10_migrer(&p, vec![]);
+                let lignes_meta: i64 = crate::db_open::open_db(&p)
+                    .unwrap()
+                    .query_row("SELECT COUNT(*) FROM meta", [], |r| r.get(0))
+                    .expect("fixture : lignes de `meta` comptées");
+                assert_eq!((ok, vues, lignes_meta), (false, 6, 0), "m_absente : verdict, lectures de `meta.value`, rien d'écrit");
+                attendus.insert(
+                    "m_absente".into(),
+                    json!({
+                        "prefixe": "[migration] v2 ",
+                        "lignes": [cj10_ligne_d_echec_de(2, "schema_version non estampillée à 2", "1")],
+                    }),
+                );
+            }
+            eprintln!("{CJ10_PHASE}fin");
+            println!("CJ10-ATTENDUS:{}", Value::Object(attendus));
+            return;
+        }
+        let sortie = std::process::Command::new(std::env::current_exe().expect("binaire de test"))
+            .args([
+                "--exact",
+                "--nocapture",
+                "--test-threads=1",
+                "tests::lectures_d_une_ligne_du_plan_de_controle_et_de_l_estampille::cj10_la_cause_d_une_lecture_non_faite_va_au_journal_ligne_entiere",
+            ])
+            .env(CJ10_ENFANT, "1")
+            .output()
+            .expect("ré-exécution du binaire de test");
+        let stdout = String::from_utf8_lossy(&sortie.stdout).into_owned();
+        let stderr = String::from_utf8_lossy(&sortie.stderr).into_owned();
+        assert_eq!(sortie.status.code(), Some(0), "l'enfant sort en 0 (ses assertions tiennent) : {stdout}\n{stderr}");
+        let reste = stdout.split_once("CJ10-ATTENDUS:").unwrap_or_else(|| panic!("contrôle : attendus : {stdout}")).1;
+        let attendus: serde_json::Map<String, Value> =
+            serde_json::from_str(reste.lines().next().unwrap_or("")).unwrap_or_else(|e| panic!("contrôle : attendus JSON ({e}) : {stdout}"));
+        assert!(attendus.len() >= 11, "plancher : onze phases jouées, {} rendues", attendus.len());
+        for (nom, attendu) in &attendus {
+            let debut = stderr.split_once(&format!("{CJ10_PHASE}{nom}\n")).unwrap_or_else(|| panic!("contrôle : phase {nom} : {stderr}")).1;
+            let fenetre = debut.split_once(CJ10_PHASE).map(|(c, _)| c).unwrap_or(debut);
+            let prefixe = attendu["prefixe"].as_str().unwrap_or_else(|| panic!("contrôle : préfixe de {nom}"));
+            let vues: Vec<Value> = fenetre.lines().filter(|l| l.starts_with(prefixe)).map(|l| json!(l)).collect();
+            assert_eq!(&Value::Array(vues), &attendu["lignes"], "phase {nom} : chaque ligne de journal entière");
         }
     }
 }

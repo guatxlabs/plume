@@ -325,10 +325,14 @@ PROPAGATEURS = ("?", "unwrap", "expect")
 # non plus `handlers/` seul. Relevé de l'arbre ce jour-là, après les correctifs du même lot, MESURÉ par cette
 # garde : 58 sites sur 22 fichiers (2 sur 2 sous `handlers/`, 56 sur 20 ailleurs). Même règle (69 % et 65 %,
 # arrondis en dessous) : 58 -> 40 (69 % = 40,02), 22 -> 14 (65 % = 14,3).
-RELEVE_SITES = 58
-RELEVE_FICHIERS = 22
-PLANCHER_SITES = 40
-PLANCHER_FICHIERS = 14
+# RE-DÉRIVÉS le 2026-11-26 (`P10.20-b`, défauts connus hors de `handlers/`) : relevé de l'arbre ce jour-là, après le
+# correctif, MESURÉ par cette garde — 55 sites sur 21 fichiers (`controles_de_defense.rs` perd ses deux sites et SORT du
+# relevé ; `migrate.rs::read_schema_version` perd le sien, `migrate.rs` reste par ses étapes historiques ; le reclassement
+# de `case_runbooks_json` ne change pas la population). Même règle : 55 -> 37 (69 % = 37,95), 21 -> 13 (65 % = 13,65).
+RELEVE_SITES = 55
+RELEVE_FICHIERS = 21
+PLANCHER_SITES = 37
+PLANCHER_FICHIERS = 13
 
 # ================================================================================================
 # L'ENSEMBLE NOMMÉ — CINQ CLASSES, JUGÉES DANS LES DEUX SENS
@@ -345,6 +349,15 @@ SITES_ASSUMES = {
     # route consignée dans `P10.20-b` : `SELECT 1` ne prouve rien sur les tables, et un `meta`
     # illisible laisserait cette sonde verte. Elle ne prétend pas le contraire.
     ("daemon/src/handlers/system.rs", "readyz"): ("map.unwrap_or",),
+    # VENUE DU RANG QUATRE PAR `P10.20-b` (2026-11-26). `.ok()?` sur la ligne du dossier : la projection entière rend
+    # `None`. Son UNIQUE appelant de production, `case_runbooks_get`, établit d'abord l'existence (`etablir_le_dossier` :
+    # 404 nommé sur l'absence, 503 nommé sur une lecture refusée) puis sert ce `None` en 503 nommé
+    # (`refus_du_dossier_non_lu`) : la lecture ratée EST le fait servi, jamais une absence ni une fiche vide. Témoin par
+    # la route (rôle viewer, ligne du dossier illisible, existence lisible) :
+    # `cj10_la_fiche_de_runbooks_d_un_dossier_non_lu_est_un_503_jamais_une_absence`, rouge si ce `None` est servi en 404.
+    # RÉSERVES ÉCRITES : un dossier supprimé ENTRE les deux lectures se dit « non lu » (cause approchée, aucun fait
+    # inventé) ; la ligne de journal du 503 nomme l'étape (« lecture de la fiche d'incident »), pas la cause du moteur.
+    ("daemon/src/handlers/incidents.rs", "case_runbooks_json"): ("ok.?",),
 }
 
 # --- CLASSE 2 : RANG UN — LE REPLI OUVRE UNE PORTE. La valeur substituée est MOINS RESTRICTIVE que
@@ -587,8 +600,8 @@ DEFAUTS_RANG_4_FAIL_CLOSED = {
     # (`etablir_le_dossier` : 404 nommé sur l'absence, 503 nommé sur une lecture refusée) puis sert ce `None` en 503
     # nommé (`refus_du_dossier_non_lu`). Aucune section ne manque en silence, aucun fait n'est inventé : ce n'est pas
     # un rang deux. Reste une cause approximative — un dossier supprimé entre les deux lectures se lit « non lu » —,
-    # d'où le rang quatre et non le retrait.
-    ("daemon/src/handlers/incidents.rs", "case_runbooks_json"): ("ok.?",),
+    # d'où le rang quatre et non le retrait. ENTRÉE DÉPLACÉE PAR `P10.20-b` (2026-11-26) vers la classe 1 (arbitrage
+    # assumé), avec son témoin par la route : le `None` n'est servi qu'en 503 nommé.
     # ENTRÉE RETIRÉE PAR `P10.20-l` (vague AH, 2026-10-23) : `incidents.rs::incident_apply_tier` (`is_err`) — une lecture
     # ratée du dossier rendait `DossierIntrouvable`. Lu en `.optional()` : absence établie = `DossierIntrouvable` (le 404
     # d'avant), lecture ratée = `NonEcrite`, rien n'est écrit ni attesté (témoins :
@@ -656,6 +669,13 @@ DEFAUTS_RANG_4_FAIL_CLOSED = {
 # ÉPROUVÉ PAR MUTATION le 2026-11-25, sur l'arbre : une entrée retirée de la classe 6 -> FORME NEUVE (code 1) ;
 # une entrée fantôme ajoutée -> EXEMPTION SANS OBJET (code 1) ; le corpus ramené à `handlers/` -> plancher
 # franchi, refus de conclure (code 2) ; `tenants.rs::tenant_delete` remis en `.ok()` -> FORME NEUVE (code 1).
+#
+# LE 2026-11-26 (`P10.20-b`), trois sites de la classe 7 la quittent et la classe 7 ne garde que celui de
+# `maj_corroboree.rs` (fichier fermé aux lots) ; `case_runbooks_json` passe de la classe 5 à la classe 1. ÉPROUVÉ PAR
+# MUTATION ce jour-là, sur l'arbre : `.ok().flatten()` remis dans `jour_utc` -> FORME NEUVE (code 1) ; le repli
+# `.ok().and_then(..).unwrap_or(1)` remis dans `read_schema_version` -> FORME NEUVE (code 1) ; l'entrée de
+# `case_runbooks_json` retirée de la classe 1 -> FORME NEUVE (code 1) ; l'entrée retirée de `dernier_etat_different`
+# remise dans la classe 7 -> EXEMPTION SANS OBJET (code 1).
 
 # --- CLASSE 6 : HORS `handlers/`, LE REPLI NE DÉCIDE RIEN. Journal, statistique d'affichage, valeur recalculée
 # au passage suivant, repli qui part du côté bruyant ou fail-closed, ou lecture qui n'est que le premier essai
@@ -736,17 +756,22 @@ SITES_HORS_HANDLERS_SANS_DECISION = {
 # --- CLASSE 7 : HORS `handlers/`, DÉFAUTS CONNUS NON CORRIGÉS. Le repli entre dans un fait écrit, ou décide
 # d'une écriture. Chaque entrée nomme ce qui manque.
 DEFAUTS_HORS_HANDLERS_A_CORRIGER = {
-    # Le titre de l'alerte `control.catalog` (écrit en base) dit « aucun état DIFFÉRENT n'a jamais été relevé
-    # pour cette machine » quand la lecture de l'état précédent ou de sa date a échoué.
-    ("daemon/src/controles_de_defense.rs", "dernier_etat_different"): ("ok.flatten",),
-    ("daemon/src/controles_de_defense.rs", "jour_utc"): ("ok.flatten",),
+    # TROIS ENTRÉES RETIRÉES PAR `P10.20-b` (2026-11-26), les formes ont disparu des sites :
+    #   * `controles_de_defense.rs::dernier_etat_different` et `jour_utc` (`ok.flatten`) — le titre de l'alerte
+    #     `control.catalog`, écrit en base, disait « aucun état DIFFÉRENT n'a jamais été relevé » d'une machine dont
+    #     l'état précédent ou sa date n'avait pas été lu (mesuré : état précédent à l'instant REAL). Les deux rendent
+    #     `Result<_, AncienneteSansDate>` : jamais relevé (lecture aboutie, `MAX` nul) garde son texte à l'octet, état
+    #     précédent non lu et jour non calculé disent l'ancienneté NON ÉTABLIE par une phrase fixe, la cause du moteur
+    #     au journal ; l'alerte est toujours écrite. C'étaient les deux sites du fichier, qui SORT du relevé ;
+    #   * `migrate.rs::read_schema_version` (`ok.and_then.unwrap_or`) — `migrate_step` y relisait la version d'AVANT
+    #     l'étape ; une lecture ratée suivie d'un échec de l'étape faisait réécrire « 1 » (mesuré). Le moteur lit par
+    #     `relire_la_version_de_schema` (`.optional()`, trois issues) : version d'avant non lue = étape non jouée, rien
+    #     réécrit ; les messages disent `NON LUE`. `read_schema_version` n'est plus compilée que pour les témoins
+    #     (`#[cfg(test)]`), sans repli sur une lecture ratée.
+    # Témoins : `daemon/src/tests/lectures_d_une_ligne_du_plan_de_controle_et_de_l_estampille.rs` (préfixe `cj10_`).
     # Une signature d'unités non lue se lit « base neuve » : la signature est réécrite SANS audit du
     # déploiement (aucune fenêtre n'est ouverte, mais le changement de build est oublié en silence).
     ("daemon/src/maj_corroboree.rs", "noter_le_build_en_cours"): ("ok",),
-    # Repli descriptif des messages d'étape, mais `migrate_step` y relit aussi la version d'AVANT l'étape :
-    # une lecture ratée entre deux étapes, suivie d'un échec de l'étape, ferait réécrire « 1 » par
-    # `restore_schema_version`. La chaîne (`migrate_chain`) et le contrat (`prepare_schema`) ne la lisent plus.
-    ("daemon/src/migrate.rs", "read_schema_version"): ("ok.and_then.unwrap_or",),
 }
 
 CLASSES = (
@@ -1377,7 +1402,7 @@ def main():
     fichiers = {c for c, _l, _f, _fo, _x in sites}
     if len(sites) < PLANCHER_SITES or len(fichiers) < PLANCHER_FICHIERS:
         print(f"::error::{len(sites)} site(s) découvert(s) sur {len(fichiers)} fichier(s), planchers "
-              f"{PLANCHER_SITES}/{PLANCHER_FICHIERS} (re-dérivés le 2026-11-25 du relevé de ce jour-là : "
+              f"{PLANCHER_SITES}/{PLANCHER_FICHIERS} (re-dérivés le 2026-11-26 du relevé de ce jour-là : "
               f"{RELEVE_SITES} sites sur {RELEVE_FICHIERS} fichiers, règle des deux tiers). La DÉCOUVERTE est cassée, ou un lot a "
               "fermé assez de sites pour que les planchers doivent être RE-DÉRIVÉS du relevé du jour "
               "— dans le second cas, ils descendent, avec leur date écrite dans le fichier. La garde "

@@ -92,21 +92,72 @@ impl Drop for MigrationLogSilencer {
 /// d'ouvrir : arrêt PROPRE (exit non-zéro), JAMAIS un panic, JAMAIS un « proceed » silencieux.
 pub(crate) const CODE_SCHEMA_MAX: i64 = 126;
 
-/// Lit `meta.schema_version` (défaut 1 si table/lignes absentes ou illisibles) — MÊME lecture que `migrate()`.
+/// Lit `meta.schema_version` pour les TÉMOINS : la version lue, 1 si la ligne est absente (la version d'une
+/// base jamais estampillée), et une panique si la lecture n'a pas eu lieu — un témoin ne compare jamais un
+/// « 1 » fabriqué à la version qu'il attend.
 ///
-/// `P10.20-f` — CE REPLI EST CELUI DU MOTEUR DE MIGRATION, PAS CELUI DE LA PORTE. Il sert à
-/// FABRIQUER DES MESSAGES (`abort_step`, `report_step_anomalies`, `prepare_schema`) et à comparer la
-/// version à la cible d'une étape (`migrate_step`, `restore_schema_version`) : à ces endroits la
-/// valeur n'autorise rien, elle DÉCRIT, et une lecture ratée s'y lit comme une anomalie de plus dans
-/// un message déjà coupable. La lecture qui AUTORISE — celle de l'ouverture — ne passe plus par ici :
-/// elle passe par [`lire_l_estampille_de_schema`], qui refuse de fabriquer un « 1 ». `P10.20-b` : la
-/// version qui ARBITRE la chaîne (`migrate_chain`) et le contrôle d'entrée de `prepare_schema` non plus.
+/// `P10.20-b` — PLUS AUCUN APPELANT DE PRODUCTION. Son repli (« 1 » sur une lecture ratée ou une valeur non
+/// entière) servait au moteur de migration : `migrate_step` y relisait la version d'AVANT l'étape, et une
+/// lecture ratée suivie d'un échec de l'étape faisait réécrire « 1 » par `restore_schema_version` — la
+/// version d'une base fraîche, celle pour laquelle la chaîne entière se rejoue. Le moteur lit désormais par
+/// [`relire_la_version_de_schema`] (trois issues) et décrit par [`version_de_schema_pour_un_message`].
+#[cfg(test)]
 pub(crate) fn read_schema_version(conn: &Connection) -> i64 {
-    conn.query_row("SELECT value FROM meta WHERE key='schema_version'", [], |r| r.get::<_, String>(0))
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(1)
+    match relire_la_version_de_schema(conn) {
+        VersionDeSchemaRelue::Lue(v) => v,
+        VersionDeSchemaRelue::Absente => 1,
+        VersionDeSchemaRelue::NonLue(cause) => panic!("témoin : `meta.schema_version` NON LUE ({cause})"),
+    }
 }
+
+/// `P10.20-b` — LA VERSION DE SCHÉMA RELUE PAR LE MOTEUR DE MIGRATION, EN TROIS ISSUES. Même énoncé que la
+/// porte (`lire_l_estampille_de_schema`), sans son arbitrage par le catalogue : pendant la chaîne, `db/schema.sql`
+/// a déjà posé `meta` et sa ligne, et une ligne absente garde le sens que le moteur lui a toujours donné (la
+/// version un d'une base jamais estampillée).
+pub(crate) enum VersionDeSchemaRelue {
+    /// La ligne est lue et porte un entier.
+    Lue(i64),
+    /// La lecture a abouti et `meta` ne porte aucune ligne `schema_version`.
+    Absente,
+    /// La lecture n'a pas eu lieu, ou la valeur n'est pas un entier : la cause, pour le journal.
+    NonLue(String),
+}
+
+/// Lit la version en trois issues ; une seule requête, quelle que soit l'issue.
+pub(crate) fn relire_la_version_de_schema(conn: &Connection) -> VersionDeSchemaRelue {
+    use rusqlite::OptionalExtension as _;
+    match conn
+        .query_row("SELECT value FROM meta WHERE key='schema_version'", [], |r| r.get::<_, String>(0))
+        .optional()
+    {
+        Ok(Some(brut)) => match brut.parse::<i64>() {
+            Ok(v) => VersionDeSchemaRelue::Lue(v),
+            Err(_) => VersionDeSchemaRelue::NonLue(format!("la ligne `meta.schema_version` ne porte pas un entier : {brut:?}")),
+        },
+        Ok(None) => VersionDeSchemaRelue::Absente,
+        Err(e) => VersionDeSchemaRelue::NonLue(e.to_string()),
+    }
+}
+
+/// Ce qu'un MESSAGE dit de la version quand elle n'a pas été lue : jamais un chiffre.
+pub(crate) const VERSION_DE_SCHEMA_NON_LUE: &str = "NON LUE";
+
+/// `P10.20-b` — LA VERSION TELLE QU'UN MESSAGE LA DÉCRIT (échec d'étape, contrat de schéma, base de référence) :
+/// le nombre lu, « 1 » pour une ligne absente (comme la porte ouvre en v1 une base jamais estampillée), et
+/// `NON LUE` pour une lecture qui n'a pas eu lieu. Ces messages accompagnent un échec déjà nommé : la cause de
+/// la relecture ratée n'y est pas recopiée.
+fn version_de_schema_pour_un_message(conn: &Connection) -> String {
+    match relire_la_version_de_schema(conn) {
+        VersionDeSchemaRelue::Lue(v) => v.to_string(),
+        VersionDeSchemaRelue::Absente => "1".to_string(),
+        VersionDeSchemaRelue::NonLue(_) => VERSION_DE_SCHEMA_NON_LUE.to_string(),
+    }
+}
+
+/// `P10.20-b` — causes d'échec d'étape propres aux relectures de la version (ligne `[migration] vN ÉCHEC (…)`).
+const CAUSE_VERSION_D_AVANT_L_ETAPE_NON_LUE: &str =
+    "version d'avant l'étape NON LUE, l'étape n'est pas jouée et rien n'est réécrit dans `meta`";
+const CAUSE_ESTAMPILLE_DE_L_ETAPE_NON_RELUE: &str = "estampille de l'étape NON RELUE après son corps, l'étape n'est pas commitée";
 
 // ─── `P10.20-f` — L'ESTAMPILLE DE SCHÉMA À L'OUVERTURE ────────────────────────────────────────────
 //
@@ -457,14 +508,24 @@ fn end_failed_write_tx(conn: &Connection) -> Result<(), String> {
 /// `UPDATE meta SET value='N'` qui suivait a été COMMITÉ SEUL, hors transaction, et aucun ROLLBACK ne
 /// peut le défaire. Renvoie la version RELUE APRÈS la tentative de réparation — JAMAIS une valeur
 /// supposée.
-fn restore_schema_version(conn: &Connection, want: i64) -> i64 {
-    if read_schema_version(conn) != want {
+///
+/// `P10.20-b` — `want` est la version d'avant l'étape, que `migrate_step` a LUE (sinon il n'a pas joué
+/// l'étape) : cette fonction ne réécrit jamais une version qu'elle n'a pas lue. Une relecture qui n'a pas
+/// lieu ici ne dit pas si le bump a été commité seul : `want` est alors réécrit, ce qui est sans effet s'il
+/// ne l'a pas été. La relecture finale rend ses trois issues à `report_step_anomalies`.
+fn restore_schema_version(conn: &Connection, want: i64) -> VersionDeSchemaRelue {
+    let a_reecrire = match relire_la_version_de_schema(conn) {
+        VersionDeSchemaRelue::Lue(v) => v != want,
+        VersionDeSchemaRelue::Absente => want != 1,
+        VersionDeSchemaRelue::NonLue(_) => true,
+    };
+    if a_reecrire {
         let _ = conn.execute(
             "UPDATE meta SET value=?1 WHERE key='schema_version'",
             params![want.to_string()],
         );
     }
-    read_schema_version(conn)
+    relire_la_version_de_schema(conn)
 }
 
 /// Exécute UNE étape de migration DANS UNE TRANSACTION, bump `meta.schema_version` INCLUS.
@@ -488,7 +549,17 @@ fn restore_schema_version(conn: &Connection, want: i64) -> i64 {
 /// ordres du corps postérieurs à l'avortement ont pu être commités isolément — les `migrate_vN` étant
 /// idempotentes (`IF NOT EXISTS`, « duplicate column » ignoré), la re-tentative converge.
 fn migrate_step(conn: &Connection, target: i64, body: fn(&MigTx)) -> bool {
-    let before = read_schema_version(conn);
+    // `P10.20-b` — LA VERSION D'AVANT L'ÉTAPE EST CELLE QUE LA RESTAURATION RÉÉCRIRAIT : elle est LUE, ou l'étape
+    // n'est pas jouée. Son ancien repli (« 1 » sur une lecture ratée) faisait réécrire « 1 » si l'étape échouait
+    // ensuite : une base à jour se lisait au démarrage suivant comme une base fraîche, et la chaîne entière se
+    // rejouait. Une ligne absente garde son sens d'avant (version un), elle n'est pas une lecture ratée.
+    let before = match relire_la_version_de_schema(conn) {
+        VersionDeSchemaRelue::Lue(v) => v,
+        VersionDeSchemaRelue::Absente => 1,
+        VersionDeSchemaRelue::NonLue(cause) => {
+            return abort_step(conn, target, &format!("{CAUSE_VERSION_D_AVANT_L_ETAPE_NON_LUE} ({cause})"));
+        }
+    };
     if let Err(e) = conn.execute_batch("BEGIN IMMEDIATE") {
         return abort_step(conn, target, &format!("ouverture de transaction refusée ({e})"));
     }
@@ -498,8 +569,10 @@ fn migrate_step(conn: &Connection, target: i64, body: fn(&MigTx)) -> bool {
     // La transaction est-elle TOUJOURS la nôtre ? (cf. AVORTEMENT AUTOMATIQUE ci-dessus.)
     let aborted_by_sqlite = conn.is_autocommit();
     // Le bump appartient à la TRANSACTION : on vérifie qu'il a bien eu lieu AVANT de committer (une
-    // étape qui n'estampille pas la version est un échec, pas un succès silencieux).
-    let stamped = read_schema_version(conn) == target;
+    // étape qui n'estampille pas la version est un échec, pas un succès silencieux). `P10.20-b` : une
+    // estampille non relue n'est pas posée, et l'échec dit qu'elle n'a pas été relue.
+    let estampille = relire_la_version_de_schema(conn);
+    let stamped = matches!(estampille, VersionDeSchemaRelue::Lue(v) if v == target);
     if failure.is_none() && stamped && !aborted_by_sqlite {
         if let Err(e) = conn.execute_batch("COMMIT") {
             let tx_state = end_failed_write_tx(conn);
@@ -515,6 +588,8 @@ fn migrate_step(conn: &Connection, target: i64, body: fn(&MigTx)) -> bool {
     let cause = failure.unwrap_or_else(|| {
         if aborted_by_sqlite {
             "transaction AVORTÉE par SQLite pendant l'étape".to_string()
+        } else if let VersionDeSchemaRelue::NonLue(relecture) = &estampille {
+            format!("{CAUSE_ESTAMPILLE_DE_L_ETAPE_NON_RELUE} ({relecture})")
         } else {
             format!("schema_version non estampillée à {target}")
         }
@@ -525,37 +600,51 @@ fn migrate_step(conn: &Connection, target: i64, body: fn(&MigTx)) -> bool {
 }
 
 /// LE SEUL ENDROIT OÙ S'ÉCRIT UN MESSAGE D'ÉCHEC D'ÉTAPE — et donc le seul endroit où la version
-/// annoncée est produite. Elle est RELUE EN BASE (`read_schema_version`), JAMAIS une constante
+/// annoncée est produite. Elle est RELUE EN BASE (`version_de_schema_pour_un_message` : « NON LUE » quand la
+/// relecture n'a pas lieu, jamais « 1 »), JAMAIS une constante
 /// littérale, JAMAIS la variable `before` : une constante décrit ce que le code CROIT avoir laissé,
 /// pas ce que la base porte (c'est exactement l'écart qui rendait FAUX le message annonçant 57 alors
 /// que la base était estampillée 58). Renvoie toujours `false` pour s'écrire
-/// `return abort_step(…)` sur le site d'appel. Utilisé par les 4 branches d'échec de `migrate_step`
-/// ET par les 3 étapes INLINE (v33/v67/v77) — le test `no_failure_message_prints_a_literal_version`
-/// interdit qu'une 8e branche ré-invente le message.
+/// `return abort_step(…)` sur le site d'appel. Utilisé par chaque branche d'échec de `migrate_step` (dont,
+/// depuis `P10.20-b`, la version d'avant l'étape non lue) ET par les 3 étapes INLINE (v33/v67/v77) — le test
+/// `no_failure_message_prints_a_literal_version` interdit qu'une autre branche ré-invente le message.
 fn abort_step(conn: &Connection, target: i64, cause: &str) -> bool {
     mig_log!(
         "[migration] v{target} ÉCHEC ({cause}) — le message « schéma -> v{target} » éventuellement \
          affiché ci-dessus est ANNULÉ ; version RELUE en base : {}, étape RE-TENTÉE au prochain \
          démarrage (migrate interrompu)",
-        read_schema_version(conn)
+        version_de_schema_pour_un_message(conn)
     );
     false
 }
 
 /// Signale les deux anomalies qu'il serait FAUX d'avaler après l'échec d'une étape : une transaction
 /// d'écriture restée OUVERTE, et une `schema_version` qu'on n'a PAS réussi à ramener à sa valeur d'avant
-/// l'étape (base estampillée pour un schéma qu'elle n'a pas).
-fn report_step_anomalies(target: i64, before: i64, actual: i64, tx_state: Result<(), String>) {
+/// l'étape (base estampillée pour un schéma qu'elle n'a pas). `P10.20-b` : une relecture qui n'a pas eu
+/// lieu est une anomalie à part, dite avec la cause du moteur, jamais un « 1 » relu.
+fn report_step_anomalies(target: i64, before: i64, actual: VersionDeSchemaRelue, tx_state: Result<(), String>) {
     if let Err(e) = tx_state {
         mig_log!(
             "[migration] v{target} ANOMALIE GRAVE : {e} — les écritures suivantes seraient perdues à la \
              sortie du process et la base reste verrouillée aux autres écrivains."
         );
     }
-    if actual != before {
+    let relue = match actual {
+        VersionDeSchemaRelue::Lue(v) => v,
+        VersionDeSchemaRelue::Absente => 1,
+        VersionDeSchemaRelue::NonLue(cause) => {
+            mig_log!(
+                "[migration] v{target} ANOMALIE GRAVE : schema_version n'a PAS pu être RELUE après sa remise à \
+                 {before} ({cause}) — la base est peut-être estampillée pour un schéma qu'elle n'a pas. Restaurer \
+                 la sauvegarde antérieure."
+            );
+            return;
+        }
+    };
+    if relue != before {
         mig_log!(
             "[migration] v{target} ANOMALIE GRAVE : schema_version n'a PAS pu être ramenée à {before} \
-             (RELUE en base : {actual}) — la base est estampillée pour un schéma qu'elle n'a peut-être pas. \
+             (RELUE en base : {relue}) — la base est estampillée pour un schéma qu'elle n'a peut-être pas. \
              Restaurer la sauvegarde antérieure."
         );
     }
@@ -1086,9 +1175,9 @@ fn build_reference_shape() -> Result<std::collections::BTreeSet<String>, String>
         .map_err(|e| format!("base de référence : db/schema.sql non applicable ({e})"))?;
     if !migrate(&conn) {
         return Err(format!(
-            "base de référence : la chaîne de migrations de CE binaire s'arrête à v{} sur une base NEUVE \
-             (attendu v{CODE_SCHEMA_MAX}) — le binaire est incohérent avec lui-même",
-            read_schema_version(&conn)
+            "base de référence : la chaîne de migrations de CE binaire s'arrête à schema_version={} sur une base \
+             NEUVE (attendu v{CODE_SCHEMA_MAX}) — le binaire est incohérent avec lui-même",
+            version_de_schema_pour_un_message(&conn)
         ));
     }
     declared_shape(&conn).map_err(|e| format!("base de référence : {e}"))
@@ -1119,9 +1208,9 @@ pub(crate) fn ddl_de_reference(nom: &str) -> Result<Option<String>, String> {
         .map_err(|e| format!("base de référence : db/schema.sql non applicable ({e})"))?;
     if !migrate(&conn) {
         return Err(format!(
-            "base de référence : la chaîne de migrations de CE binaire s'arrête à v{} sur une base NEUVE \
-             (attendu v{CODE_SCHEMA_MAX})",
-            read_schema_version(&conn)
+            "base de référence : la chaîne de migrations de CE binaire s'arrête à schema_version={} sur une base \
+             NEUVE (attendu v{CODE_SCHEMA_MAX})",
+            version_de_schema_pour_un_message(&conn)
         ));
     }
     conn.query_row("SELECT sql FROM sqlite_master WHERE name = ?1", [nom], |r| {
@@ -1254,7 +1343,7 @@ pub(crate) fn prepare_schema(conn: &Connection) -> Result<(), String> {
             "migration INTERROMPUE (cause détaillée ci-dessus) — base en schema_version={} alors que ce \
              binaire attend v{CODE_SCHEMA_MAX} : le schéma est INCOMPLET. La migration sera RE-TENTÉE au \
              prochain démarrage{aussi}",
-            read_schema_version(conn)
+            version_de_schema_pour_un_message(conn)
         ));
     }
     let gaps = schema_gaps(conn)?;
@@ -1265,7 +1354,7 @@ pub(crate) fn prepare_schema(conn: &Connection) -> Result<(), String> {
              d'intégrité de schéma), ou quelque chose a été supprimé après coup. Aucune garde `if v < N` ne le \
              recréera : un redémarrage ne répare PAS cet état. Rien n'a été modifié ici — restaurer la \
              sauvegarde antérieure au dommage, ou recréer l'élément nommé, puis redémarrer{aussi}",
-            read_schema_version(conn),
+            version_de_schema_pour_un_message(conn),
             gaps.len(),
             gaps.join(", ")
         ));

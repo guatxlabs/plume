@@ -104,23 +104,87 @@ pub(crate) fn lire_le_catalogue(data: &Value) -> EtatDuCatalogue {
 /// parc — pas celui des rapports : un état stable ne crée aucune ligne (heartbeat). Elle n'est faite
 /// qu'au moment où une alerte de manque est écrite, c'est-à-dire au plus une fois par machine et par
 /// rapport, dans la transaction d'ingestion qui vient déjà d'écrire cet instantané.
-pub(crate) fn dernier_etat_different(conn: &Connection, host: Option<&str>, hash: &str) -> Option<i64> {
-    conn.query_row(
+///
+/// `P10.20-b` — TROIS ISSUES. `Ok(ts)` : l'état précédent est LU ; `Err(JamaisRelevee)` : la lecture a
+/// abouti et la série ne porte AUCUN autre état (`MAX` nul) ; `Err(EtatPrecedentNonLu)` : la lecture n'a
+/// pas eu lieu (cellule illisible, table abîmée), la cause du moteur va au journal du démon et jamais dans
+/// le titre écrit en base. Le `.ok().flatten()` d'avant rangeait la troisième sous la deuxième, et le titre
+/// affirmait « jamais relevé » d'une machine dont l'état précédent n'avait simplement pas été lu.
+pub(crate) fn dernier_etat_different(conn: &Connection, host: Option<&str>, hash: &str) -> Result<i64, AncienneteSansDate> {
+    match conn.query_row(
         "SELECT MAX(ts) FROM snapshot WHERE kind='controls' AND host IS ?1 AND COALESCE(hash,'')<>?2",
         params![host, hash],
         |r| r.get::<_, Option<i64>>(0),
-    )
-    .ok()
-    .flatten()
+    ) {
+        Ok(Some(ts)) => Ok(ts),
+        Ok(None) => Err(AncienneteSansDate::JamaisRelevee),
+        Err(e) => {
+            eprintln!(
+                "[controles] WARN état précédent d'une série de contrôles de défense NON lu, ancienneté NON ÉTABLIE \
+                 dans le titre de l'alerte : {e}"
+            );
+            Err(AncienneteSansDate::EtatPrecedentNonLu)
+        }
+    }
 }
 
 /// Le JOUR UTC d'un instant, rendu par SQLite. Aucune dépendance de calendrier n'entre dans l'arbre, et
 /// aucun second calcul de date n'y est écrit : le seul autre du dépôt (`cold_store::paths`) vit derrière
 /// une feature et n'est pas compilé par défaut — le recopier ici en ferait deux à tenir d'accord.
-pub(crate) fn jour_utc(conn: &Connection, ts: i64) -> Option<String> {
-    conn.query_row("SELECT date(?1,'unixepoch')", params![ts], |r| r.get::<_, Option<String>>(0))
-        .ok()
-        .flatten()
+///
+/// `P10.20-b` — un jour que SQLite ne rend pas (instant hors de son calendrier : `NULL`, aucune erreur) ou
+/// que le moteur n'a pas calculé (erreur, dite au journal) est `Err(JourNonCalcule)`, jamais « aucun état
+/// relevé » : un état précédent a bien été LU, c'est sa date qui manque.
+pub(crate) fn jour_utc(conn: &Connection, ts: i64) -> Result<String, AncienneteSansDate> {
+    match conn.query_row("SELECT date(?1,'unixepoch')", params![ts], |r| r.get::<_, Option<String>>(0)) {
+        Ok(Some(jour)) => Ok(jour),
+        Ok(None) => Err(AncienneteSansDate::JourNonCalcule),
+        Err(e) => {
+            eprintln!(
+                "[controles] WARN jour de l'état précédent d'une série de contrôles de défense NON calculé, \
+                 ancienneté NON ÉTABLIE dans le titre de l'alerte : {e}"
+            );
+            Err(AncienneteSansDate::JourNonCalcule)
+        }
+    }
+}
+
+/// `P10.20-b` — POURQUOI L'ÉNONCÉ NE CITE PAS DE JOUR. Une seule de ces raisons est une absence ÉTABLIE ;
+/// les deux autres disent que l'ancienneté n'est pas établie, chacune par sa phrase fixe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AncienneteSansDate {
+    /// La lecture a abouti : la série de cette machine ne porte aucun autre état.
+    JamaisRelevee,
+    /// L'état précédent n'a pas été lu (cause du moteur au journal).
+    EtatPrecedentNonLu,
+    /// Un état précédent a été lu, son jour n'a pas été calculé.
+    JourNonCalcule,
+}
+
+/// Les phrases de l'ancienneté NON ÉTABLIE, écrites dans le titre de l'alerte : fixes, sans texte du moteur.
+pub(crate) const PHRASE_ETAT_PRECEDENT_NON_LU: &str =
+    " — ancienneté de cet état NON ÉTABLIE : l'état précédent de cette machine n'a pas pu être lu";
+pub(crate) const PHRASE_JOUR_DE_L_ETAT_PRECEDENT_NON_CALCULE: &str =
+    " — ancienneté de cet état NON ÉTABLIE : le jour de l'état précédent n'a pas pu être calculé";
+
+/// DEPUIS QUAND, tel que l'énoncé le reçoit : le jour LU, ou la raison pour laquelle il n'y en a pas. Le
+/// site d'ingestion compose `dernier_etat_different(..).and_then(|t| jour_utc(..))` puis `.as_deref()`, ce
+/// qui donne la forme `Result<&str, &AncienneteSansDate>`.
+pub(crate) struct Depuis<'a>(Result<&'a str, AncienneteSansDate>);
+
+impl<'a> From<Result<&'a str, &'a AncienneteSansDate>> for Depuis<'a> {
+    fn from(lu: Result<&'a str, &'a AncienneteSansDate>) -> Self {
+        Depuis(lu.map_err(|raison| *raison))
+    }
+}
+
+/// La forme à DEUX issues des témoins écrits avant `P10.20-b` (`None` = aucun état différent relevé).
+/// Aucun site de production ne la prend : elle ne peut pas dire une lecture non faite.
+#[cfg(test)]
+impl<'a> From<Option<&'a str>> for Depuis<'a> {
+    fn from(jour: Option<&'a str>) -> Self {
+        Depuis(jour.ok_or(AncienneteSansDate::JamaisRelevee))
+    }
 }
 
 /// Les identifiants, bornés : au plus `NOMMES_AU_PLUS`, le reste COMPTÉ. Un « (+3) » dit qu'il en manque
@@ -150,8 +214,8 @@ fn sur_la_machine(host: Option<&str>) -> String {
 /// recalculé ici. `etat` est ce que la charge permet de NOMMER. Les deux peuvent diverger (charge
 /// tierce, identifiant vide, liste absente) : l'écart est DIT, parce qu'une liste plus courte que le
 /// compte se lirait comme la liste complète.
-pub(crate) fn enonce_des_manquants(
-    etat: &EtatDuCatalogue, failed: i64, host: Option<&str>, depuis: Option<&str>,
+pub(crate) fn enonce_des_manquants<'a>(
+    etat: &EtatDuCatalogue, failed: i64, host: Option<&str>, depuis: impl Into<Depuis<'a>>,
 ) -> String {
     let mut s = format!("{failed} contrôle(s) de défense MANQUANT(S){}", sur_la_machine(host));
     if !etat.manquants.is_empty() {
@@ -163,9 +227,11 @@ pub(crate) fn enonce_des_manquants(
             " — CHARGE INCOHÉRENTE : {failed} annoncé(s), {nommables} nommable(s) dans la liste"
         ));
     }
-    match depuis {
-        Some(j) => s.push_str(&format!(" — même état depuis au moins le {j}")),
-        None => s.push_str(" — aucun état DIFFÉRENT n'a jamais été relevé pour cette machine"),
+    match depuis.into().0 {
+        Ok(j) => s.push_str(&format!(" — même état depuis au moins le {j}")),
+        Err(AncienneteSansDate::JamaisRelevee) => s.push_str(" — aucun état DIFFÉRENT n'a jamais été relevé pour cette machine"),
+        Err(AncienneteSansDate::EtatPrecedentNonLu) => s.push_str(PHRASE_ETAT_PRECEDENT_NON_LU),
+        Err(AncienneteSansDate::JourNonCalcule) => s.push_str(PHRASE_JOUR_DE_L_ETAT_PRECEDENT_NON_CALCULE),
     }
     if !etat.indetermines.is_empty() {
         s.push_str(&format!(

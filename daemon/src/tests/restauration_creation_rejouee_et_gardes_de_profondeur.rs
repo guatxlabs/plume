@@ -219,7 +219,8 @@ mod cj2_restauration_creation_rejouee_et_gardes_de_profondeur {
     /// LIGNE EST UNE TABLE REJOUÉE : `t_data` (`t` est une table ordinaire), `w_idx` (`w` est une vue) restent des tables
     /// jugées et rejouées ; le déclencheur `f_config` (à côté de la FTS5 `f`) n'est pas une table. ET SI LE NOM A LA FORME
     /// EXACTE `<vt>_<suffixe>` : `fadata` (pas de séparateur `_` après `f`) et `f_autre` (suffixe hors de la liste de
-    /// l'écrivain), tables ordinaires à côté de la FTS5 `f`, restent jugées et rejouées. L'archive se restaure.
+    /// l'écrivain), tables ordinaires à côté de la FTS5 `f`, restent jugées et rejouées. L'archive se restaure : ce témoin
+    /// prouve qu'elles sont REJOUÉES ; qu'elles sont JUGÉES, le témoin suivant le prouve.
     #[test]
     fn ancien_un_nom_de_forme_fantome_hors_d_une_table_virtuelle_reste_une_ligne_ordinaire() {
         let _tmp = crate::tmp_possede::TmpPossede::neuf("cj2-a-nom-ordinaire");
@@ -231,6 +232,25 @@ mod cj2_restauration_creation_rejouee_et_gardes_de_profondeur {
              CREATE VIRTUAL TABLE f USING fts5(v, content='t'); CREATE TRIGGER f_config AFTER INSERT ON t BEGIN SELECT 1; END; \
              CREATE TABLE fadata(x); CREATE TABLE f_autre(x);",
         );
+    }
+
+    /// UNE TABLE ORDINAIRE AU NOM DE FORME FANTÔME EST JUGÉE PAR LA LISTE, PAS SEULEMENT REJOUÉE : chacun des noms du
+    /// témoin précédent (`t_data`, `w_idx`, `fadata`, `f_autre`), posé à côté de la FTS5 légitime `f`, porte une
+    /// contrainte qui appelle une fonction (`hex`), que la phase des tables refuse. Le jugement de la boucle des tables
+    /// de `juger_le_schema_du_format_ancien` refuse sous « format ancien », classe d'instruction, avant toute
+    /// publication ; une boucle qui sauterait un nom finissant par un suffixe fantôme publierait la table.
+    #[test]
+    fn ancien_une_table_ordinaire_au_nom_de_forme_fantome_est_jugee_par_la_liste() {
+        let cas = [
+            ("cj2-a-hostile-t-data", "CREATE TABLE t_data(x CHECK (hex(x) <> ''));"),
+            ("cj2-a-hostile-w-idx", "CREATE VIEW w AS SELECT v FROM t; CREATE TABLE w_idx(x CHECK (hex(x) <> ''));"),
+            ("cj2-a-hostile-fadata", "CREATE TABLE fadata(x CHECK (hex(x) <> ''));"),
+            ("cj2-a-hostile-f-autre", "CREATE TABLE f_autre(x CHECK (hex(x) <> ''));"),
+        ];
+        assert!(cas.len() >= 4, "plancher : les quatre noms du témoin précédent");
+        for (nom, table) in cas {
+            ancien_refuse(nom, &format!("CREATE VIRTUAL TABLE f USING fts5(v, content='t'); {table}"), CLASSE);
+        }
     }
 
     // ── FORMAT COURANT : DUMPS FORGÉS ───────────────────────────────────────────────────────────────

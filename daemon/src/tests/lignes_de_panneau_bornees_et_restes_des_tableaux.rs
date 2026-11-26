@@ -36,9 +36,9 @@
 //  CC3V_OUBLI_UNE_NATURE (l'oubli ne retire que la nature de BK), CC3V_OUBLI_AUCUNE, CC3V_OUBLI_TOUTES_BASES (A'').
 // CE QU'ILS NE TIENNENT PAS : la ligne ILLISIBLE d'un panneau qui compile (un rafraîchissement armé la remplace, non
 // bornée) ; les deux lignes qui portent l'identifiant servi dans le corps (NON LUE, résultat NON ÉCRIT en 503) : les
-// taire laisserait un identifiant servi sans sa ligne ; les registres sont perdus au redémarrage ; la borne est posée par
-// NATURE, pas par cause : dans une même nature, une cause qui change (le refus du moteur `{e}` du résultat direct non
-// écrit qui passe de « not authorized » à « disk full ») est tue jusqu'à une durée du cache du panneau.
+// taire laisserait un identifiant servi sans sa ligne ; les registres sont perdus au redémarrage ; une cause qui change
+// de classe dans une même nature (vague CJ : la clé porte aussi la classe de la cause) est tenue par
+// `cause_changee_dans_une_nature_dite_une_fois.rs`, pas ici.
 // =====================================================================================
 mod lignes_de_panneau_bornees_et_restes_des_tableaux {
     use super::*;

@@ -1028,7 +1028,9 @@ pub(crate) fn cache_ecrire(conn: &Connection, id: i64, range_key: &str, q_fp: &s
 /// `P10.32-o` — l'écriture d'une ligne de cache, qui DIT si la ligne a été écrite (cause du moteur sinon), puis l'éviction
 /// des plages les plus vieilles (cap anti-explosion). Chaque issue de l'écriture est NOTÉE pour cette base, ce panneau,
 /// cette plage et cette empreinte (`ECRITURES_DE_CACHE_REFUSEES`) : un refus y reste jusqu'à l'écriture suivante qui
-/// réussit, et `serve_swr` le lit (`ecriture_de_cache_refusee`) au lieu de servir une chauffe qui ne finira pas.
+/// réussit, et `serve_swr` le lit (`ecriture_de_cache_refusee`) au lieu de servir une chauffe qui ne finira pas. Un refus
+/// note aussi la classe de sa cause ([`classe_de_la_cause`], famille [`FamilleDeCause::EcritureDuCache`]), que lit la
+/// borne des lignes dites.
 /// L'ÉVICTION REFUSÉE N'EST PAS RENDUE, ET C'EST DÉLIBÉRÉ : la ligne est écrite (ou son refus est rendu), seul le plafond
 /// de plages de ce panneau n'est pas tenu à cet instant ; l'éviction est rejouée, entière (`NOT IN` des plus récentes), à
 /// chaque écriture suivante de ce panneau. Rien de ce qui est servi n'en devient faux.
@@ -1054,7 +1056,10 @@ pub(crate) fn cache_ecrire_l_echec_dit(
 fn cache_ecrire_et_noter(
     conn: &Connection, id: i64, range_key: &str, q_fp: &str, calcule_a: i64, payload: &str, refus: RefusDEcritureDeCache,
 ) -> Result<(), String> {
-    let ecrit = conn.execute(SQL_ECRIRE, params![id, range_key, q_fp, calcule_a, payload]).map(|_| ()).map_err(|e| e.to_string());
+    let ecrit = conn.execute(SQL_ECRIRE, params![id, range_key, q_fp, calcule_a, payload]).map(|_| ()).map_err(|e| {
+        noter_la_cause_observee(conn, id, FamilleDeCause::EcritureDuCache, classe_de_la_cause(&e));
+        e.to_string()
+    });
     noter_l_issue_de_l_ecriture(conn, id, range_key, q_fp, if ecrit.is_ok() { Ok(()) } else { Err(refus) });
     let _ = conn.execute(SQL_EVICTION, params![id, CACHE_MAX_RANGES_PER_PANEL]);
     ecrit
@@ -1118,14 +1123,23 @@ pub(crate) fn retenir_un_refus_d_ecriture(
 }
 
 /// `P10.32-o` (vague BK) — LES LIGNES `[panel]` QU'UN PANNEAU DANS UN ÉTAT DURABLE ÉCRIRAIT À CHAQUE INTERROGATION SONT
-/// BORNÉES : au plus une par panneau, par NATURE de ligne ([`NatureDeLigneDite`]) et par durée du cache du panneau (clé :
-/// base de la connexion telle que SQLite la nomme, panneau, nature). La vague BK a borné la charge périmée d'un panneau qui
-/// ne compile plus ; les autres natures suivent la même borne, dans ce MÊME registre, sous une clé distincte : une ligne
-/// d'une nature n'en tait jamais une d'une autre nature. La clé ne porte pas la CAUSE : dans une même nature, une cause
-/// qui change (le refus du moteur cité par la ligne) est tue jusqu'à une durée du cache du panneau. Valeur : l'instant de
-/// la dernière ligne ÉCRITE (une ligne tue ne le repousse pas, sinon un panneau interrogé plus souvent que sa durée du cache ne serait plus jamais dit). État de
-/// PROCESSUS, borné par [`BORNE_DES_PEREMPTIONS_NON_COMPILABLES_DITES`], effacé pour une base à la destruction de son
-/// tenant. Le corps servi ne dépend jamais de ce registre : il ne décide que du journal.
+/// BORNÉES : au plus une par panneau, par NATURE de ligne ([`NatureDeLigneDite`]), par CLASSE de la cause citée et par
+/// durée du cache du panneau (clé : base de la connexion telle que SQLite la nomme, panneau, nature, classe de la cause).
+/// La vague BK a borné la charge périmée d'un panneau qui ne compile plus ; les autres natures suivent la même borne, dans
+/// ce MÊME registre, sous une clé distincte : une ligne d'une nature n'en tait jamais une d'une autre nature.
+/// LA CLASSE DE LA CAUSE EST DANS LA CLÉ : dans une nature dont la ligne cite une cause du moteur (refus d'écrire le
+/// cache, ligne illisible), une cause qui CHANGE de classe (refus d'autorisation puis disque plein ; type inattendu de la
+/// charge puis de l'instant) prend une clé neuve, et la ligne qui cite la cause neuve sort à la première interrogation qui
+/// la voit. La même classe revue (le texte de la cause porte aussi un rang qui croît à chaque lecture ratée) ne rouvre
+/// rien. Une cause qui revient à une classe déjà dite dans la durée du cache reste tue : la borne vaut par classe, et deux
+/// classes qui alternent ne font pas sortir une ligne par interrogation. Deux causes de MÊME classe et de textes
+/// différents (deux messages `RAISE`, tous deux `SQLITE_CONSTRAINT_TRIGGER`) restent une seule classe : la seconde est tue
+/// jusqu'à la durée du cache. Les natures dont la ligne ne cite aucune cause
+/// (charge ou corps d'échec périmés d'un panneau qui ne compile plus) n'ont pas de classe (`None`). Valeur : l'instant de
+/// la dernière ligne ÉCRITE (une ligne tue ne le repousse pas, sinon un panneau interrogé plus souvent que sa durée du
+/// cache ne serait plus jamais dit). État de PROCESSUS, borné par [`BORNE_DES_PEREMPTIONS_NON_COMPILABLES_DITES`],
+/// effacé pour une base à la destruction de son tenant. Le corps servi ne dépend jamais de ce registre : il ne décide
+/// que du journal.
 static PEREMPTIONS_NON_COMPILABLES_DITES: std::sync::OnceLock<parking_lot::Mutex<HashMap<CleDeLigneDiteParNature, i64>>> =
     std::sync::OnceLock::new();
 
@@ -1133,8 +1147,90 @@ static PEREMPTIONS_NON_COMPILABLES_DITES: std::sync::OnceLock<parking_lot::Mutex
 /// chacun leur `#1`.
 pub(crate) type CleDeLigneDite = (String, i64);
 
-/// La clé du registre de production : la clé d'une ligne dite ET sa nature.
-pub(crate) type CleDeLigneDiteParNature = (CleDeLigneDite, NatureDeLigneDite);
+/// La clé du registre de production : la clé d'une ligne dite, sa nature et la classe de la cause que la ligne cite
+/// (`None` pour une nature qui ne cite aucune cause, ou quand aucune cause n'a été observée pour ce panneau).
+pub(crate) type CleDeLigneDiteParNature = (CleDeLigneDite, NatureDeLigneDite, Option<ClasseDeCause>);
+
+/// `P10.32-o` — LA CLASSE D'UNE CAUSE DU MOTEUR : ce qui distingue deux causes d'une même nature, sans leur texte. Code
+/// étendu de SQLite pour un refus du moteur ; variante de décodage et rang de la colonne (et type lu) pour une valeur qui
+/// ne se décode pas ; rang de la variante de `rusqlite::Error` sinon. Elle ne sert qu'à la clé du registre des lignes
+/// dites : elle n'est écrite dans aucune ligne ni servie dans aucun corps.
+pub(crate) type ClasseDeCause = String;
+
+/// La classe de `e` ([`ClasseDeCause`]). La valeur hors plage d'un `IntegralValueOutOfRange` n'en fait pas partie : c'est
+/// une donnée de la ligne, pas une cause.
+pub(crate) fn classe_de_la_cause(e: &rusqlite::Error) -> ClasseDeCause {
+    match e {
+        rusqlite::Error::SqliteFailure(f, _) => format!("code étendu {}", f.extended_code),
+        rusqlite::Error::InvalidColumnType(rang, _, lu) => format!("type de colonne inattendu, rang {rang}, {lu}"),
+        rusqlite::Error::FromSqlConversionFailure(rang, lu, _) => format!("conversion impossible, rang {rang}, {lu}"),
+        rusqlite::Error::IntegralValueOutOfRange(rang, _) => format!("valeur hors plage, rang {rang}"),
+        autre => format!("{:?}", std::mem::discriminant(autre)),
+    }
+}
+
+/// `P10.32-o` — LA FAMILLE D'UNE CAUSE OBSERVÉE : où le coffre l'a vue. Une ligne `[panel]` qui cite une cause cite celle
+/// de l'une de ces deux familles.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum FamilleDeCause {
+    /// Le refus d'écrire une ligne de cache ([`cache_ecrire_dit`], [`cache_ecrire_l_echec_dit`]).
+    EcritureDuCache,
+    /// Une ligne de cache lue mais illisible ([`cache_lire_dit`], issue [`LectureDeCache::Illisible`]).
+    LectureIllisible,
+}
+
+impl NatureDeLigneDite {
+    /// La famille de la cause que cite la ligne de cette nature, `None` si elle n'en cite aucune.
+    pub(crate) fn famille_de_cause(self) -> Option<FamilleDeCause> {
+        match self {
+            NatureDeLigneDite::ResultatDirectNonEcrit => Some(FamilleDeCause::EcritureDuCache),
+            NatureDeLigneDite::LigneIllisibleNonCompilable | NatureDeLigneDite::LigneIllisibleSousEcritureRefusee => {
+                Some(FamilleDeCause::LectureIllisible)
+            }
+            NatureDeLigneDite::ChargePerimeeNonCompilable | NatureDeLigneDite::CorpsDEchecPerimeNonCompilable => None,
+        }
+    }
+}
+
+/// La clé d'une cause observée : (base de la connexion telle que SQLite la nomme, panneau, famille).
+pub(crate) type CleDeCauseObservee = (String, i64, FamilleDeCause);
+
+thread_local! {
+    /// `P10.32-o` — LA DERNIÈRE CAUSE OBSERVÉE PAR CE FIL, une par famille (deux entrées au plus) : la clé de la cause
+    /// (base, panneau, famille) et sa classe. Les sites de journal appellent [`dire_une_ligne_de_panneau`] sur le MÊME fil
+    /// que l'observation et SANS point d'attente entre les deux (le refus d'écriture, sous le même verrou de connexion,
+    /// dans `panel_data` ; la lecture illisible, dans `serve_swr`, fonction synchrone) : la décision lit la classe de la
+    /// cause que CETTE interrogation a vue, celle que sa ligne cite. Avant, un registre de processus PARTAGÉ portait la
+    /// dernière classe observée par n'importe quelle interrogation : relu après le relâchement de son verrou, il pouvait
+    /// porter la cause d'une autre interrogation du même panneau (A voit X, B voit Y, A décide sous Y et imprime X, B
+    /// décide sous Y et se tait : la ligne qui cite Y ne sortait pas pendant une durée du cache). Ici, aucune autre
+    /// interrogation n'écrit l'entrée lue. Bornée par construction (une entrée par famille, remplacée par l'observation
+    /// suivante de ce fil), rien à oublier à la destruction d'un tenant : une décision suit toujours sa propre
+    /// observation. Elle ne sert qu'à la clé du registre des lignes dites.
+    static CAUSES_OBSERVEES_PAR_CE_FIL: std::cell::RefCell<Vec<(CleDeCauseObservee, ClasseDeCause)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn noter_la_cause_observee(conn: &Connection, id: i64, famille: FamilleDeCause, classe: ClasseDeCause) {
+    let cle = (conn.path().unwrap_or("").to_string(), id, famille);
+    CAUSES_OBSERVEES_PAR_CE_FIL.with(|c| {
+        let mut c = c.borrow_mut();
+        c.retain(|(k, _)| k.2 != famille);
+        c.push((cle, classe));
+    });
+}
+
+/// La classe de la dernière cause observée PAR CE FIL pour ce panneau de cette base dans cette famille.
+fn classe_observee_par_ce_fil(base: &str, id: i64, famille: FamilleDeCause) -> Option<ClasseDeCause> {
+    CAUSES_OBSERVEES_PAR_CE_FIL
+        .with(|c| c.borrow().iter().find(|((b, i, f), _)| b == base && *i == id && *f == famille).map(|(_, classe)| classe.clone()))
+}
+
+/// La dernière classe observée par ce fil pour ce panneau dans cette famille (témoins seuls).
+#[cfg(test)]
+pub(crate) fn cause_observee(conn: &Connection, id: i64, famille: FamilleDeCause) -> Option<ClasseDeCause> {
+    classe_observee_par_ce_fil(conn.path().unwrap_or(""), id, famille)
+}
 
 /// `P10.32-o` — LA NATURE D'UNE LIGNE `[panel]` BORNÉE, un bras par ligne de `serve_swr` ou de `panel_data` qu'un état
 /// durable du panneau (il ne compile plus) ou de la base (elle refuse d'écrire le cache) écrirait à chaque interrogation.
@@ -1162,11 +1258,15 @@ pub(crate) fn dire_la_peremption_non_compilable(conn: &Connection, id: i64, now_
     dire_une_ligne_de_panneau(conn, id, NatureDeLigneDite::ChargePerimeeNonCompilable, now_s, ttl)
 }
 
-/// Rend `true` si la ligne de cette nature doit être écrite maintenant pour ce panneau (aucune ligne de cette nature
-/// dite, ou la dernière dite il y a PLUS d'une durée du cache), et note alors `now_s`. `false` : la ligne est tue,
-/// l'instant noté ne bouge pas.
+/// Rend `true` si la ligne de cette nature doit être écrite maintenant pour ce panneau (aucune ligne de cette nature et
+/// de la classe de cause observée dite, ou la dernière dite il y a PLUS d'une durée du cache), et note alors `now_s`.
+/// `false` : la ligne est tue, l'instant noté ne bouge pas. La classe est la dernière observée PAR CE FIL pour ce
+/// panneau dans la famille de la nature ([`NatureDeLigneDite::famille_de_cause`], [`CAUSES_OBSERVEES_PAR_CE_FIL`]) :
+/// l'appelant décide sur le fil de son observation, sans point d'attente entre les deux.
 pub(crate) fn dire_une_ligne_de_panneau(conn: &Connection, id: i64, nature: NatureDeLigneDite, now_s: i64, ttl: i64) -> bool {
-    let cle = ((conn.path().unwrap_or("").to_string(), id), nature);
+    let base = conn.path().unwrap_or("").to_string();
+    let classe = nature.famille_de_cause().and_then(|famille| classe_observee_par_ce_fil(&base, id, famille));
+    let cle = ((base, id), nature, classe);
     let mut registre = PEREMPTIONS_NON_COMPILABLES_DITES.get_or_init(Default::default).lock();
     noter_une_ligne_dite(&mut registre, cle, now_s, ttl)
 }
@@ -1198,25 +1298,37 @@ pub(crate) fn antidater_la_peremption_dite(conn: &Connection, id: i64, dite_a: i
     antidater_la_ligne_dite(conn, id, NatureDeLigneDite::ChargePerimeeNonCompilable, dite_a);
 }
 
-/// Antidate la dernière ligne dite d'une nature pour un panneau (témoins seuls).
+/// Antidate les lignes dites d'une nature pour un panneau, toutes classes de cause (témoins seuls) ; aucune -> une entrée
+/// sans classe.
 #[cfg(test)]
 pub(crate) fn antidater_la_ligne_dite(conn: &Connection, id: i64, nature: NatureDeLigneDite, dite_a: i64) {
-    let cle = ((conn.path().unwrap_or("").to_string(), id), nature);
-    PEREMPTIONS_NON_COMPILABLES_DITES.get_or_init(Default::default).lock().insert(cle, dite_a);
+    let base = (conn.path().unwrap_or("").to_string(), id);
+    let mut registre = PEREMPTIONS_NON_COMPILABLES_DITES.get_or_init(Default::default).lock();
+    let mut vues = 0;
+    for (cle, a) in registre.iter_mut() {
+        if cle.0 == base && cle.1 == nature {
+            *a = dite_a;
+            vues += 1;
+        }
+    }
+    if vues == 0 {
+        registre.insert((base, nature, None), dite_a);
+    }
 }
 
 /// L'instant de la dernière ligne dite d'un panneau, `None` si aucune (témoins seuls).
 #[cfg(test)]
 pub(crate) fn peremption_dite_a(conn: &Connection, id: i64) -> Option<i64> {
-    let cle = ((conn.path().unwrap_or("").to_string(), id), NatureDeLigneDite::ChargePerimeeNonCompilable);
+    let cle = ((conn.path().unwrap_or("").to_string(), id), NatureDeLigneDite::ChargePerimeeNonCompilable, None);
     PEREMPTIONS_NON_COMPILABLES_DITES.get_or_init(Default::default).lock().get(&cle).copied()
 }
 
 /// `P10.32-o` (vague BK) — À LA DESTRUCTION D'UN TENANT, les entrées de sa base sont effacées des deux registres de
-/// processus indexés par le chemin de la base (refus d'écriture du cache, lignes `[panel]` dites, toutes natures) : un tenant DÉTRUIT
-/// puis recréé au même chemin n'hérite ni d'un refus (503 `cache_non_ecrit` sans calcul armé jusqu'à une durée du cache)
-/// ni d'une ligne tue. La clé est le chemin tel que SQLite le nomme (`conn.path()`, absolu, liens résolus selon la version)
-/// alors que `tenant_destroy` lit le chemin écrit dans le plan de contrôle : les formes comparées sont ce chemin tel quel
+/// processus indexés par le chemin de la base (refus d'écriture du cache, lignes `[panel]` dites, toutes natures et
+/// classes) : un tenant DÉTRUIT puis recréé au même chemin n'hérite ni d'un refus (503 `cache_non_ecrit` sans calcul
+/// armé jusqu'à une durée du cache), ni d'une ligne tue. Les causes observées ne sont pas un registre de processus
+/// ([`CAUSES_OBSERVEES_PAR_CE_FIL`]) : rien à en effacer. La clé est le chemin tel
+/// que SQLite le nomme (`conn.path()`, absolu, liens résolus selon la version) alors que `tenant_destroy` lit le chemin écrit dans le plan de contrôle : les formes comparées sont ce chemin tel quel
 /// et sa forme résolue (`canonicalize` : `..` et liens résolus, un appel `realpath` sans descripteur ouvert sur la base),
 /// d'où l'appel AVANT la suppression du fichier (un fichier absent n'a plus de forme résolue, seul le chemin tel quel
 /// reste comparé). Les entrées des autres bases restent.
@@ -1224,7 +1336,7 @@ pub(crate) fn oublier_les_registres_d_une_base_detruite(db_path: &str) {
     let mut formes: Vec<String> = vec![db_path.to_string()];
     formes.extend(std::fs::canonicalize(db_path).ok().map(|c| c.to_string_lossy().into_owned()));
     ECRITURES_DE_CACHE_REFUSEES.get_or_init(Default::default).lock().retain(|(base, ..), _| !formes.contains(base));
-    PEREMPTIONS_NON_COMPILABLES_DITES.get_or_init(Default::default).lock().retain(|((base, _), _), _| !formes.contains(base));
+    PEREMPTIONS_NON_COMPILABLES_DITES.get_or_init(Default::default).lock().retain(|((base, _), ..), _| !formes.contains(base));
 }
 
 /// `P10.32-o` (vague BH) — l'instant du dernier refus d'écriture de cette ligne de cache, si la dernière écriture tentée a
@@ -1273,7 +1385,9 @@ pub(crate) enum LectureDeCache {
 
 /// Lit un payload SANS prédicat de fraîcheur, en QUATRE issues (`LectureDeCache`). Les deux issues ratées sont comptées
 /// (`LECTURES_DE_CACHE_REFUSEES`) ; la cause rendue nomme l'erreur (texte et code étendu du moteur : l'énoncé lu est la
-/// constante `SQL_LIRE`, jamais la requête du panneau) et le rang du compte. Aucune ligne de journal ICI : chaque
+/// constante `SQL_LIRE`, jamais la requête du panneau) et le rang du compte. Une ligne illisible note aussi la classe de
+/// sa cause ([`classe_de_la_cause`], famille [`FamilleDeCause::LectureIllisible`]), que lit la borne des lignes dites.
+/// Aucune ligne de journal ICI : chaque
 /// appelant dit, à SA ligne, ce qu'il fait réellement de l'issue (servir comme un MISS, ne rien écrire, remplacer).
 pub(crate) fn cache_lire_dit(conn: &Connection, id: i64, range_key: &str, q_fp: &str) -> LectureDeCache {
     use rusqlite::OptionalExtension;
@@ -1289,7 +1403,10 @@ pub(crate) fn cache_lire_dit(conn: &Connection, id: i64, range_key: &str, q_fp: 
             match e {
                 rusqlite::Error::InvalidColumnType(..)
                 | rusqlite::Error::FromSqlConversionFailure(..)
-                | rusqlite::Error::IntegralValueOutOfRange(..) => LectureDeCache::Illisible(cause),
+                | rusqlite::Error::IntegralValueOutOfRange(..) => {
+                    noter_la_cause_observee(conn, id, FamilleDeCause::LectureIllisible, classe_de_la_cause(&e));
+                    LectureDeCache::Illisible(cause)
+                }
                 _ => LectureDeCache::NonLue(cause),
             }
         }

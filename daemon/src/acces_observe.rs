@@ -187,10 +187,20 @@ pub(crate) fn consigner_l_acces(st: &AppState, tenant: &str, nom: &str, role_eff
     if !doit_consigner(tenant, nom, provenance_presumee, maintenant) {
         return;
     }
+    // Jamais d'écriture dans la base d'un autre. `P10.20-b` — trois issues : tenant non servable (absent, suspendu,
+    // clé non résolue, schéma refusé) -> rien n'est écrit, comme avant ; ligne du catalogue NON LUE -> rien n'est
+    // écrit non plus, mais la cause est la sienne, dite au journal avec celle du moteur (jamais le nom du compte).
     let handle = if st.multi_tenant {
-        match st.tenants.handle_for(tenant) {
-            Some(h) => h,
-            None => return, // tenant non résoluble : jamais d'écriture dans la base d'un autre
+        match st.tenants.handle_for_lu(tenant) {
+            Ok(Some(h)) => h,
+            Ok(None) => return,
+            Err(e) => {
+                eprintln!(
+                    "[acces_observe] tenant '{tenant}' : ligne du catalogue des tenants NON LUE ({e}) -> accès par « {methode} » \
+                     NON inscrit à l'inventaire, ni dans sa base ni dans celle d'un autre"
+                );
+                return;
+            }
         }
     } else {
         st.db.clone()

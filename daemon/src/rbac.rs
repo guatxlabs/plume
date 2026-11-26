@@ -1388,8 +1388,18 @@ fn poser_l_evenement_du_tenant(st: &AppState, superadmin: &str, tenant: &str, wr
         DecisionDeFenetre::Reservee(jeton) => jeton,
     };
     let trace_du_tenant = if write { TRACE_OPERATEUR_TENANT_ECRITURE } else { TRACE_OPERATEUR_TENANT_LECTURE };
-    let Some(handle) = st.tenants.handle_for(tenant) else {
-        return perdre_la_trace_du_tenant(superadmin, tenant, jeton, trace_du_tenant, "base du tenant non résoluble au moment de l'écriture");
+    // `P10.20-b` — trois issues, une seule conduite (la trace du tenant est perdue, comptée, la réservation oubliée ;
+    // rien n'est écrit dans une autre base) : seule la cause diffère, et une ligne du catalogue NON LUE n'est plus
+    // comptée sous « base non résoluble ».
+    let handle = match st.tenants.handle_for_lu(tenant) {
+        Ok(Some(handle)) => handle,
+        Ok(None) => {
+            return perdre_la_trace_du_tenant(superadmin, tenant, jeton, trace_du_tenant, "base du tenant non résoluble au moment de l'écriture")
+        }
+        Err(e) => {
+            let cause = format!("ligne du catalogue des tenants NON LUE au moment de l'écriture ({e})");
+            return perdre_la_trace_du_tenant(superadmin, tenant, jeton, trace_du_tenant, &cause);
+        }
     };
     let conn = handle.lock();
     let (sev, action, msg) = if write {
@@ -1749,9 +1759,21 @@ pub(crate) fn refuser_le_geste_sans_anti_verrouillage_lu(cause_du_moteur: &str) 
 /// refusait l'`INSERT` laissait la réponse et le journal de contrôle dire le geste, pendant que le tenant ne le
 /// voyait jamais dans ses propres événements, sans un mot nulle part. L'appelant consomme l'issue et l'AVOUE à
 /// côté du succès (`avouer_l_evenement_du_tenant_non_ecrit`) : le geste est fait, il n'est jamais annulé.
+///
+/// `P10.20-b` — une ligne du catalogue NON LUE n'est plus rendue comme une base non servie (`SansBaseServie`, dont la
+/// phrase affirme que la base de ce tenant n'est pas servie) : elle rend `CatalogueNonLu`, avoué sous sa phrase à elle,
+/// et la cause du moteur va au journal du démon seul.
 pub(crate) fn audit_tenant_event(st: &AppState, tenant: &str, action: &str, sev: i64, msg: &str, detail: Value) -> EvenementDAuditDuTenant {
-    let Some(handle) = st.tenants.handle_for(tenant) else {
-        return EvenementDAuditDuTenant::SansBaseServie;
+    let handle = match st.tenants.handle_for_lu(tenant) {
+        Ok(Some(handle)) => handle,
+        Ok(None) => return EvenementDAuditDuTenant::SansBaseServie,
+        Err(e) => {
+            eprintln!(
+                "[tenants] WARN événement d'audit '{action}' NON écrit : ligne du catalogue des tenants NON LUE pour '{tenant}' \
+                 ({e}) -> aucune base servie à cet événement, ni la sienne ni celle d'un autre"
+            );
+            return EvenementDAuditDuTenant::CatalogueNonLu;
+        }
     };
     audit_tenant_event_sur(&handle, action, sev, msg, detail)
 }
@@ -1798,6 +1820,10 @@ pub(crate) enum EvenementDAuditDuTenant {
     /// (`avouer_l_evenement_du_tenant_non_ecrit`) — le tenant ne verra pas ce geste parmi ses événements, même servi
     /// de nouveau.
     SansBaseServie,
+    /// `P10.20-b` — la ligne du tenant au catalogue n'a pas pu être relue pour lui servir sa base : l'événement n'est
+    /// pas écrit, sans que rien n'établisse que la base n'est pas servie. Avoué sous la même clé, par sa phrase à elle
+    /// (`tenants::CAUSE_EVENEMENT_DU_TENANT_CATALOGUE_NON_LU`) ; la cause du moteur est au journal du démon.
+    CatalogueNonLu,
     /// La base du tenant n'a pas pris l'événement. La cause du moteur est écrite au journal du démon, jamais
     /// dans un corps de réponse.
     Perdu,
@@ -1824,13 +1850,17 @@ pub(crate) const CAUSE_EVENEMENT_DU_TENANT_NON_ECRIT: &str =
 /// `P10.21-m` — POSE L'AVEU D'UN ÉVÉNEMENT DE TENANT PERDU À CÔTÉ D'UN SUCCÈS. Rien sur le chemin nominal (`Ecrit`).
 /// `P10.30-d` — une base NON SERVIE (`SansBaseServie`) est avouée sous la même clé, par sa phrase à elle
 /// (`tenants::CAUSE_EVENEMENT_DU_TENANT_SANS_BASE_SERVIE` : ce n'est pas une écriture refusée). Les deux issues
-/// s'excluent : une seule phrase est posée. C'est ici, et non à chaque geste, pour que la création d'un tenant
+/// s'excluent : une seule phrase est posée. `P10.20-b` — une ligne du catalogue non lue (`CatalogueNonLu`) aussi, sous
+/// la même clé et par sa phrase à elle (`tenants::CAUSE_EVENEMENT_DU_TENANT_CATALOGUE_NON_LU`) : les trois issues
+/// s'excluent de même. C'est ici, et non à chaque geste, pour que la création d'un tenant
 /// l'avoue sans changer la forme de son corps `201`, que le harnais de la console relit.
 pub(crate) fn avouer_l_evenement_du_tenant_non_ecrit(corps: &mut Value, evenement: &EvenementDAuditDuTenant) {
     if evenement.est_perdu() {
         corps[CLE_EVENEMENT_DU_TENANT_NON_ECRIT] = json!(CAUSE_EVENEMENT_DU_TENANT_NON_ECRIT);
     } else if matches!(evenement, EvenementDAuditDuTenant::SansBaseServie) {
         corps[CLE_EVENEMENT_DU_TENANT_NON_ECRIT] = json!(crate::tenants::CAUSE_EVENEMENT_DU_TENANT_SANS_BASE_SERVIE);
+    } else if matches!(evenement, EvenementDAuditDuTenant::CatalogueNonLu) {
+        corps[CLE_EVENEMENT_DU_TENANT_NON_ECRIT] = json!(crate::tenants::CAUSE_EVENEMENT_DU_TENANT_CATALOGUE_NON_LU);
     }
 }
 

@@ -236,7 +236,20 @@ pub(crate) async fn pubsub_ingest_post(
     //    VIVANTE de CE type. Connecteur supprimé / mauvais type -> 403 (binding cassé, fail-closed). `P10.20-b` :
     //    lecture du connecteur ratée -> 503 nommé (TRANSITOIRE, Pub/Sub rejoue), jamais le 403 d'un binding cassé ;
     //    cause du moteur au journal seul, aucun repli. Lecture partagée : `connecteur_push_lie_lu` (firehose.rs).
-    let handle = st.tenants.handle_for(&ident.tenant).unwrap_or_else(|| st.db.clone());
+    //    La base est celle du tenant porteur, jamais celle du processus à sa place (`base_de_la_livraison_push_lu`,
+    //    firehose.rs) : tenant non servable -> le 403 d'une source qui n'est plus vivante ; ligne du catalogue non
+    //    lue -> 503 nommé, Pub/Sub rejoue. Ces deux bras sont HORS D'ATTEINTE par la route aujourd'hui (aucune clé push
+    //    en mode multi-tenant, cf. la doc de la fonction).
+    let handle = match base_de_la_livraison_push_lu(&st, &ident.tenant) {
+        BaseDeLaLivraisonPush::Servie(handle) => handle,
+        BaseDeLaLivraisonPush::NonServable => {
+            return err_json(StatusCode::FORBIDDEN, "delivery token not bound to a live push source")
+        }
+        BaseDeLaLivraisonPush::CatalogueNonLu(cause) => {
+            eprintln!("[ingest] WARN tenant d'une clé Pub/Sub : ligne du catalogue des tenants NON LUE, livraison refusée : {cause}");
+            return err_json(StatusCode::SERVICE_UNAVAILABLE, crate::rbac::CAUSE_CATALOGUE_DES_TENANTS_NON_LU);
+        }
+    };
     let lu = connecteur_push_lie_lu(&handle.lock(), ident.connector_id);
     let (ctype, cfg_json, env_id): (String, String, String) = match lu {
         Ok(Some(x)) => x,

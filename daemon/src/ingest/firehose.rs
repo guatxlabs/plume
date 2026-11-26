@@ -90,6 +90,37 @@ pub(crate) fn connecteur_push_lie_lu(
     .optional()
 }
 
+/// `P10.20-b` — LA BASE OÙ LIRE LE CONNECTEUR LIÉ D'UNE LIVRAISON PUSH, en TROIS issues. Avant, les deux récepteurs
+/// écrivaient `handle_for(tenant).unwrap_or_else(|| st.db.clone())` : un tenant non servable, ou dont la ligne du
+/// catalogue n'a pas été lue, aurait fait lire le connecteur DANS LA BASE DU PROCESSUS, par son seul identifiant.
+#[derive(Debug)]
+pub(crate) enum BaseDeLaLivraisonPush {
+    /// La base du tenant porteur (mode 0 : le writer du processus, à l'octet comme avant, aucun catalogue lu).
+    Servie(Arc<Mutex<rusqlite::Connection>>),
+    /// Tenant absent, suspendu, clé non résolue ou schéma refusé : refusé comme une clé dont la source n'est plus
+    /// vivante (403), rien au spool.
+    NonServable,
+    /// La ligne du catalogue n'a pas été lue : refus PASSAGER (503 nommé, le flux amont rejoue), rien au spool. La
+    /// cause du moteur va au journal seul.
+    CatalogueNonLu(rusqlite::Error),
+}
+
+/// Partagée par les deux récepteurs push. JAMAIS la base du processus à la place de celle du tenant : la seule base
+/// servie sort de `handle_for_lu`.
+///
+/// HORS D'ATTEINTE AUJOURD'HUI, PAR LA ROUTE, POUR `NonServable` ET `CatalogueNonLu` : `push_token_connector_lu`
+/// (state.rs) rend `Absent` dès qu'un plan de contrôle existe, si bien qu'en mode multi-tenant la livraison est
+/// refusée à la clé (Firehose 403, Pub/Sub 401) avant cet appel, et que le tenant porteur vaut toujours `default`.
+/// Les deux bras gardent la règle si les clés push s'ouvrent un jour au mode multi-tenant ; leurs témoins appellent
+/// cette fonction directement.
+pub(crate) fn base_de_la_livraison_push_lu(st: &AppState, tenant: &str) -> BaseDeLaLivraisonPush {
+    match st.tenants.handle_for_lu(tenant) {
+        Ok(Some(handle)) => BaseDeLaLivraisonPush::Servie(handle),
+        Ok(None) => BaseDeLaLivraisonPush::NonServable,
+        Err(cause) => BaseDeLaLivraisonPush::CatalogueNonLu(cause),
+    }
+}
+
 /// Décode le champ `data` (base64) d'UN record Firehose -> liste d'enregistrements CIM-mappables. Le blob décodé
 /// peut être : un objet JSON unique, des objets JSON CONCATÉNÉS `{…}{…}`, du ND-JSON, un array top-level (couverts
 /// par `hec_parse_body`), OU une enveloppe CloudTrail `{"Records":[…]}` (aplatie par `httppull_records` selon le
@@ -185,8 +216,20 @@ pub(crate) async fn firehose_ingest_post(
     //    RE-VÉRIFIE type='aws_firehose' : une clé ne peut être honorée que si son binding pointe une source push
     //    VIVANTE (connecteur supprimé / mauvais type -> 403, jamais un mapping arbitraire). `P10.20-b` : lecture
     //    du connecteur ratée -> 503 nommé (le stream rejoue), jamais le 403 d'un binding cassé ; cause du moteur au
-    //    journal seul, aucun repli.
-    let handle = st.tenants.handle_for(&ident.tenant).unwrap_or_else(|| st.db.clone());
+    //    journal seul, aucun repli. La base est celle du tenant porteur, jamais celle du processus à sa place
+    //    (`base_de_la_livraison_push_lu`) : tenant non servable -> le 403 d'une source qui n'est plus vivante ;
+    //    ligne du catalogue non lue -> 503 nommé, le stream rejoue. Ces deux bras sont HORS D'ATTEINTE par la route
+    //    aujourd'hui (aucune clé push en mode multi-tenant, cf. la doc de la fonction).
+    let handle = match base_de_la_livraison_push_lu(&st, &ident.tenant) {
+        BaseDeLaLivraisonPush::Servie(handle) => handle,
+        BaseDeLaLivraisonPush::NonServable => {
+            return firehose_err(StatusCode::FORBIDDEN, &request_id, "delivery key not bound to a live push source")
+        }
+        BaseDeLaLivraisonPush::CatalogueNonLu(cause) => {
+            eprintln!("[ingest] WARN tenant d'une clé Firehose : ligne du catalogue des tenants NON LUE, livraison refusée : {cause}");
+            return firehose_err(StatusCode::SERVICE_UNAVAILABLE, &request_id, crate::rbac::CAUSE_CATALOGUE_DES_TENANTS_NON_LU);
+        }
+    };
     let lu = connecteur_push_lie_lu(&handle.lock(), ident.connector_id);
     let (ctype, cfg_json, env_id): (String, String, String) = match lu {
         Ok(Some(x)) => x,

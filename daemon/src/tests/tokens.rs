@@ -634,7 +634,7 @@
         // (0) ITÉRATION + SKIP FAIL-CLOSED : for_each_active_tenant visite A et B, jamais 'x' (clé vault non
         //     résoluble), jamais 'default' (mode 1). On collecte les (tenant, db_path) visités.
         let mut visited: Vec<(String, String)> = Vec::new();
-        for_each_active_tenant(&st.tenants, |tid, _h, dbp| visited.push((tid.to_string(), dbp.to_string())));
+        let _ = for_each_active_tenant(&st.tenants, |tid, _h, dbp| visited.push((tid.to_string(), dbp.to_string())));
         let ids: Vec<&str> = visited.iter().map(|(t, _)| t.as_str()).collect();
         assert!(ids.contains(&"a") && ids.contains(&"b"), "for_each_active_tenant itère A et B : {ids:?}");
         assert!(!ids.contains(&"x"), "tenant 'x' (clé vault non résoluble) SKIP fail-closed : {ids:?}");
@@ -660,7 +660,7 @@
             let c = hb.lock();
             c.execute("INSERT INTO event(ts,source,message) VALUES(?1,'web','B-evt')", params![now()]).unwrap();
         }
-        for_each_active_tenant(&st.tenants, |_tid, handle, db_path| {
+        let _ = for_each_active_tenant(&st.tenants, |_tid, handle, db_path| {
             run_due_rules(handle, db_path);
         });
         let alerts_a: i64 = st.tenants.handle_for("a").unwrap().lock()
@@ -686,7 +686,7 @@
             c.execute("INSERT INTO setting(scope,key,value) VALUES('global','retention_days','3650')", []).unwrap();
             c.execute("INSERT INTO event(ts,source,message) VALUES(?1,'old','B-OLD')", params![old_ts]).unwrap();
         }
-        for_each_active_tenant(&st.tenants, |_tid, handle, _db_path| {
+        let _ = for_each_active_tenant(&st.tenants, |_tid, handle, _db_path| {
             retention_run(handle);
         });
         let old_a: i64 = st.tenants.handle_for("a").unwrap().lock()

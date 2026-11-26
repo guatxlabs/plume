@@ -116,6 +116,15 @@ pub(crate) fn tick_aveugle_par_transaction_orpheline_aux_ecritures(boucle: &'sta
     }
 }
 
+/// Le bilan d'un corps de tick qui a PANIQUÉ, rendu tel quel par un corps (`server::boucles_de_fond::
+/// tour_des_tenants_sous_bilan`) ou absorbé par `BilanDuPlanificateur::panique` : le même aveu, écrit une fois.
+pub(crate) fn corps_qui_a_panique(tenant: &str) -> BilanDeTick {
+    Mesure::Illisible {
+        cause: CAUSE_SOURCE_ILLISIBLE,
+        detail: format!("tenant {tenant} : le corps du tick a paniqué, le reste des familles n'a pas été évalué"),
+    }
+}
+
 /// LE BILAN D'UN TICK DU PLANIFICATEUR, toutes familles et tous tenants confondus. Additif : chaque
 /// famille y verse son bilan, et le résultat reste ILLISIBLE dès qu'une seule l'a été — la première
 /// cause est conservée, le détail accumule les familles aveugles.
@@ -139,10 +148,7 @@ impl BilanDuPlanificateur {
     /// Un corps de tick qui a PANIQUÉ (capturé par le planificateur) n'a rien évalué de ce qu'il
     /// restait à faire : c'est un tick aveugle, pas un tick calme.
     pub(crate) fn panique(&mut self, tenant: &str) {
-        self.absorber(Mesure::Illisible {
-            cause: CAUSE_SOURCE_ILLISIBLE,
-            detail: format!("tenant {tenant} : le corps du tick a paniqué, le reste des familles n'a pas été évalué"),
-        });
+        self.absorber(corps_qui_a_panique(tenant));
     }
 
     /// Le même bilan, au format d'UNE famille — pour une boucle qui absorbe des sous-bilans (une

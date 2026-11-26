@@ -302,7 +302,7 @@ mod dispatch_marqueur_avant_envoi_et_tenant_du_tour {
         let aveugles: HashMap<&str, Arc<Mutex<Connection>>> =
             [(AW6_TENANT_A, aw6_base_aveugle(6613)), (AW6_TENANT_B, aw6_base_aveugle(6623))].into_iter().collect();
         let mut visites = Vec::new();
-        for_each_active_tenant(&mgr, |tid, handle, db_path| {
+        let _ = for_each_active_tenant(&mgr, |tid, handle, db_path| {
             visites.push(tid.to_string());
             eprintln!("{AW6_PHASE}{tid}");
             dispatch_notifications(handle);
@@ -315,14 +315,14 @@ mod dispatch_marqueur_avant_envoi_et_tenant_du_tour {
         crate::metrics::compter_un_tick_aveugle("aw6_hors_tour", "cause aw6");
         eprintln!("{AW6_PHASE}panique");
         let paniquee = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            for_each_active_tenant(&mgr, |_tid, _h, _p| panic!("panique aw6"));
+            let _ = for_each_active_tenant(&mgr, |_tid, _h, _p| panic!("panique aw6"));
         }));
         println!("{AW6_OBS}panique:{}", paniquee.is_err());
         crate::metrics::compter_un_tick_aveugle("aw6_apres_panique", "cause aw6");
         eprintln!("{AW6_PHASE}emboite");
         {
             let _externe = crate::metrics::nommer_le_tenant_du_tour("t-aw6-externe");
-            for_each_active_tenant(&mgr, |_tid, _h, _p| {});
+            let _ = for_each_active_tenant(&mgr, |_tid, _h, _p| {});
             crate::metrics::compter_un_tick_aveugle("aw6_emboite", "cause aw6");
         }
         eprintln!("{AW6_PHASE}mode0");
@@ -335,7 +335,7 @@ mod dispatch_marqueur_avant_envoi_et_tenant_du_tour {
             writers: Arc::new(Mutex::new(HashMap::new())),
         };
         let aveugle0 = aw6_base_aveugle(6633);
-        for_each_active_tenant(&mgr0, |tid, handle, db_path| {
+        let _ = for_each_active_tenant(&mgr0, |tid, handle, db_path| {
             println!("{AW6_OBS}mode0_tenant:{tid}");
             dispatch_notifications(handle);
             dispatch_notifications(&aveugle0);

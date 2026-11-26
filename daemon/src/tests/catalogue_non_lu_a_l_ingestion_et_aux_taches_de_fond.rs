@@ -34,11 +34,10 @@
 // `default`) ; `CJ6_REQ_DB_MUET`, `CJ6_REQ_PATH_MUET`, `CJ6_HANDLE_MUET` (chaque ligne du chemin requête et de
 // la projection retirée) ; `CJ6_PLAFOND_STRICT`, `CJ6_SANS_PLAFOND` (la borne du mémo).
 //
-// CE QUE CES TÉMOINS NE TIENNENT PAS : la liste des tenants actifs de `for_each_active_tenant` (`SELECT id FROM
-// tenant WHERE suspended=0`) rend encore une liste VIDE sur une lecture ratée, sans un mot (aucune ligne n'est donc
-// dite quand la table entière est illisible) ; les appelants de `handle_for` hors de `state.rs` (accès observé,
-// traces d'opérateur, événement d'audit du tenant, suspension, récepteurs Pub/Sub et Firehose) gardent leur
-// conduite à deux issues, la projection la dit seulement au journal.
+// CE QUE CES TÉMOINS NE TIENNENT PAS : la liste des tenants actifs de `for_each_active_tenant`, lue en bloc, et les
+// derniers appelants de `handle_for` hors de `state.rs` (accès observé, traces d'opérateur, événement d'audit du
+// tenant, suspension, récepteurs Pub/Sub et Firehose), qui lisent désormais `handle_for_lu` — `handle_for` n'existe
+// plus que pour les témoins : tenus par `catalogue_non_lu_aux_derniers_appelants_de_la_projection.rs`.
 // =====================================================================================
 mod catalogue_non_lu_a_l_ingestion_et_aux_taches_de_fond {
     use super::*;
@@ -298,7 +297,7 @@ mod catalogue_non_lu_a_l_ingestion_et_aux_taches_de_fond {
         ];
         let parcours = |st: &AppState| {
             let mut vus: Vec<(String, String)> = Vec::new();
-            for_each_active_tenant(&st.tenants, |tid, _h, p| vus.push((tid.to_string(), p.to_string())));
+            let _ = for_each_active_tenant(&st.tenants, |tid, _h, p| vus.push((tid.to_string(), p.to_string())));
             vus
         };
         assert_eq!(parcours(&st), tous, "contrôle : les trois tenants, chacun sur sa base");
@@ -439,7 +438,7 @@ mod catalogue_non_lu_a_l_ingestion_et_aux_taches_de_fond {
         phase(2);
         assert_eq!(ingest_once(&st.tenants, &st.spool), crate::mesure_environnement::Mesure::Lue(2), "enfant : les deux lots de A, encore");
         phase(3);
-        for_each_active_tenant(&st.tenants, |_, _, _| {});
+        let _ = for_each_active_tenant(&st.tenants, |_, _, _| {});
         let _ = req_db(&st, &au);
         let _ = req_db_path(&st, &au);
         assert!(st.tenants.handle_for(CJ6_A).is_none(), "enfant : la projection ne sert rien");

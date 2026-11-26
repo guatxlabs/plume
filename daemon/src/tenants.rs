@@ -729,7 +729,21 @@ pub(crate) async fn tenant_set_suspended(st: &AppState, au: &AuthUser, id: &str,
     // résolue tant qu'elle est active (après la bascule elle ne se résout plus) ; mais l'événement ne
     // s'écrit qu'une fois la bascule ÉCRITE : posé avant, il disait « suspendu » au tenant sur une
     // bascule que la base pouvait refuser.
-    let poignee_avant_suspension = if suspend { st.tenants.handle_for(id) } else { None };
+    // `P10.20-b` — une ligne du catalogue NON LUE au moment de prendre cette poignée n'est pas une base qui « ne se
+    // résolvait déjà pas » : prise pour telle, la bascule passait et l'événement, cherché après elle, ne trouvait plus
+    // de base servie — perdu alors qu'il pouvait être écrit. La bascule est REFUSÉE, avant toute écriture et toute
+    // trace, sous la cause d'un tenant non lu à la bascule (la console la lit déjà) ; le geste se rejoue.
+    let poignee_avant_suspension = if suspend {
+        match st.tenants.handle_for_lu(id) {
+            Ok(poignee) => poignee,
+            Err(e) => {
+                eprintln!("[tenants] WARN tenant '{id}' : ligne du catalogue des tenants NON LUE avant la bascule de suspension (poignée de sa base) : {e}");
+                return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_TENANT_NON_LU_BASCULE_NON_FAITE);
+            }
+        }
+    } else {
+        None
+    };
     let bascule = {
         let conn = cp.conn.lock();
         EcritureDuPlanDeControle::from(conn.execute("UPDATE tenant SET suspended=?1 WHERE id=?2", params![i64::from(suspend), id]))
@@ -1021,6 +1035,16 @@ pub(crate) const CAUSE_EVENEMENT_DU_TENANT_SANS_BASE_SERVIE: &str =
      servie (un tenant suspendu ne l'est pas) — l'événement d'audit qui le lui montre n'y est pas écrit, et ce tenant ne \
      verra pas ce changement parmi ses propres événements, même une fois servi de nouveau.";
 
+/// `P10.20-b` — CE QU'UN SUCCÈS DIT QUAND LA LIGNE DU TENANT AU CATALOGUE N'A PAS PU ÊTRE RELUE POUR ÉCRIRE L'ÉVÉNEMENT
+/// (`EvenementDAuditDuTenant::CatalogueNonLu`). Ni `CAUSE_EVENEMENT_DU_TENANT_SANS_BASE_SERVIE` (rien n'établit que la
+/// base n'est pas servie), ni `CAUSE_EVENEMENT_DU_TENANT_NON_ECRIT` (sa base n'a rien refusé : aucune écriture n'y a été
+/// tentée). Même clé (`CLE_EVENEMENT_DU_TENANT_NON_ECRIT`), posée par `avouer_l_evenement_du_tenant_non_ecrit` (rbac.rs) ;
+/// la cause du moteur est au journal du démon seul.
+pub(crate) const CAUSE_EVENEMENT_DU_TENANT_CATALOGUE_NON_LU: &str =
+    "ÉVÉNEMENT DU TENANT NON ÉCRIT : le geste d'administration a bien eu lieu, mais le plan de contrôle n'a pas pu relire \
+     la ligne de ce tenant pour lui servir sa base — l'événement d'audit qui le lui montre n'y a pas été écrit, et ce \
+     tenant ne verra pas ce changement parmi ses propres événements. Refaire le geste ne le comble pas : signalez-le.";
+
 /// `P10.21-g` — LE RETRAIT DE DROIT QUE LA BASE N'A PAS PRIS EST REFUSÉ : 503, et l'accès N'EST PAS
 /// retiré. La phrase le dit en tête, parce que c'est la lecture qui compte pour un retrait d'accès.
 pub(crate) const CAUSE_RETRAIT_DE_DROIT_NON_ECRIT: &str =
@@ -1138,9 +1162,10 @@ pub(crate) async fn grant_delete(State(st): State<AppState>, Extension(au): Exte
     // retrait ET le trou. Refuser serait faux : le grant est déjà retiré.
     // `P10.21-m` — un événement du tenant PERDU force aussi le deux cents : le 204 ne peut pas l'avouer.
     // `P10.30-d` — une base du tenant NON SERVIE aussi (tenant suspendu) : l'événement n'y est pas écrit, c'est dit.
+    // `P10.20-b` — et une ligne du catalogue non relue : toute issue autre que l'événement écrit force le deux cents.
     if evenement.est_perdu() {
         // Le corps qui avoue est posé plus bas, sous la même forme que l'aveu du maillon.
-    } else if matches!(evenement, EvenementDAuditDuTenant::SansBaseServie) {
+    } else if !matches!(evenement, EvenementDAuditDuTenant::Ecrit) {
     } else if maillon.cause_de_non_inscription().is_none() {
         return StatusCode::NO_CONTENT.into_response();
     }

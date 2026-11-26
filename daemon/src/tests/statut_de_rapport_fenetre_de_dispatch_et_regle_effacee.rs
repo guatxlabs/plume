@@ -196,7 +196,7 @@ mod statut_de_rapport_fenetre_de_dispatch_et_regle_effacee {
         let tmp_mt = crate::tmp_possede::TmpPossede::neuf("ax4-mode-multi-tenant");
         let mgr = ax4_mode_multi_tenant(&tmp_mt);
         let mut visites = Vec::new();
-        for_each_active_tenant(&mgr, |tid, handle, db_path| {
+        let _ = for_each_active_tenant(&mgr, |tid, handle, db_path| {
             visites.push(tid.to_string());
             eprintln!("{AX4_PHASE}{tid}");
             let bilan = run_due_reports(handle, db_path);
@@ -212,7 +212,7 @@ mod statut_de_rapport_fenetre_de_dispatch_et_regle_effacee {
             control: None,
             writers: Arc::new(Mutex::new(HashMap::new())),
         };
-        for_each_active_tenant(&mgr0, |tid, handle, db_path| {
+        let _ = for_each_active_tenant(&mgr0, |tid, handle, db_path| {
             eprintln!("{AX4_PHASE}mode0");
             println!("{AX4_OBS}mode0_tenant:{tid}");
             let bilan = run_due_reports(handle, db_path);

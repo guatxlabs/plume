@@ -278,27 +278,43 @@ fn spawn_ingest_loop(mgr: TenantDbManager, spool: String) {
         });
 }
 
+/// `P10.20-b` — UN TOUR DE BOUCLE DE FOND SUR TOUS LES TENANTS, ET SON BILAN PUBLIÉ : le bilan de chaque corps, PLUS
+/// celui du parcours lui-même. Une liste des tenants actifs non lue n'appelle aucun corps : sans l'aveu du parcours, le
+/// bilan publié valait `Lue(0)` — « tout ce qui était dû a été évalué » — et la santé restait verte sur un tour où
+/// rien n'avait tourné. Le bilan est publié APRÈS le parcours (la forme des boucles voisines) et rendu à l'appelant.
+pub(crate) fn tour_des_tenants_sous_bilan(
+    tenants: &TenantDbManager,
+    boucle: &'static str,
+    mut corps: impl FnMut(&str, &Arc<Mutex<Connection>>, &str) -> crate::bilan_de_tick::BilanDeTick,
+) -> crate::mesure_environnement::Mesure<u64> {
+    let mut bilan = crate::bilan_de_tick::BilanDuPlanificateur::default();
+    let parcours = for_each_active_tenant(tenants, |tid, handle, db_path| bilan.absorber(corps(tid, handle, db_path)));
+    bilan.absorber(parcours);
+    let mesure = bilan.mesure();
+    crate::bilan_de_tick::publier(boucle, mesure.clone());
+    mesure
+}
+
 fn spawn_rule_scheduler(tenants: TenantDbManager) {
         std::thread::spawn(move || loop {
             // P4.1-r — LE BILAN DU TICK : chaque famille rend ce qu'elle a abandonné, ou l'aveu qu'elle n'a
             // pas pu lire sa liste ; le planificateur absorbe tout et PUBLIE avant de marquer son tick. Un
             // tick qui n'a rien évalué ne peut plus passer pour un tick calme sur la surface d'état.
-            let mut bilan = crate::bilan_de_tick::BilanDuPlanificateur::default();
-            for_each_active_tenant(&tenants, |tid, handle, db_path| {
+            // `P10.20-b` — la liste des tenants non lue y entre aussi (`tour_des_tenants_sous_bilan`).
+            let _ = tour_des_tenants_sous_bilan(&tenants, crate::bilan_de_tick::BOUCLE_REGLES, |tid, handle, db_path| {
                 // CONC-2 : corps PAR TENANT isolé par catch_unwind (symétrie avec les boucles connecteurs/
                 // destinations/rapports). Un panic dans l'évaluation d'une règle d'UN tenant est capturé -> les
                 // autres tenants continuent ET le fil planificateur SURVIT (sans ce garde, un panic tuerait le
                 // thread infini -> détection stoppée SILENCIEUSEMENT). Happy path INCHANGÉ.
                 let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| tick_de_detection_d_un_tenant(handle, db_path)));
                 match res {
-                    Ok(b) => bilan.absorber(b.bilan_de_tick()),
+                    Ok(b) => b.bilan_de_tick(),
                     Err(_) => {
-                        bilan.panique(tid);
                         eprintln!("[detect] panic capturé dans le tick de détection (tenant isolé) — planificateur préservé, on continue");
+                        crate::bilan_de_tick::corps_qui_a_panique(tid)
                     }
                 }
             });
-            crate::bilan_de_tick::publier(crate::bilan_de_tick::BOUCLE_REGLES, bilan.mesure());
             // #51 DAY-2 OPS : marque le tick du scheduler de règles (santé « détection » = ce tick récent).
             SCHED_RULE_TICKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             SCHED_RULE_LAST_TS.store(now(), std::sync::atomic::Ordering::Relaxed);
@@ -600,11 +616,10 @@ fn spawn_connector_tick(tenants: TenantDbManager) {
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_secs(45)); // après le bind + le 1er rollup
             loop {
-                let mut bilan = crate::bilan_de_tick::BilanDuPlanificateur::default();
-                for_each_active_tenant(&tenants, |_tid, handle, db_path| {
-                    bilan.absorber(run_due_connectors(handle, db_path));
+                // `P10.20-b` — la liste des tenants non lue entre au bilan publié (`tour_des_tenants_sous_bilan`).
+                let _ = tour_des_tenants_sous_bilan(&tenants, crate::bilan_de_tick::BOUCLE_CONNECTEURS, |_tid, handle, db_path| {
+                    run_due_connectors(handle, db_path)
                 });
-                crate::bilan_de_tick::publier(crate::bilan_de_tick::BOUCLE_CONNECTEURS, bilan.mesure());
                 std::thread::sleep(Duration::from_secs(15)); // granularité du scheduler
             }
         });
@@ -614,11 +629,10 @@ fn spawn_destination_tick(tenants: TenantDbManager) {
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_secs(50)); // après le bind + le 1er rollup (post-connecteurs)
             loop {
-                let mut bilan = crate::bilan_de_tick::BilanDuPlanificateur::default();
-                for_each_active_tenant(&tenants, |_tid, handle, db_path| {
-                    bilan.absorber(run_due_destinations(handle, db_path));
+                // `P10.20-b` — la liste des tenants non lue entre au bilan publié (`tour_des_tenants_sous_bilan`).
+                let _ = tour_des_tenants_sous_bilan(&tenants, crate::bilan_de_tick::BOUCLE_DESTINATIONS, |_tid, handle, db_path| {
+                    run_due_destinations(handle, db_path)
                 });
-                crate::bilan_de_tick::publier(crate::bilan_de_tick::BOUCLE_DESTINATIONS, bilan.mesure());
                 std::thread::sleep(Duration::from_secs(15)); // granularité du scheduler de sortie
             }
         });
@@ -679,7 +693,7 @@ pub(crate) fn passe_de_retention_sous_filet(
     passe: impl Fn(&Arc<Mutex<Connection>>, &str),
 ) -> crate::mesure_environnement::Mesure<u64> {
     let mut bilan = crate::bilan_de_tick::BilanDuPlanificateur::default();
-    for_each_active_tenant(tenants, |tid, handle, db_path| {
+    let parcours = for_each_active_tenant(tenants, |tid, handle, db_path| {
         // MÊME grain que `spawn_rule_scheduler` : PAR TENANT. Un panic sur la base d'un tenant n'empêche
         // pas les autres d'être purgés ni leur chaîne d'être ancrée.
         let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| passe(handle, db_path)));
@@ -692,6 +706,9 @@ pub(crate) fn passe_de_retention_sous_filet(
             );
         }
     });
+    // `P10.20-b` — une liste des tenants non lue n'a appelé aucune passe : sans son aveu, le bilan publié serait un
+    // `Lue(0)` sur un tour qui n'a ni purgé ni ancré personne.
+    bilan.absorber(parcours);
     let mesure = bilan.mesure();
     // APRÈS la passe, comme les quatre boucles voisines (`BOUCLE_INGEST`, `BOUCLE_REGLES`,
     // `BOUCLE_CONNECTEURS`, `BOUCLE_DESTINATIONS`, `BOUCLE_RAPPORTS`) : le bilan publié est celui du
@@ -718,11 +735,10 @@ fn spawn_report_tick(tenants: TenantDbManager) {
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_secs(55)); // après le bind + le 1er rollup (post-destinations)
             loop {
-                let mut bilan = crate::bilan_de_tick::BilanDuPlanificateur::default();
-                for_each_active_tenant(&tenants, |_tid, handle, db_path| {
-                    bilan.absorber(run_due_reports(handle, db_path));
+                // `P10.20-b` — la liste des tenants non lue entre au bilan publié (`tour_des_tenants_sous_bilan`).
+                let _ = tour_des_tenants_sous_bilan(&tenants, crate::bilan_de_tick::BOUCLE_RAPPORTS, |_tid, handle, db_path| {
+                    run_due_reports(handle, db_path)
                 });
-                crate::bilan_de_tick::publier(crate::bilan_de_tick::BOUCLE_RAPPORTS, bilan.mesure());
                 std::thread::sleep(Duration::from_secs(30)); // granularité du scheduler de rapports
             }
         });
@@ -744,7 +760,7 @@ fn spawn_rollup_loop(tenants: TenantDbManager, rollup_interval: u64, disk_warn_p
                 // P4.1-r — les incidents de risque sont une DÉTECTION qui tourne dans cette boucle-ci :
                 // leur bilan est publié à part, et la surface « détection » le lit avec celui des règles.
                 let mut bilan_risque = crate::bilan_de_tick::BilanDuPlanificateur::default();
-                for_each_active_tenant(&tenants, |tid, handle, db_path| {
+                let parcours = for_each_active_tenant(&tenants, |tid, handle, db_path| {
                     {
                         let c = handle.lock();
                         rollup_events(&c);
@@ -772,6 +788,8 @@ fn spawn_rollup_loop(tenants: TenantDbManager, rollup_interval: u64, disk_warn_p
                         freshness_map().lock().insert(db_path.to_string(), (Instant::now(), nv));
                     }
                 });
+                // `P10.20-b` — la liste des tenants non lue : aucun incident de risque évalué, dit par le bilan publié.
+                bilan_risque.absorber(parcours);
                 // GARDE-FOU #29 : alerte pré-saturation disque — UNE fois par tick (ressource HÔTE, pas
                 // par-tenant ; dedup horaire = 1 warn/heure). Mesure le volume de la base par défaut (même
                 // PVC que le spool). INERTE si seuil=0. Émis dans la base par défaut (posture host-wide).
@@ -825,7 +843,9 @@ pub(crate) fn spawn_panel_refresh_loop(tenants: TenantDbManager, refresh_sem: Ar
 /// témoin joue le site réel. `P10.29-l` — l'identifiant du tenant est passé à `cache_refresh_all_panels`, qui le nomme
 /// à chacune de ses lignes `[cache]` (avant, `_tid` était jeté et rien ne disait de quelle base venait l'échec).
 pub(crate) fn prechauffer_les_panneaux_de_chaque_tenant(tenants: &TenantDbManager, refresh_sem: &Arc<tokio::sync::Semaphore>) {
-    for_each_active_tenant(tenants, |tid, handle, db_path| {
+    // `P10.20-b` — aucune boucle de pré-chauffage ne publie de bilan : une liste des tenants non lue y est comptée parmi
+    // les balayages aveugles et dite au journal par le parcours, et les boucles qui publient la portent à la santé.
+    let _liste_non_lue_comptee_par_le_parcours = for_each_active_tenant(tenants, |tid, handle, db_path| {
         cache_refresh_all_panels(handle, db_path, refresh_sem, tid);
     });
 }
@@ -833,12 +853,10 @@ pub(crate) fn prechauffer_les_panneaux_de_chaque_tenant(tenants: &TenantDbManage
 // ==================================================================================================
 // `P10.7-w` — LE FILET DE LA BOUCLE QUI ANCRE, ÉPROUVÉ SUR UN INCIDENT FABRIQUÉ.
 //
-// POURQUOI CES TÉMOINS VIVENT ICI ET NON SOUS `src/tests/`. `mod boucles_de_fond;` est PRIVÉ dans
-// `server/mod.rs`, qui n'en réexporte que `spawn_background_jobs` : depuis `crate::tests`, ni
-// `passe_de_retention_sous_filet` ni `BOUCLE_RETENTION` ne sont NOMMABLES. Les y porter demanderait
-// une ligne `pub(crate) use boucles_de_fond::{…};` dans `server/mod.rs` — un fichier hors du
-// périmètre de ce lot. La garde DÉRIVÉE, elle, n'a besoin d'aucun item privé (elle lit la SOURCE) et
-// vit donc bien sous `src/tests/le_filet_de_la_boucle_qui_ancre.rs`.
+// POURQUOI CES TÉMOINS VIVENT ICI ET NON SOUS `src/tests/`. Ils publient et relisent tous le bilan de
+// la MÊME clé (`BOUCLE_RETENTION`) : ils se sérialisent sur `VERROU_DU_BILAN`, privé à ce module de
+// tests, et un témoin placé ailleurs leur volerait la clé en parallèle. La garde DÉRIVÉE, elle, ne
+// publie rien (elle lit la SOURCE) et vit sous `src/tests/le_filet_de_la_boucle_qui_ancre.rs`.
 //
 // AUCUN TÉMOIN CHRONOMÉTRIQUE : la boucle réelle dort 60 s puis 3600 s ; on ne l'attend pas, on
 // exerce SA PASSE avec un incident FABRIQUÉ. AUCUN TÉMOIN ADOSSÉ À UN DÉFAUT VIVANT : chacun asserte
@@ -978,6 +996,75 @@ mod filet_de_l_ancrage {
             "et l'aveu a été REMPLACÉ par le bilan de la passe saine : le canal est un ÉTAT, pas un \
              flux — un incident PERMANENT y reste rouge en permanence, un incident RÉSORBÉ s'efface"
         );
+    }
+
+    /// (W4) `P10.20-b` — MODE MULTI-TENANT, LISTE DES TENANTS NON LUE : LA MESURE RENDUE ET LA MESURE PUBLIÉE PORTENT
+    /// TOUTES DEUX L'AVEU, JAMAIS UN `Lue(0)`.
+    ///
+    /// POURQUOI ICI : ce témoin publie sous `BOUCLE_RETENTION`, la clé que (W1), (W2) et (W3) relisent ; il prend donc
+    /// `VERROU_DU_BILAN`, privé à ce module. Placé sous `src/tests/`, il se volerait la clé avec eux en parallèle.
+    ///
+    /// CE QU'IL TIENT : un plan de contrôle, deux tenants réels (chacun sa base). Un `Lue(0)` est publié d'abord : une
+    /// passe qui ne publierait rien laisserait ce zéro en place. Table des tenants retirée : aucune passe appelée, la
+    /// mesure rendue est l'aveu de la liste non lue (cause et détail entiers), la même est publiée, la surface la lit
+    /// ROUGE. Contrôle, table remise : la passe est appelée pour les deux tenants, sur la base de chacun, `Lue(0)` rendu
+    /// et publié (à la place de l'aveu de l'étape précédente), aucune teinte.
+    ///
+    /// LA MUTATION QUI LE FAIT ROUGIR : `V_RET_ORDRE` (la mesure prise AVANT `bilan.absorber(parcours)` : `Lue(0)` rendu
+    /// et publié sur la liste non lue).
+    #[test]
+    fn une_passe_de_retention_sur_une_liste_des_tenants_non_lue_rend_et_publie_l_aveu_jamais_un_zero() {
+        use crate::mesure_environnement::CAUSE_FORME_INCONNUE;
+        let _v = VERROU_DU_BILAN.lock();
+        let _env = crate::tests::VERROU_ENV_PROCESSUS.read(); // l'ouverture des bases des tenants lit l'environnement
+        let dir = crate::tmp_possede::TmpPossede::neuf("cj7-retention");
+        let plan = Connection::open_in_memory().expect("plan de contrôle mémoire");
+        crate::state::migrate_control(&plan);
+        let chemins: Vec<(&str, String)> =
+            ["cj7-ret-a", "cj7-ret-b"].into_iter().map(|t| (t, String::from(&*dir.sous(&format!("{t}.db"))))).collect();
+        for (t, chemin) in &chemins {
+            plan.execute(
+                "INSERT INTO tenant(id,name,key_ref,db_path,created,suspended) VALUES(?1,?1,'',?2,0,0)",
+                rusqlite::params![t, chemin],
+            )
+            .expect("fixture : tenant catalogué");
+        }
+        let plan = Arc::new(Mutex::new(plan));
+        let mgr = TenantDbManager {
+            default_db_path: Arc::new(String::from(&*dir.sous("plume.db"))),
+            default_writer: Arc::new(Mutex::new(Connection::open_in_memory().expect("base default mémoire"))),
+            control: Some(crate::state::ControlPlane { conn: plan.clone(), db_path: Arc::new(":memory:".to_string()) }),
+            writers: Arc::new(Mutex::new(HashMap::new())),
+        };
+        let vus = Mutex::new(Vec::<(String, String)>::new());
+
+        crate::bilan_de_tick::publier(BOUCLE_RETENTION, Mesure::Lue(0));
+        plan.lock().execute_batch("ALTER TABLE tenant RENAME TO cj7_tenant;").expect("fixture : table retirée");
+        let rendue = passe_de_retention_sous_filet(&mgr, |_handle, db_path| vus.lock().push((String::new(), db_path.to_string())));
+        plan.lock().execute_batch("ALTER TABLE cj7_tenant RENAME TO tenant;").expect("fixture : table remise");
+        assert!(vus.lock().is_empty(), "liste non lue : aucune passe appelée");
+        let aveu = Mesure::Illisible {
+            cause: CAUSE_FORME_INCONNUE,
+            detail: "1 famille(s) aveugle(s) ce tick — liste des tenants actifs NON LUE (no such table: tenant) : aucun \
+                     tenant n'a été parcouru ce tour (tenants_actifs) ; abandons comptés par ailleurs : 0"
+                .to_string(),
+        };
+        assert_eq!(rendue, aveu, "la mesure RENDUE porte l'aveu de la liste non lue, jamais `Lue(0)`");
+        assert_eq!(crate::bilan_de_tick::dernier(BOUCLE_RETENTION), Some(aveu.clone()), "la mesure PUBLIÉE aussi");
+        let (etat, _) = crate::bilan_de_tick::etat_de_surface("green", "rétention à l'heure".to_string(), Some(&aveu));
+        assert_eq!(etat, "red", "la surface lit ROUGE une passe qui n'a purgé ni ancré personne");
+
+        let rendue = passe_de_retention_sous_filet(&mgr, |handle, db_path| {
+            let t = chemins.iter().find(|(_, c)| c == db_path).map(|(t, _)| t.to_string()).unwrap_or_default();
+            assert!(!Arc::ptr_eq(handle, &mgr.default_writer), "la passe d'un tenant ne reçoit jamais la base default");
+            vus.lock().push((t, db_path.to_string()));
+        });
+        let mut vus = vus.into_inner();
+        vus.sort();
+        let attendus: Vec<(String, String)> = chemins.iter().map(|(t, c)| (t.to_string(), c.clone())).collect();
+        assert_eq!(vus, attendus, "contrôle, liste lue : la passe de chaque tenant, sur sa base");
+        assert_eq!(rendue, Mesure::Lue(0), "contrôle : mesure verte rendue");
+        assert_eq!(crate::bilan_de_tick::dernier(BOUCLE_RETENTION), Some(Mesure::Lue(0)), "contrôle : publiée, à la place de l'aveu");
     }
 }
 

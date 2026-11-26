@@ -388,7 +388,7 @@ pub(crate) fn resolve_tenant_key(key_ref: &str) -> Result<Option<String>, String
 ///    writer = st.db. Comportement STRICTEMENT identique à aujourd'hui.
 ///  - Mode 1 (`control=Some`) : lit la table `tenant` du control-plane + résout key_ref -> ouvre/mémoïse.
 // INERTE #2a-2a : `control` est lu par les accesseurs d'identité (token/user) ; les autres champs + les
-// méthodes (ready_lu/handle_for/ready_db_path_lu) ne seront câblés aux handlers data qu'en #2a-2b -> allow(dead_code).
+// méthodes (ready_lu/handle_for_lu/ready_db_path_lu) ne seront câblés aux handlers data qu'en #2a-2b -> allow(dead_code).
 #[derive(Clone)]
 #[allow(dead_code)]
 pub(crate) struct TenantDbManager {
@@ -648,11 +648,13 @@ impl TenantDbManager {
         Ok(self.ready_lu(tenant)?.map(|w| w.handle()))
     }
 
-    /// PROJECTION À DEUX ISSUES de `handle_for_lu`, pour les appelants qui ne distinguent pas (encore) la
-    /// ligne de catalogue non lue d'un tenant non servable : `None` pour les deux, et ce que chacun fait d'un
-    /// `None` reste ce qu'il faisait. `P10.20-b` — la lecture non faite n'y passe
-    /// plus en silence : elle est DITE au journal ici, avec la cause du moteur, sous un nom qui n'est ni
-    /// « absent » ni « suspendu ». Le chemin requête (`req_db`), lui, lit `handle_for_lu`.
+    /// TÉMOINS SEULEMENT — PROJECTION À DEUX ISSUES de `handle_for_lu` : `None` pour un tenant non servable comme
+    /// pour une ligne de catalogue non lue, celle-ci dite au journal avec la cause du moteur. `P10.20-b` — absente
+    /// du binaire de production : ses derniers appelants (récepteurs Pub/Sub et Firehose, inventaire des accès,
+    /// événement d'accès opérateur et d'audit du tenant, poignée prise avant la suspension) lisent `handle_for_lu`
+    /// et décident de la lecture non faite ; un nouvel appelant de production qui prendrait celle-ci ne compile pas.
+    /// Les témoins s'en servent pour obtenir la base d'un tenant de leurs fixtures.
+    #[cfg(test)]
     pub(crate) fn handle_for(&self, tenant: &str) -> Option<Arc<Mutex<Connection>>> {
         match self.handle_for_lu(tenant) {
             Ok(handle) => handle,
@@ -1169,6 +1171,49 @@ macro_rules! req_conn {
     };
 }
 
+/// `P10.20-b` — LE NOM SOUS LEQUEL UN TOUR DE FOND SAUTÉ FAUTE DE LISTE DES TENANTS ACTIFS EST COMPTÉ, dans la
+/// ventilation des balayages aveugles (`metrics::TICKS_AVEUGLES`, servie sous `/api/metrics`
+/// `scheduler.ticks_aveugles.<nom>` avec la dernière cause, et dans `plume_scheduler_ticks_aveugles_total`). Un compte
+/// par appel du parcours : chaque boucle de fond qui le prend et ne fait rien ce tour-ci.
+pub(crate) const BALAYAGE_DE_LA_LISTE_DES_TENANTS_ACTIFS: &str = "tenants_actifs";
+
+/// La liste des tenants actifs, lue EN BLOC : la première erreur (préparation, pas du moteur, ligne indécodable) est
+/// rendue, jamais une liste plus courte.
+fn liste_des_tenants_actifs_lu(conn: &Connection) -> rusqlite::Result<Vec<String>> {
+    let mut stmt = conn.prepare("SELECT id FROM tenant WHERE suspended=0")?;
+    let lignes = stmt.query_map([], |r| r.get::<_, String>(0))?;
+    lignes.collect()
+}
+
+/// La liste non lue a-t-elle déjà été dite depuis la dernière lecture entière ? Le parcours est appelé par chaque
+/// boucle de fond, à chaque tour : une ligne par appel noierait le journal pendant toute la panne.
+static LISTE_DES_TENANTS_ACTIFS_NON_LUE_DITE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// LE TOUR SAUTÉ, COMPTÉ À CHAQUE APPEL et DIT UNE FOIS par panne (la forme de `ingest::dire_le_catalogue_non_lu` :
+/// la ligne à la première occurrence, oubliée à la prochaine lecture réussie, si bien qu'une panne suivante est dite
+/// à son tour). La cause du moteur va au journal et à la dernière cause du compte, jamais ailleurs.
+fn dire_la_liste_des_tenants_actifs_non_lue(cause: &rusqlite::Error) {
+    use std::sync::atomic::Ordering::Relaxed;
+    crate::metrics::TICKS_AVEUGLES_TOTAL.fetch_add(1, Relaxed);
+    {
+        let mut ventilation = crate::metrics::TICKS_AVEUGLES.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        crate::metrics::consigner_avec_sa_derniere_cause(&mut ventilation, BALAYAGE_DE_LA_LISTE_DES_TENANTS_ACTIFS, cause.to_string());
+    }
+    if !LISTE_DES_TENANTS_ACTIFS_NON_LUE_DITE.swap(true, Relaxed) {
+        eprintln!(
+            "[multi-tenant][jobs] liste des tenants actifs NON LUE ({cause}) -> AUCUN tenant n'est exécuté à ce tour, ni \
+             sur sa base ni sur la base default, et aucun n'est exécuté sur une liste partielle. Dit une fois jusqu'à la \
+             prochaine lecture entière de la liste ; chaque tour sauté est compté parmi les balayages de fond aveugles \
+             ({BALAYAGE_DE_LA_LISTE_DES_TENANTS_ACTIFS})."
+        );
+    }
+}
+
+/// La liste s'est lue entière : la prochaine panne sera dite à son tour.
+fn oublier_la_liste_des_tenants_actifs_non_lue() {
+    LISTE_DES_TENANTS_ACTIFS_NON_LUE_DITE.store(false, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// #2a-2c — DISPATCH DES JOBS DE FOND PAR TENANT. Exécute `body(tenant_id, handle, db_path)` pour CHAQUE
 /// tenant ACTIF, SÉQUENTIELLEMENT (jamais de fan-out concurrent : borne la RAM, budget 2 Go ; le read-pool a
 /// un cap GLOBAL #2a-1). Toutes les boucles de jobs de fond (règles, playbooks, rétention, rollups, banlist,
@@ -1185,27 +1230,51 @@ macro_rules! req_conn {
 ///  - `P10.20-b` — un tenant dont la ligne du catalogue n'a PAS été LUE est sauté de même, sous SA cause
 ///    (« ligne du catalogue des tenants NON LUE », cause du moteur jointe), jamais sous celle d'un tenant
 ///    suspendu, d'une clé non résolue ou d'un schéma refusé : rien n'est établi sur lui ce tour-ci.
-pub(crate) fn for_each_active_tenant<F: FnMut(&str, &Arc<Mutex<Connection>>, &str)>(mgr: &TenantDbManager, mut body: F) {
+///  - `P10.20-b` — LA LISTE DES TENANTS ACTIFS EST LUE EN BLOC OU REFUSÉE EN BLOC (la forme des balayages de fond,
+///    `P10.7-f`). Une préparation ratée, un pas du moteur en échec ou une ligne qui ne se décode pas rendait une
+///    liste vide ou plus courte, sans un mot (`.flatten()`, `unwrap_or_default`) : le tour de TOUS les tenants, ou
+///    de ceux dont la ligne tombait, était sauté et paraissait calme. Désormais aucun tenant n'est exécuté sur une
+///    liste non lue ou partielle ; le tour est compté parmi les balayages aveugles et dit au journal
+///    (`dire_la_liste_des_tenants_actifs_non_lue`).
+///  - `P10.20-b` — CE QUE LE PARCOURS REND : `Lue(0)` quand la liste a été lue (ou en mode 0), un bilan ILLISIBLE qui
+///    nomme la liste et la cause du moteur quand elle ne l'a pas été. Sans lui, chaque boucle publiait le bilan de ses
+///    corps — aucun corps appelé, donc `Lue(0)`, « tout ce qui était dû a été évalué » — et la santé restait verte
+///    sur un tour où rien n'avait tourné pour personne. Chaque boucle qui publie un bilan l'absorbe
+///    (`server::boucles_de_fond`) ; `#[must_use]` refuse qu'un appelant l'oublie sans le dire.
+#[must_use = "le parcours rend l'aveu d'une liste des tenants non lue : l'absorber dans le bilan de la boucle"]
+pub(crate) fn for_each_active_tenant<F: FnMut(&str, &Arc<Mutex<Connection>>, &str)>(
+    mgr: &TenantDbManager,
+    mut body: F,
+) -> crate::bilan_de_tick::BilanDeTick {
     let cp = match &mgr.control {
         None => {
             // MODE 0 : passthrough EXACT — un seul tenant `default` = (default_writer, default_db_path).
             body("default", &mgr.default_writer, mgr.default_db_path.as_str());
-            return;
+            return crate::mesure_environnement::Mesure::Lue(0);
         }
         Some(cp) => cp,
     };
     // MODE 1 : SNAPSHOT de la liste des tenants actifs (on relâche le lock control AVANT d'exécuter les corps,
     // qui prennent d'autres verrous / ouvrent des bases -> jamais de lock control tenu pendant un job).
-    let tenants: Vec<String> = {
+    let lue = {
         let conn = cp.conn.lock();
-        let list = match conn.prepare("SELECT id FROM tenant WHERE suspended=0") {
-            Ok(mut stmt) => stmt
-                .query_map([], |r| r.get::<_, String>(0))
-                .map(|rows| rows.flatten().collect())
-                .unwrap_or_default(),
-            Err(_) => Vec::new(),
-        };
-        list
+        liste_des_tenants_actifs_lu(&conn)
+    };
+    let tenants = match lue {
+        Ok(tenants) => {
+            oublier_la_liste_des_tenants_actifs_non_lue();
+            tenants
+        }
+        Err(cause) => {
+            dire_la_liste_des_tenants_actifs_non_lue(&cause);
+            return crate::mesure_environnement::Mesure::Illisible {
+                cause: crate::bilan_de_tick::cause_sql(&cause),
+                detail: format!(
+                    "liste des tenants actifs NON LUE ({cause}) : aucun tenant n'a été parcouru ce tour \
+                     ({BALAYAGE_DE_LA_LISTE_DES_TENANTS_ACTIFS})"
+                ),
+            };
+        }
     };
     for tid in tenants {
         // MÊME point de passage que le chemin requête (`ready_lu`) : clé résolue + enregistrée au registre
@@ -1232,6 +1301,7 @@ pub(crate) fn for_each_active_tenant<F: FnMut(&str, &Arc<Mutex<Connection>>, &st
         let _tenant_du_tour = crate::metrics::nommer_le_tenant_du_tour(&tid);
         body(&tid, &w.handle(), w.path().as_str());
     }
+    crate::mesure_environnement::Mesure::Lue(0)
 }
 
 /// Slug de tenant SÛR en nom de fichier spool (routing ingest) : alnum + `_`/`-` (jamais `#`, jamais `.`,

@@ -26,7 +26,12 @@
 //   (6) un verdict refusé après l'exécution : la riposte n'est pas rejouée passé la fenêtre, elle est dite, et la
 //       riposte libre qui la suit est exécutée (une ligne écartée n'arrête pas le tour) ;
 //   (7) la mention « dite » refusée par la base : la ligne de refus est entière, et la riposte est redite au
-//       passage suivant.
+//       passage suivant ;
+//   (8a, 8b) une riposte lue « réclamée par un agent, fenêtre passée », puis close par l'agent ou annulée par
+//       l'exploitant (seconde connexion) avant la mention « dite » : la mention ne prend aucune ligne, et le
+//       `result` de la ligne reste celui qu'elle portait (le verdict de l'agent n'est pas remplacé) ;
+//   (9) une mention « dite » qui ne prend aucune ligne (déclencheur IGNORE) : le journal ne dit pas que la
+//       riposte sera redite.
 // Aucune ligne du journal ne porte la cible : chaque témoin à sous-processus le vérifie, cible présente.
 //
 // MUTANTS (interrupteurs temporaires `VERIF_MUT`, retirés avant le commit), chacun vu rouge :
@@ -50,7 +55,10 @@
 //   DIT_M_RECLAMEE_NON_MARQUEE (une ligne réclamée dite sans mention) -> (5), (7) ;
 //   DIT_M_DIRE_MUET (une mention refusée n'est pas dite) -> (7) ;
 //   DIT_M_AGENT_SANS_DITE (la condition d'agent ne lit plus la mention « dite » d'une intention) -> (1) ;
-//   DIT_M_DEJA_DITE_SANS_AGENT (la lecture ne tient plus pour dite une réclamation d'agent dite) -> (5).
+//   DIT_M_DEJA_DITE_SANS_AGENT (la lecture ne tient plus pour dite une réclamation d'agent dite) -> (5) ;
+//   DIT_M_RECLAMEE_SANS_STATUT (`status='approved'` retiré du texte de `SQL_DIRE_UNE_RIPOSTE_RECLAMEE`, une
+//   constante : mutation de texte, pas d'interrupteur) -> (8a), (8b) ;
+//   DIT_M_ZERO_LIGNE_DITE (une mention qui ne prend aucune ligne est dite « redite au passage suivant ») -> (9).
 // Les bras `commencee_ici` et `reclamee` levés, l'intention refuse encore la ligne (elle exige une ligne que
 // personne n'a réclamée) : la riposte n'est pas exécutée, mais elle est dite sous une autre phrase — c'est la
 // ligne de journal, comparée entière, qui rougit sous ces mutants.
@@ -58,7 +66,7 @@ mod riposte_commencee_jamais_rejouee_par_le_responder_local {
     use super::*;
     use crate::handlers::actions::{
         ecrire_l_intention_du_responder, remettre_les_actions_lues, FormeDeLaFileDActions, IntentionDuResponder,
-        ACTIONS_A_RECLAMER_ICI, RECLAMATION_PERIMEE_S,
+        ACTIONS_A_RECLAMER_ICI, RECLAMATION_PERIMEE_S, SQL_DIRE_UNE_RIPOSTE_RECLAMEE,
     };
 
     /// La mention d'intention, recopiée : le témoin ne relit pas la constante du code pour la juger.
@@ -473,5 +481,104 @@ mod riposte_commencee_jamais_rejouee_par_le_responder_local {
         assert!(!stderr.contains(cible) && !stderr.contains(suivante), "aucune ligne du journal ne porte une cible : {stderr}");
         assert_eq!(rcl_ligne(&base, id).0, "approved");
         assert_eq!(rcl_ligne(&base, s).0, "done", "la suivante est exécutée et close");
+    }
+
+    /// (8) Lecture de `ACTIONS_A_RECLAMER_ICI` à l'instant `t` : (id, réclamée, commencée ici, déjà dite).
+    fn rcl_lire_a_l_instant(c: &Connection, t: i64) -> Vec<(i64, bool, bool, bool)> {
+        let mut s = c.prepare(ACTIONS_A_RECLAMER_ICI).unwrap();
+        s.query_map(params![RCL_HOTE, 1i64, t, RECLAMATION_PERIMEE_S], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, bool>(4)?, r.get::<_, bool>(5)?, r.get::<_, bool>(6)?))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap()
+    }
+
+    /// (8a) UNE RIPOSTE RÉCLAMÉE PAR UN AGENT, LUE PÉRIMÉE, PUIS CLOSE PAR L'AGENT AVANT LA MENTION « DITE » : la
+    /// mention ne prend aucune ligne et le verdict de l'agent reste. Deux connexions, comme (4) : pas de course.
+    #[test]
+    fn rcl_mention_dite_ne_remplace_pas_le_verdict_d_un_agent_pose_entre_la_lecture_et_la_mention() {
+        let bac = crate::tmp_possede::TmpPossede::neuf("rcl-close-entre-temps");
+        let base = bac.join("plume.db").to_string_lossy().to_string();
+        rcl_base(&base);
+        let t = 1_700_000_000i64;
+        let perimee = t - RECLAMATION_PERIMEE_S - 60;
+        let un = open_db(&base).unwrap();
+        let deux = open_db(&base).unwrap();
+        let x = rcl_inserer(&base, "203.0.113.85", Some(RCL_HOTE), Some(perimee));
+        assert_eq!(rcl_lire_a_l_instant(&un, t), vec![(x, true, false, false)], "fixture : lue réclamée par un agent, fenêtre passée, pas encore dite");
+        // La clôture d'`action_result`, recopiée, sur la seconde connexion.
+        let verdict_de_l_agent = "adresse bannie par l'agent";
+        let close = deux
+            .execute(
+                "UPDATE action SET status=?2, result=?3, done_ts=?4 WHERE id=?1 AND status='approved' AND host=?5",
+                params![x, "done", verdict_de_l_agent, t + 1, RCL_HOTE],
+            )
+            .unwrap();
+        assert_eq!(close, 1, "fixture : l'agent clôt la riposte");
+        assert_eq!(un.execute(SQL_DIRE_UNE_RIPOSTE_RECLAMEE, params![x]).unwrap(), 0, "une riposte close ne prend pas la mention « dite »");
+        assert_eq!(
+            rcl_ligne(&base, x),
+            ("done".to_string(), Some(verdict_de_l_agent.to_string()), Some(perimee), Some(t + 1)),
+            "close : le verdict de l'agent reste sur la ligne"
+        );
+        // Contrôle positif : la même lecture, sans geste entre-temps, prend la mention.
+        let z = rcl_inserer(&base, "203.0.113.87", Some(RCL_HOTE), Some(perimee));
+        assert_eq!(rcl_lire_a_l_instant(&un, t), vec![(z, true, false, false)]);
+        assert_eq!(un.execute(SQL_DIRE_UNE_RIPOSTE_RECLAMEE, params![z]).unwrap(), 1, "encore approuvée : la mention est écrite");
+        assert_eq!(rcl_ligne(&base, z), ("approved".to_string(), Some(RCL_AGENT_DITE.to_string()), Some(perimee), None));
+    }
+
+    /// (8b) LA MÊME, ANNULÉE PAR L'EXPLOITANT AVANT LA MENTION « DITE » : la mention ne prend aucune ligne, `result`
+    /// intact.
+    #[test]
+    fn rcl_mention_dite_ne_touche_pas_une_riposte_annulee_entre_la_lecture_et_la_mention() {
+        let bac = crate::tmp_possede::TmpPossede::neuf("rcl-annulee-entre-temps");
+        let base = bac.join("plume.db").to_string_lossy().to_string();
+        rcl_base(&base);
+        let t = 1_700_000_000i64;
+        let perimee = t - RECLAMATION_PERIMEE_S - 60;
+        let un = open_db(&base).unwrap();
+        let deux = open_db(&base).unwrap();
+        let y = rcl_inserer(&base, "203.0.113.86", Some(RCL_HOTE), Some(perimee));
+        assert_eq!(rcl_lire_a_l_instant(&un, t), vec![(y, true, false, false)], "fixture : lue réclamée par un agent, fenêtre passée, pas encore dite");
+        // L'annulation d'`action_cancel`, recopiée, sur la seconde connexion.
+        let annulee = deux.execute("UPDATE action SET status='cancelled' WHERE id=?1 AND status IN ('pending','approved')", params![y]).unwrap();
+        assert_eq!(annulee, 1, "fixture : l'exploitant annule la riposte");
+        assert_eq!(un.execute(SQL_DIRE_UNE_RIPOSTE_RECLAMEE, params![y]).unwrap(), 0, "une riposte annulée ne prend pas la mention « dite »");
+        assert_eq!(rcl_ligne(&base, y), ("cancelled".to_string(), None, Some(perimee), None), "annulée : `result` intact");
+    }
+
+    /// (9) UNE MENTION « DITE » QUI NE PREND AUCUNE LIGNE (déclencheur IGNORE sur `result`) : le journal ne dit pas
+    /// que la riposte sera redite.
+    #[test]
+    fn rcl_mention_dite_sans_ligne_prise_le_journal_ne_dit_pas_qu_elle_sera_redite() {
+        let _env = VERROU_ENV_PROCESSUS.read();
+        if std::env::var(ENFANT).is_ok() {
+            crate::ledger::declarer_la_liste_pour_ce_temoin();
+            crate::handlers::actions::respond_run();
+            return;
+        }
+        let nom = "tests::riposte_commencee_jamais_rejouee_par_le_responder_local::rcl_mention_dite_sans_ligne_prise_le_journal_ne_dit_pas_qu_elle_sera_redite";
+        let (bac, base, path) = rcl_bac("rcl-dite-ignoree");
+        let cible = "203.0.113.88";
+        let perimee = now() - RECLAMATION_PERIMEE_S - 60;
+        let a = rcl_inserer(&base, cible, Some(RCL_HOTE), Some(perimee));
+        open_db(&base)
+            .unwrap()
+            .execute_batch("CREATE TRIGGER rcl_dite_ignoree BEFORE UPDATE OF result ON action BEGIN SELECT RAISE(IGNORE); END;")
+            .unwrap();
+        let mut cmd = std::process::Command::new(std::env::current_exe().expect("binaire de test"));
+        cmd.args(["--exact", "--nocapture", "--test-threads=1", nom]).env(ENFANT, "1").env("PLUME_DB", &base);
+        let sortie = rcl_lancer(cmd, &bac, &path);
+        let stderr = String::from_utf8_lossy(&sortie.stderr).into_owned();
+        assert_eq!(sortie.status.code(), Some(0), "sortie 0\n{stderr}");
+        assert_eq!(rcl_appels(&bac), "", "rien n'est exécuté\n{stderr}");
+        let dite = format!("[responder] action {a} NON exécutée ici : {RCL_AGENT}");
+        assert_eq!(stderr.lines().filter(|l| *l == dite).count(), 1, "fixture : la riposte est dite, le journal porte « {dite} » : {stderr}");
+        assert!(!stderr.contains(RCL_DITE_NON_ECRITE), "aucune mention ne prend de ligne : le journal ne dit pas qu'elle sera redite : {stderr}");
+        assert_eq!(stderr.lines().filter(|l| l.contains(&format!("action {a} "))).count(), 1, "une seule ligne de journal pour cette riposte : {stderr}");
+        assert!(!stderr.contains(cible), "aucune ligne du journal ne porte la cible : {stderr}");
+        assert_eq!(rcl_ligne(&base, a), ("approved".to_string(), None, Some(perimee), None), "déclencheur IGNORE : ligne intacte");
     }
 }

@@ -1221,6 +1221,67 @@ pub(crate) fn ddl_de_reference(nom: &str) -> Result<Option<String>, String> {
     .map(|o| o.flatten())
 }
 
+/// L'ensemble de référence des déclencheurs et des vues, mémoïsé pour le processus (cf.
+/// `declencheurs_et_vues_de_reference`). `Err` mémoïsée aussi, comme `REFERENCE_SHAPE`.
+static DECLENCHEURS_ET_VUES_DE_REFERENCE: std::sync::OnceLock<Result<std::collections::BTreeSet<(String, String)>, String>> =
+    std::sync::OnceLock::new();
+
+/// LES DÉCLENCHEURS ET LES VUES QUE **CE BINAIRE** CRÉE : l'ensemble des couples (nom, texte que porte
+/// `sqlite_master.sql`), relevés et jamais recopiés. C'est la référence contre laquelle la restauration juge le corps de
+/// chaque déclencheur et de chaque vue d'une archive (`backup::restauration_liste_fermee`).
+///
+/// Fabriqué comme la forme de référence (`build_reference_shape`) : une base VIDE, en mémoire, à laquelle ce binaire
+/// applique `db/schema.sql` puis toute sa chaîne de migrations ; puis ce que l'entretien crée À L'EXÉCUTION hors
+/// migrations, par ses propres textes : la table virtuelle `event_fields_fts` et ses deux déclencheurs
+/// (`maintenance::FTS_FIELDS_VTABLE_DDL`, `FTS_FIELDS_AI_TRIGGER_DDL`, `FTS_FIELDS_AD_TRIGGER_DDL`), que
+/// `maintenance::reconcile_index_state` pose quand `PLUME_FTS_FIELDS=1`. Ils sont joués ici quel que soit ce réglage : une
+/// archive faite par un démon où il valait `1` se restaure chez un démon où il vaut autre chose.
+///
+/// LES VERSIONS ANTÉRIEURES. Une archive ancienne est restaurée telle quelle, puis migrée à l'ouverture
+/// (`prepare_schema`) : elle porte les textes de sa version. Une base que ce binaire mène à une version antérieure (sa
+/// chaîne arrêtée à cette version) ne porte que des couples de cet ensemble, à chaque version qu'il sait migrer
+/// (témoin `restauration_corps_des_declencheurs_et_des_vues.rs`, qui arrête la chaîne à chacune) : aucune étape ne
+/// réécrit ni ne retire un déclencheur ou une vue. Une étape future qui réécrirait un déclencheur que `db/schema.sql`
+/// pose rougirait ce témoin ; un texte changé dans `db/schema.sql` ou dans l'entretien lui-même ne le rougirait pas (ce
+/// binaire ne porterait plus l'ancien texte, que portent les archives d'avant) : c'est la limite de ce relevé.
+///
+/// Construit au premier appel, une fois par processus ; son seul appelant est la restauration.
+pub(crate) fn declencheurs_et_vues_de_reference() -> Result<&'static std::collections::BTreeSet<(String, String)>, String> {
+    DECLENCHEURS_ET_VUES_DE_REFERENCE
+        .get_or_init(construire_les_declencheurs_et_vues_de_reference)
+        .as_ref()
+        .map_err(|e| e.clone())
+}
+
+/// La construction de `declencheurs_et_vues_de_reference`, sans mémoïsation. Journal coupé (cf. `mig_log!`).
+pub(crate) fn construire_les_declencheurs_et_vues_de_reference() -> Result<std::collections::BTreeSet<(String, String)>, String> {
+    let _muet = MigrationLogSilencer::new();
+    let conn = Connection::open_in_memory()
+        .map_err(|e| format!("base de référence : ouverture impossible ({e})"))?;
+    conn.execute_batch(include_str!("../../db/schema.sql"))
+        .map_err(|e| format!("base de référence : db/schema.sql non applicable ({e})"))?;
+    if !migrate(&conn) {
+        return Err(format!(
+            "base de référence : la chaîne de migrations de CE binaire s'arrête à schema_version={} sur une base \
+             NEUVE (attendu v{CODE_SCHEMA_MAX})",
+            version_de_schema_pour_un_message(&conn)
+        ));
+    }
+    for ddl in [
+        crate::maintenance::FTS_FIELDS_VTABLE_DDL,
+        crate::maintenance::FTS_FIELDS_AI_TRIGGER_DDL,
+        crate::maintenance::FTS_FIELDS_AD_TRIGGER_DDL,
+    ] {
+        conn.execute_batch(ddl).map_err(|e| format!("base de référence : création de l'entretien non applicable ({e})"))?;
+    }
+    let lire = |e: rusqlite::Error| format!("base de référence : lecture des déclencheurs et des vues impossible ({e})");
+    let mut s = conn
+        .prepare("SELECT name, sql FROM sqlite_master WHERE type IN ('trigger', 'view') AND sql IS NOT NULL")
+        .map_err(lire)?;
+    let couples = s.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))).map_err(lire)?;
+    couples.collect::<rusqlite::Result<std::collections::BTreeSet<_>>>().map_err(lire)
+}
+
 /// CE QUE LA BASE OUVERTE N'A PAS ALORS QUE CE BINAIRE LE DÉCLARE — vide = rien à signaler.
 ///
 /// Comparaison d'ensembles dans UN SEUL SENS : `référence − base`. Ce qui est EN TROP dans la base

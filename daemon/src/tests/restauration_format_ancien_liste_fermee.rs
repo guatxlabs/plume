@@ -292,9 +292,11 @@ mod restauration_format_ancien_liste_fermee {
     /// ALLER-RETOUR ANCIEN DU SCHÉMA COMPLET DE LA TÊTE. Une base de la tête (schéma de base puis toutes les migrations,
     /// dont `ANALYZE` : `sqlite_stat1` et `sqlite_stat4`), avec le filtre de champs plein texte (table virtuelle FTS5 sans
     /// contenu et ses déclencheurs, dont le corps appelle `json_valid`, `group_concat` et `json_each`) qui fait prendre le
-    /// format ancien à l'écrivain réel, les index de champ chaud (`json_extract`), des compteurs AUTOINCREMENT, et une vue
-    /// portant un déclencheur `INSTEAD OF` (la vue est créée sur le brouillon avant les déclencheurs). La restauration
-    /// aboutit, le schéma et chaque table sont ceux de la source, et les deux FTS répondent.
+    /// format ancien à l'écrivain réel, les index de champ chaud (`json_extract`) et des compteurs AUTOINCREMENT. La
+    /// restauration aboutit, le schéma et chaque table sont ceux de la source, et les deux FTS répondent. INVERSÉ
+    /// (P10.34-t, corps des déclencheurs et des vues) : la fixture ne porte plus la vue `vue_des_refus` ni son
+    /// déclencheur `INSTEAD OF`, que le démon ne crée pas ; les mêmes sont désormais refusés
+    /// (`restauration_corps_des_declencheurs_et_des_vues.rs`).
     #[test]
     fn aller_retour_ancien_du_schema_complet_de_la_tete() {
         let _reglages = VERROU_ENV_PROCESSUS.read();
@@ -331,10 +333,6 @@ mod restauration_format_ancien_liste_fermee {
             c.execute("INSERT INTO legal_hold(name, reason) VALUES('conservation-a', 'enquete')", []).unwrap();
             c.execute("INSERT INTO legal_hold(name, reason) VALUES('conservation-b', 'enquete')", []).unwrap();
             c.execute("DELETE FROM legal_hold WHERE name='conservation-b'", []).unwrap();
-            c.execute_batch(
-                "CREATE VIEW vue_des_refus AS SELECT id, host, message FROM event WHERE severity >= 3;
-                 CREATE TRIGGER vue_des_refus_sans_ecriture INSTEAD OF DELETE ON vue_des_refus BEGIN SELECT 1; END;",
-            ).unwrap();
         }
         let src_c = open_db_keyed(&src, Some(CLE)).unwrap();
         let compte = |filtre: &str| -> i64 {
@@ -344,7 +342,6 @@ mod restauration_format_ancien_liste_fermee {
         assert_eq!(compte("name = 'event_fields_fts' AND sql LIKE '%content=''''%'"), 1, "contrôle : FTS5 sans contenu");
         assert!(compte("type='trigger' AND sql LIKE '%json_each%'") >= 2, "contrôle : déclencheurs du filtre de champs");
         assert_eq!(compte("type='index' AND sql LIKE '%json_extract%'"), crate::soql_glue::HOT_FIELDS.len() as i64, "contrôle : index de champ chaud");
-        assert_eq!(compte("type='trigger' AND sql LIKE '%INSTEAD OF%'"), 1, "contrôle : déclencheur INSTEAD OF sur la vue");
 
         let archive = chemin(&racine, "archive.age");
         backup_compressed(&src, &archive, Some(CLE), None).expect("sauvegarde");

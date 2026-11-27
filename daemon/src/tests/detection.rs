@@ -1230,6 +1230,10 @@
     #[test]
     fn backup_b1_parity_roundtrip() {
         let _reglages = VERROU_ENV_PROCESSUS.read(); // la sauvegarde LIT des réglages que d'autres tests POSENT
+        // La vue et le déclencheur de ce schéma adverse ne sont pas ceux que le démon crée : la restauration les refuse
+        // (P10.34-t, `restauration_corps_des_declencheurs_et_des_vues.rs`). Ce témoin de FIDÉLITÉ du rejeu lève ce seul
+        // jugement pour garder sa vue et son déclencheur.
+        let _corps = crate::backup::crochets_de_restauration::sans_jugement_des_declencheurs_et_des_vues();
         let key = "b1-parity-passphrase-correct-horse-battery-staple";
         let src = mk_tmp_path("b1src.db");
         let dest = mk_tmp_path("b1dest.age");

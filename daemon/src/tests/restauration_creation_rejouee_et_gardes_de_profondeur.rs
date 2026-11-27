@@ -220,9 +220,12 @@ mod cj2_restauration_creation_rejouee_et_gardes_de_profondeur {
     /// jugées et rejouées ; le déclencheur `f_config` (à côté de la FTS5 `f`) n'est pas une table. ET SI LE NOM A LA FORME
     /// EXACTE `<vt>_<suffixe>` : `fadata` (pas de séparateur `_` après `f`) et `f_autre` (suffixe hors de la liste de
     /// l'écrivain), tables ordinaires à côté de la FTS5 `f`, restent jugées et rejouées. L'archive se restaure : ce témoin
-    /// prouve qu'elles sont REJOUÉES ; qu'elles sont JUGÉES, le témoin suivant le prouve.
+    /// prouve qu'elles sont REJOUÉES ; qu'elles sont JUGÉES, le témoin suivant le prouve. La vue `w` et le déclencheur
+    /// `f_config` ne sont pas ceux que le démon crée (P10.34-t, `restauration_corps_des_declencheurs_et_des_vues.rs`) : ce
+    /// témoin des noms lève le seul jugement de leur corps.
     #[test]
     fn ancien_un_nom_de_forme_fantome_hors_d_une_table_virtuelle_reste_une_ligne_ordinaire() {
+        let _corps = crate::backup::crochets_de_restauration::sans_jugement_des_declencheurs_et_des_vues();
         let _tmp = crate::tmp_possede::TmpPossede::neuf("cj2-a-nom-ordinaire");
         let racine = _tmp.racine().chemin().to_path_buf();
         ancien_admis_comme_la_source(

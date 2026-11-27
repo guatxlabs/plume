@@ -99,7 +99,8 @@
 //! avant toute table virtuelle : une table ou une vue du fichier y est toujours jugée avant elles, quel que soit son rang
 //! dans le fichier ; une table rejouée au nom EXACT d'une table fantôme est une table fantôme du fichier, comparée à celles
 //! que le module crée (ci-dessus). Un déclencheur ne prend aucun nom dans cet espace (les déclencheurs ont le leur) :
-//! nommé comme une table fantôme, il reste admis sur une table ordinaire. L'écrivain ne rejoue pas une table dont le nom
+//! nommé comme une table fantôme, il n'est pas refusé par cette règle, et son corps est jugé comme celui de tout autre
+//! déclencheur (ci-dessous). L'écrivain ne rejoue pas une table dont le nom
 //! est, AU TEXTE EXACT, celui d'une table fantôme d'une table virtuelle de la base (`collect_dump_plan` la tient pour
 //! fantôme, le `rebuild` la recrée) ; une table dont le nom n'en diffère que par la casse est rejouée comme table
 //! ordinaire, et la restauration la refuse ici.
@@ -110,6 +111,25 @@
 //! tels que le MOTEUR les découpe (`arguments_decoupes_par_le_moteur`, aucun découpage écrit ici) et juge chacun ENTIER,
 //! au texte exact, casse et espaces compris, contre ce que l'écrivain émet (`argument_admis`) ; un seul argument hors de
 //! cette liste refuse la chaîne, AVANT son exécution au format courant et avant l'export au format ancien.
+//!
+//! LE CORPS D'UN DÉCLENCHEUR OU D'UNE VUE, DANS LES DEUX FORMATS. La liste admet la FORME `CREATE TRIGGER` / `CREATE VIEW`
+//! sous la phase post-DDL ; leur CORPS jouerait ensuite sur la connexion du démon, où aucun autoriseur n'est posé. Un
+//! déclencheur ou une vue de l'archive n'est donc admis que si sa chaîne est le texte d'un membre de l'ENSEMBLE DE
+//! RÉFÉRENCE portant le même nom : les couples (nom, texte de `sqlite_master.sql`) que CE binaire crée, relevés sur une
+//! base en mémoire où il joue `db/schema.sql`, sa chaîne de migrations et ce que l'entretien crée à l'exécution
+//! (`migrate::declencheurs_et_vues_de_reference`, jamais une liste recopiée). Le nom est celui que le moteur passe à
+//! l'autoriseur pour la tête de la chaîne ; la chaîne est celle que le moteur a découpée en une instruction et une seule.
+//! AUCUNE NORMALISATION : la chaîne entière est comparée au texte de référence, à l'octet ; deux corps qui diffèrent d'un
+//! octet (casse, point-virgule final, nom qualifié par sa base) ne sont jamais égaux. L'écrivain rejoue le
+//! `sqlite_master.sql` de la base vivante tel quel, et l'export du format ancien recopie la ligne : ce que le démon a créé
+//! revient au texte exact de la référence. Tout autre corps, tout autre nom est refusé sous sa propre cause
+//! (`Cause::DeclencheurOuVueQueLeDemonNeCreePas`).
+//! Le jugement porte sur tous les déclencheurs et toutes les vues de la restauration À LA FOIS, une fois la dernière chaîne
+//! de l'archive jouée (`ListeFermee::juger_les_declencheurs_et_les_vues`) : au format courant après la sentinelle de fin et
+//! avant la validation, au format ancien après la comparaison des tables fantômes et avant l'export ; toute autre cause
+//! garde donc sa priorité, et rien n'est publié avant lui. Entre la création d'un déclencheur ou d'une vue et ce jugement,
+//! aucune action portée par l'un d'eux n'est admise (`admettre`, premier contrôle). L'ensemble n'est construit que si
+//! l'archive porte au moins un déclencheur ou une vue, une fois par processus.
 use super::*;
 use super::dump_restauration::SUFFIXES_DES_TABLES_FANTOMES;
 use rusqlite::hooks::{AuthAction, AuthContext, Authorization, TransactionOperation};
@@ -213,6 +233,9 @@ pub(super) enum Cause {
     /// d'une table fantôme d'une table virtuelle de cette restauration : créé avant elle, sa création à elle est refusée ;
     /// créé après, la sienne (`admettre`, `prend_le_nom_d_une_table_fantome`).
     ObjetAuNomDUneTableFantome,
+    /// Un déclencheur ou une vue dont la chaîne n'est pas, à l'octet, le texte d'un membre de l'ensemble de référence
+    /// portant son nom (`ListeFermee::juger_les_declencheurs_et_les_vues`).
+    DeclencheurOuVueQueLeDemonNeCreePas,
 }
 
 impl Cause {
@@ -226,6 +249,7 @@ impl Cause {
             Cause::TablesFantomesHorsDeCeQueCreeLeModule => "tables fantômes autres que celles que le module crée",
             Cause::IndexOuDeclencheurSurUneTableFantome => "index ou déclencheur posé sur une table fantôme",
             Cause::ObjetAuNomDUneTableFantome => "objet au nom d'une table fantôme d'une table virtuelle",
+            Cause::DeclencheurOuVueQueLeDemonNeCreePas => "déclencheur ou vue autre que ceux que le démon crée",
         }
     }
 }
@@ -271,6 +295,11 @@ struct Etat {
     index_en_creation: String,
     /// Module de la table virtuelle que crée la chaîne en cours (posé par sa tête) : ses arguments restent à juger.
     module_en_creation: Option<String>,
+    /// Nom du déclencheur ou de la vue que crée la chaîne en cours, tel que le moteur le passe (posé par sa tête).
+    declencheur_ou_vue_en_creation: Option<String>,
+    /// LES DÉCLENCHEURS ET LES VUES DE CETTE RESTAURATION, (nom passé par le moteur, chaîne de l'archive), dans l'ordre de
+    /// leur préparation : jugés ensemble par `ListeFermee::juger_les_declencheurs_et_les_vues`.
+    declencheurs_et_vues_crees: Vec<(String, String)>,
     /// Tables ordinaires créées par la section 1 de CETTE restauration.
     tables_creees: std::collections::HashSet<String>,
     /// Tables virtuelles créées par la section 4 de CETTE restauration.
@@ -464,8 +493,17 @@ fn admettre(e: &mut Etat, ctx: &AuthContext<'_>) -> bool {
         {
             true
         }
-        (Phase::PostDdl, A::CreateTrigger { .. }) | (Phase::PostDdl, A::CreateView { .. }) => {
+        // Un déclencheur ou une vue : la forme est admise ici, le corps est jugé contre l'ensemble de référence une fois la
+        // dernière chaîne de l'archive jouée (`ListeFermee::juger_les_declencheurs_et_les_vues`), sous le nom que le
+        // moteur passe ici.
+        (Phase::PostDdl, A::CreateTrigger { trigger_name, .. }) => {
             e.tetes += 1;
+            e.declencheur_ou_vue_en_creation = Some(trigger_name.to_string());
+            true
+        }
+        (Phase::PostDdl, A::CreateView { view_name }) => {
+            e.tetes += 1;
+            e.declencheur_ou_vue_en_creation = Some(view_name.to_string());
             true
         }
         (Phase::PostDdl, A::CreateVtable { table_name, module_name })
@@ -515,6 +553,8 @@ impl ListeFermee {
             cible: String::new(),
             index_en_creation: String::new(),
             module_en_creation: None,
+            declencheur_ou_vue_en_creation: None,
+            declencheurs_et_vues_crees: Vec::new(),
             tables_creees: Default::default(),
             tables_virtuelles_creees: Default::default(),
             noms_pris: Default::default(),
@@ -558,6 +598,7 @@ impl ListeFermee {
         e.cible = cible.to_string();
         e.index_en_creation.clear();
         e.module_en_creation = None;
+        e.declencheur_ou_vue_en_creation = None;
         e.tetes = 0;
         e.refus = false;
     }
@@ -614,7 +655,41 @@ impl ListeFermee {
             return Err(self.refus(phase, Cause::PlusieursInstructions));
         }
         self.juger_les_arguments_de_la_table_virtuelle(phase, chaine)?;
+        // Un déclencheur ou une vue (tête vue par l'autoriseur) : le nom que le moteur a passé et la chaîne entière, gardés
+        // pour `juger_les_declencheurs_et_les_vues`.
+        let mut e = self.etat();
+        let creation = e.declencheur_ou_vue_en_creation.take();
+        e.declencheurs_et_vues_crees.extend(creation.map(|nom| (nom, chaine.to_string())));
+        drop(e);
         Ok(premiere)
+    }
+
+    /// LE CORPS DE CHAQUE DÉCLENCHEUR ET DE CHAQUE VUE DE CETTE RESTAURATION (cf. en-tête du module), jugé une fois la
+    /// dernière chaîne de l'archive jouée : chacun doit être, nom passé par le moteur ET chaîne entière à l'octet, un
+    /// membre de l'ensemble de référence (`migrate::declencheurs_et_vues_de_reference`). Un seul autre refuse la
+    /// restauration sous `Cause::DeclencheurOuVueQueLeDemonNeCreePas`, dans `phase` (ou « format ancien »). Une archive
+    /// sans déclencheur ni vue ne fait pas construire l'ensemble.
+    pub(super) fn juger_les_declencheurs_et_les_vues(&self, phase: Phase) -> Result<(), String> {
+        #[cfg(test)]
+        if crochets_de_restauration::corps_non_juges() || crochets_de_restauration::refus_sur_les_tables_fantomes_leve() {
+            return Ok(());
+        }
+        let crees = std::mem::take(&mut self.etat().declencheurs_et_vues_crees);
+        if crees.is_empty() {
+            return Ok(());
+        }
+        let reference = crate::migrate::declencheurs_et_vues_de_reference();
+        #[cfg(test)]
+        let reference = if crochets_de_restauration::ensemble_de_reference_retire() { Err(String::new()) } else { reference };
+        let admis = match reference {
+            Ok(reference) => crees.iter().all(|cree| reference.contains(cree)),
+            // HORS D'ATTEINTE par une archive : l'ensemble ne dépend que du binaire (base vide en mémoire, `db/schema.sql`,
+            // la chaîne, les textes de l'entretien), comme la forme de référence sans laquelle aucune base ne s'ouvre
+            // (`migrate::prepare_schema`). Un ensemble non construit n'a aucun membre : tout est refusé (repli fermé ; témoin
+            // sous `crochets_de_restauration::sans_ensemble_de_reference`).
+            Err(_) => false,
+        };
+        if admis { Ok(()) } else { Err(self.refus(phase, Cause::DeclencheurOuVueQueLeDemonNeCreePas)) }
     }
 
     /// LES ARGUMENTS DE LA TABLE VIRTUELLE que crée `chaine` (tête vue par l'autoriseur pendant sa préparation), chacun
@@ -857,6 +932,9 @@ fn accepter_toute_collation_sur_le_brouillon(brouillon: &Connection) {
 /// (`Cause::ObjetAuNomDUneTableFantome`, cf. en-tête du module). Leurs LIGNES,
 /// que l'export recopie, ne sont pas jugées : une table sans contenu (`content=''`) n'a pas d'autre copie de ses données.
 ///
+/// LE CORPS DES DÉCLENCHEURS ET DES VUES DU FICHIER est jugé en dernier, après cette comparaison, contre l'ensemble de
+/// référence (`ListeFermee::juger_les_declencheurs_et_les_vues`, cf. en-tête du module).
+///
 /// Le premier refus arrête le jugement et nomme la phase « format ancien ».
 ///
 /// Un refus du MOTEUR pendant le jugement (une ligne que le brouillon ne sait pas préparer ou créer) reste servi, fermé,
@@ -905,7 +983,7 @@ pub(super) fn juger_le_schema_du_format_ancien(clair: &Connection) -> Result<(),
     if du_fichier != du_brouillon {
         return Err(liste.refus(Phase::PostDdl, Cause::TablesFantomesHorsDeCeQueCreeLeModule));
     }
-    Ok(())
+    liste.juger_les_declencheurs_et_les_vues(Phase::PostDdl)
 }
 
 /// CROCHETS DE TEST, propres au fil qui les arme (la restauration se joue sur le fil de son appelant) et désarmés quand
@@ -915,9 +993,14 @@ pub(super) fn juger_le_schema_du_format_ancien(clair: &Connection) -> Result<(),
 ///    seuls modules), que ce jugement rend inatteignables par une archive, gardent un témoin ;
 ///  - `sur_la_connexion` : une fermeture reçoit chaque connexion de restauration du format courant dès son ouverture
 ///    (`ListeFermee::armer`), avant toute instruction ; un témoin y abaisse une limite du moteur ;
-///  - `sans_refus_sur_les_tables_fantomes` : `admettre` admet un index ou un déclencheur posé sur une table fantôme, pour
-///    que les gardes qu'un tel objet était seul à atteindre (aucun déclencheur ne joue pendant la restauration, `COMMIT`
-///    refusé par la liste ou par le moteur), devenues une défense en profondeur, gardent un témoin.
+///  - `sans_refus_sur_les_tables_fantomes` : `admettre` admet un index ou un déclencheur posé sur une table fantôme, et
+///    le corps des déclencheurs et des vues n'est pas jugé, pour que les gardes qu'un tel objet était seul à atteindre
+///    (aucun déclencheur ne joue pendant la restauration, `COMMIT` refusé par la liste ou par le moteur), devenues une
+///    défense en profondeur, gardent un témoin ;
+///  - `sans_jugement_des_declencheurs_et_des_vues` : `ListeFermee::juger_les_declencheurs_et_les_vues` admet tout corps,
+///    pour que les témoins d'une autre règle (noms des tables fantômes, fidélité du rejeu) gardent leurs déclencheurs et
+///    leurs vues de fixture ;
+///  - `sans_ensemble_de_reference` : le même jugement lit l'ensemble de référence comme non construit.
 #[cfg(test)]
 pub(crate) mod crochets_de_restauration {
     use std::cell::{Cell, RefCell};
@@ -928,6 +1011,8 @@ pub(crate) mod crochets_de_restauration {
         static SANS_JUGEMENT: Cell<bool> = const { Cell::new(false) };
         static SUR_LA_CONNEXION: RefCell<Option<SurLaConnexion>> = const { RefCell::new(None) };
         static FANTOMES_OUVERTES: Cell<bool> = const { Cell::new(false) };
+        static CORPS_NON_JUGES: Cell<bool> = const { Cell::new(false) };
+        static SANS_ENSEMBLE: Cell<bool> = const { Cell::new(false) };
     }
 
     /// Désarme les crochets du fil en sortie de portée, panique comprise.
@@ -938,7 +1023,29 @@ pub(crate) mod crochets_de_restauration {
             SANS_JUGEMENT.with(|c| c.set(false));
             SUR_LA_CONNEXION.with(|c| *c.borrow_mut() = None);
             FANTOMES_OUVERTES.with(|c| c.set(false));
+            CORPS_NON_JUGES.with(|c| c.set(false));
+            SANS_ENSEMBLE.with(|c| c.set(false));
         }
+    }
+
+    /// `ListeFermee::juger_les_declencheurs_et_les_vues` lit l'ensemble de référence comme s'il n'avait pas pu être
+    /// construit (branche hors d'atteinte par une archive), pour que son repli fermé garde un témoin.
+    pub(crate) fn sans_ensemble_de_reference() -> Arme {
+        SANS_ENSEMBLE.with(|c| c.set(true));
+        Arme(())
+    }
+
+    pub(super) fn ensemble_de_reference_retire() -> bool {
+        SANS_ENSEMBLE.with(|c| c.get())
+    }
+
+    pub(crate) fn sans_jugement_des_declencheurs_et_des_vues() -> Arme {
+        CORPS_NON_JUGES.with(|c| c.set(true));
+        Arme(())
+    }
+
+    pub(super) fn corps_non_juges() -> bool {
+        CORPS_NON_JUGES.with(|c| c.get())
     }
 
     pub(crate) fn sans_jugement_des_arguments() -> Arme {

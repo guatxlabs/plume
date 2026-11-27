@@ -132,7 +132,7 @@ pub(crate) const FTS_FIELDS_VTABLE_DDL: &str = "CREATE VIRTUAL TABLE IF NOT EXIS
 
 /// Trigger AFTER INSERT : 1 doc FTS par event = group_concat des valeurs scalaires de `fields`.
 /// (partie VALIDÉE, inchangée). PAS de trigger AU : `event` est append-only.
-const FTS_FIELDS_AI_TRIGGER_DDL: &str = "CREATE TRIGGER IF NOT EXISTS event_ff_ai AFTER INSERT ON event \
+pub(crate) const FTS_FIELDS_AI_TRIGGER_DDL: &str = "CREATE TRIGGER IF NOT EXISTS event_ff_ai AFTER INSERT ON event \
      WHEN new.fields IS NOT NULL AND json_valid(new.fields) BEGIN \
        INSERT INTO event_fields_fts(rowid, v) \
        SELECT new.id, group_concat(je.value, ' ') \
@@ -148,7 +148,7 @@ const FTS_FIELDS_AI_TRIGGER_DDL: &str = "CREATE TRIGGER IF NOT EXISTS event_ff_a
 /// APRÈS : on RECONSTRUIT le flat depuis old.fields (group_concat IDENTIQUE au trigger AI) et on le
 /// passe à 'delete' -> FTS5 décrémente exactement les bons postings -> pas de fuite. Chemin FALLBACK
 /// (valide pour toute version FTS5 ; pas besoin de contentless_delete=1, indisponible en 3.39.4).
-const FTS_FIELDS_AD_TRIGGER_DDL: &str = "CREATE TRIGGER IF NOT EXISTS event_ff_ad AFTER DELETE ON event \
+pub(crate) const FTS_FIELDS_AD_TRIGGER_DDL: &str = "CREATE TRIGGER IF NOT EXISTS event_ff_ad AFTER DELETE ON event \
      WHEN old.fields IS NOT NULL AND json_valid(old.fields) BEGIN \
        INSERT INTO event_fields_fts(event_fields_fts, rowid, v) \
        SELECT 'delete', old.id, group_concat(je.value, ' ') \

@@ -34,12 +34,16 @@
 // pour FTS5, FTS4 et FTS3 dans les deux formats (au format courant, le refus du moteur seul en contrôle). Au format
 // ancien, une table au nom exact d'une table fantôme est une table fantôme du fichier, comparée à celles que le module
 // crée (`tables fantômes autres que celles que le module crée`). Un déclencheur NOMMÉ comme une table fantôme ne prend pas ce
-// nom (les déclencheurs ont leur propre espace de noms) et reste admis sur une table ordinaire, dans les deux ordres et
-// les deux formats. L'écrivain rejoue comme table ordinaire une table adoptée dont le nom ne diffère de celui d'une table
+// nom (les déclencheurs ont leur propre espace de noms) et n'est pas refusé par ces règles sur une table ordinaire, dans
+// les deux ordres et les deux formats. L'écrivain rejoue comme table ordinaire une table adoptée dont le nom ne diffère de celui d'une table
 // fantôme que par la casse : la restauration de son archive est refusée.
 //
+// LE CORPS des déclencheurs et des vues est jugé par une autre règle (`restauration_corps_des_declencheurs_et_des_vues.rs` :
+// seuls ceux que le démon crée sont admis). Les contrôles d'ici qui restaurent un déclencheur de fixture sur une table
+// ordinaire lèvent ce seul jugement (`crochets_de_restauration::sans_jugement_des_declencheurs_et_des_vues`).
+//
 // CE QUE CES TÉMOINS NE TIENNENT PAS : les LIGNES des tables fantômes du format ancien (données recopiées par l'export,
-// non jugées) ; le corps d'un déclencheur dont la cible est une table ordinaire n'est pas jugé à la restauration.
+// non jugées).
 // =====================================================================================
 
 mod cj8_restauration_index_et_declencheur_sur_table_fantome {
@@ -295,6 +299,9 @@ mod cj8_restauration_index_et_declencheur_sur_table_fantome {
     /// ordinaire `t` (le déclencheur porte même le nom d'une table fantôme) se restaurent ; chaque table virtuelle répond.
     #[test]
     fn courant_un_index_et_un_declencheur_sur_une_table_ordinaire_se_restaurent() {
+        // Le corps de ce déclencheur n'est pas celui d'un déclencheur que le démon crée : refusé par ailleurs (P10.34-t,
+        // `restauration_corps_des_declencheurs_et_des_vues.rs`). Ce témoin d'une autre règle lève ce seul jugement.
+        let _corps = crate::backup::crochets_de_restauration::sans_jugement_des_declencheurs_et_des_vues();
         let _tmp = crate::tmp_possede::TmpPossede::neuf("cj8-c-controle");
         let racine = _tmp.racine().chemin().to_path_buf();
         let charge = dump(&[
@@ -408,6 +415,9 @@ mod cj8_restauration_index_et_declencheur_sur_table_fantome {
     /// déclencheur, se restaurent à côté de `f4`, qui répond.
     #[test]
     fn courant_une_table_ordinaire_au_nom_voisin_se_restaure_a_cote_de_la_table_virtuelle() {
+        // Le corps de ce déclencheur n'est pas celui d'un déclencheur que le démon crée : refusé par ailleurs (P10.34-t,
+        // `restauration_corps_des_declencheurs_et_des_vues.rs`). Ce témoin d'une autre règle lève ce seul jugement.
+        let _corps = crate::backup::crochets_de_restauration::sans_jugement_des_declencheurs_et_des_vues();
         let _tmp = crate::tmp_possede::TmpPossede::neuf("cj8-c-voisine");
         let racine = _tmp.racine().chemin().to_path_buf();
         let charge = dump_avec(
@@ -516,6 +526,9 @@ mod cj8_restauration_index_et_declencheur_sur_table_fantome {
     /// répond.
     #[test]
     fn ancien_un_index_et_un_declencheur_sur_une_table_ordinaire_se_restaurent() {
+        // Le corps de ce déclencheur n'est pas celui d'un déclencheur que le démon crée : refusé par ailleurs (P10.34-t,
+        // `restauration_corps_des_declencheurs_et_des_vues.rs`). Ce témoin d'une autre règle lève ce seul jugement.
+        let _corps = crate::backup::crochets_de_restauration::sans_jugement_des_declencheurs_et_des_vues();
         let _tmp = crate::tmp_possede::TmpPossede::neuf("cj8-a-controle");
         let racine = _tmp.racine().chemin().to_path_buf();
         let ddl = format!(
@@ -831,6 +844,9 @@ mod cj8_restauration_index_et_declencheur_sur_table_fantome {
         /// sous ce nom, et chaque table virtuelle répond.
         #[test]
         fn courant_un_declencheur_au_nom_d_une_table_fantome_garde_son_espace_de_noms_et_se_restaure() {
+            // Le corps de ce déclencheur n'est pas celui d'un déclencheur que le démon crée : refusé par ailleurs (P10.34-t,
+            // `restauration_corps_des_declencheurs_et_des_vues.rs`). Ce témoin d'une autre règle lève ce seul jugement.
+            let _corps = crate::backup::crochets_de_restauration::sans_jugement_des_declencheurs_et_des_vues();
             let _tmp = crate::tmp_possede::TmpPossede::neuf("cj9-c-declencheur-nomme");
             let racine = _tmp.racine().chemin().to_path_buf();
             let charge = dump(&[
@@ -961,6 +977,9 @@ mod cj8_restauration_index_et_declencheur_sur_table_fantome {
         /// fichier ; admis, la base publiée porte le schéma du fichier et la table virtuelle répond.
         #[test]
         fn ancien_un_declencheur_au_nom_d_une_table_fantome_garde_son_espace_de_noms_et_se_restaure() {
+            // Le corps de ce déclencheur n'est pas celui d'un déclencheur que le démon crée : refusé par ailleurs (P10.34-t,
+            // `restauration_corps_des_declencheurs_et_des_vues.rs`). Ce témoin d'une autre règle lève ce seul jugement.
+            let _corps = crate::backup::crochets_de_restauration::sans_jugement_des_declencheurs_et_des_vues();
             let _tmp = crate::tmp_possede::TmpPossede::neuf("cj9-a-declencheur-nomme");
             let racine = _tmp.racine().chemin().to_path_buf();
             let ddl = format!(

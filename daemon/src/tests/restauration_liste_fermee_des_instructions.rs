@@ -715,9 +715,11 @@ mod restauration_liste_fermee_des_instructions {
     }
 
     /// ALLER-RETOUR DU SCHÉMA COMPLET DE LA TÊTE (schéma de base puis toutes les migrations : FTS5 à contenu externe,
-    /// déclencheurs, index partiels, tables AUTOINCREMENT), plus une vue, que la tête n'a pas et que l'écrivain émet :
-    /// la restauration aboutit, le schéma relu est le même, chaque table ordinaire porte les mêmes lignes, les compteurs
-    /// AUTOINCREMENT sont les mêmes, et la FTS reconstruite répond. Un refus ici voudrait dire que la liste est fausse.
+    /// déclencheurs, index partiels, tables AUTOINCREMENT) : la restauration aboutit, le schéma relu est le même, chaque
+    /// table ordinaire porte les mêmes lignes, les compteurs AUTOINCREMENT sont les mêmes, et la FTS reconstruite répond.
+    /// Un refus ici voudrait dire que la liste est fausse. INVERSÉ (P10.34-t, corps des déclencheurs et des vues) : la
+    /// fixture ne porte plus la vue `vue_des_refus`, que le démon ne crée pas ; la même vue est désormais refusée
+    /// (`restauration_corps_des_declencheurs_et_des_vues.rs`).
     #[test]
     fn aller_retour_du_schema_complet_de_la_tete() {
         let _reglages = VERROU_ENV_PROCESSUS.read();
@@ -737,7 +739,6 @@ mod restauration_liste_fermee_des_instructions {
             c.execute("INSERT INTO legal_hold(name, reason) VALUES('conservation-a', 'enquete')", []).unwrap();
             c.execute("INSERT INTO legal_hold(name, reason) VALUES('conservation-b', 'enquete')", []).unwrap();
             c.execute("DELETE FROM legal_hold WHERE name='conservation-b'", []).unwrap();
-            c.execute_batch("CREATE VIEW vue_des_refus AS SELECT id, host, message FROM event WHERE severity >= 3;").unwrap();
         }
         let src_c = open_db_keyed(&src, Some(CLE)).unwrap();
         let compte = |ty: &str, filtre: &str| -> i64 {
@@ -747,7 +748,6 @@ mod restauration_liste_fermee_des_instructions {
         assert!(compte("trigger", "") >= 1, "contrôle : la tête porte des déclencheurs");
         assert!(compte("index", "AND sql LIKE '% WHERE %'") >= 1, "contrôle : la tête porte des index partiels");
         assert!(compte("index", "AND sql IS NULL") >= 1, "contrôle : la tête porte des index automatiques de contrainte");
-        assert!(compte("view", "") >= 1, "contrôle : la fixture porte une vue");
         assert!(lignes_de(&src_c, "SELECT name, seq FROM sqlite_sequence").len() >= 1, "contrôle : la tête porte des compteurs AUTOINCREMENT");
 
         let archive = chemin(&racine, "archive.age");
@@ -777,7 +777,5 @@ mod restauration_liste_fermee_des_instructions {
         let fts = "SELECT rowid FROM event_fts WHERE event_fts MATCH 'alice'";
         assert_eq!(lignes_de(&dst_c, fts), lignes_de(&src_c, fts), "la FTS reconstruite répond comme la source");
         assert_eq!(lignes_de(&dst_c, fts).len() as i64, n_events, "chaque événement est retrouvé par la FTS");
-        let vue = "SELECT * FROM vue_des_refus";
-        assert_eq!(lignes_de(&dst_c, vue), lignes_de(&src_c, vue), "la vue restaurée se lit comme la source");
     }
 }

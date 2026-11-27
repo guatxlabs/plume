@@ -621,7 +621,8 @@ fn ecrire_l_archive(db_path: &str, dest: &str, key: Option<&str>, recipient: Opt
 /// vise que la table annoncée, créée par la section 1, et lie toutes les valeurs de la ligne par des paramètres
 /// anonymes ; une table virtuelle n'est créée que si chacun de ses arguments, tel que le moteur le découpe, est une forme
 /// que l'écrivain émet (jugé avant son exécution) ; une reconstruction FTS ne vise qu'une table virtuelle créée par cette
-/// restauration. Un refus rend une
+/// restauration ; un déclencheur ou une vue n'est admis que si sa chaîne est, à l'octet, le texte d'un déclencheur ou
+/// d'une vue que le démon crée sous ce nom (jugé après la sentinelle, avant la validation). Un refus rend une
 /// erreur au vocabulaire fermé et la transaction n'est jamais validée. Une chaîne admise ou une valeur de l'archive que
 /// le moteur refuse rend la phase et le code d'erreur SQLite, jamais le texte du moteur, l'écriture d'un compteur
 /// comprise ; seules les erreurs de lecture du flux gardent leur message.
@@ -715,6 +716,8 @@ fn restore_stream<R: std::io::Read>(r: &mut R, dest_db: &str, pass: &str) -> Res
     // sentinelle de fin.
     let tr = rd_u8(r).map_err(|e| format!("restore : lecture sentinelle : {e}"))?;
     if tr != 0xFF { return Err(format!("restore : sentinelle de fin absente (0x{tr:02X}) — dump tronqué/corrompu")); }
+    // Le corps de chaque déclencheur et de chaque vue de l'archive, contre ceux que le démon crée, avant la validation.
+    liste.juger_les_declencheurs_et_les_vues(Phase::PostDdl)?;
     liste.entrer(Phase::Validation, "");
     // Un module FTS vide au `COMMIT` ses données en attente : une action hors liste à ce moment rend le refus nommé.
     conn.execute_batch("COMMIT").map_err(|e| {
@@ -859,7 +862,8 @@ pub(crate) fn restore_compressed(src: &str, dest_db: &str, key: Option<&str>, ov
         // n'est pas rejoué.
         // LE SCHÉMA DU FICHIER SUIT LA LISTE DU FORMAT COURANT : il est jugé AVANT l'export
         // (`restauration_liste_fermee::juger_le_schema_du_format_ancien`), arguments et création des tables virtuelles
-        // compris, leurs tables fantômes comparées à celles que le module crée ; un refus arrête la restauration avant
+        // compris, leurs tables fantômes comparées à celles que le module crée, le corps des déclencheurs et des vues
+        // comparé à ceux que le démon crée ; un refus arrête la restauration avant
         // l'export et avant toute publication. Une erreur du moteur née du fichier (lecture de son schéma, export) rend son code,
         // jamais son texte, qui peut citer un nom ou un morceau du schéma lu.
         restaurer_a_cote_puis_publier(dest_db, |en_cours| {

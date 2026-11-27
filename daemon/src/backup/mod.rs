@@ -26,6 +26,14 @@ use crate::*;
 //   `age -d -p < dest | zstd -d` redonne la charge avec des outils standard ; c'est une DB
 //   SQLite directement ouvrable pour l'ancien format, le dump typé pour le nouveau.
 //
+// CE QU'AUCUN DES DEUX CHEMINS N'ÉCRIT : un déclencheur ou une vue autres que ceux que le démon crée. La restauration
+//   les refuse (`restauration_liste_fermee`) ; l'écrivain applique la même règle
+//   (`dump_restauration::admis_par_la_restauration`) et les OMET de l'archive (du plan du dump, ou du fichier exporté
+//   par le chemin historique) au lieu de produire une archive que la reprise refuserait. La sauvegarde n'échoue pas
+//   pour eux ; elle le dit : une ligne `[backup]` au journal qui les compte et nomme les huit premiers, et
+//   `omis=<nombre> (…)` à la fin de la ligne de résultat (`BackupStats::objets_omis`,
+//   `BackupStats::phrase_des_tailles`).
+//
 // CE QUE LE CHEMIN HISTORIQUE COÛTE, ET POURQUOI IL N'EST PLUS LE DÉFAUT. `sqlcipher_export`
 //   réécrit la base ENTIÈRE EN CLAIR dans un fichier temporaire de staging avant de la
 //   compresser : pendant toute la durée du backup, une copie déchiffrée de tout le SOC est
@@ -837,11 +845,46 @@ pub(crate) fn parse_age_identity_str(s: &str) -> Option<age::x25519::Identity> {
 /// une archive réelle — la grandeur la plus alarmante ET la plus fausse. Une taille qu'on n'a pas pu lire
 /// est dite INCONNUE avec sa cause, jamais remplacée par un zéro ; et l'archive, elle, n'est pas retirée
 /// pour autant (la rendre en échec ferait supprimer une sauvegarde valide par le cycle natif).
+///
+/// `objets_omis` porte les déclencheurs et les vues de la base que l'écrivain n'a PAS mis dans l'archive, parce que
+/// la restauration les refuserait (`dump_restauration::admis_par_la_restauration`) ; vide sur une base qui ne porte
+/// que ceux que le démon crée. Il voyage avec le résultat jusqu'à la ligne opérateur (`phrase_des_tailles`).
 pub(crate) struct BackupStats {
     pub(crate) plaintext_bytes: crate::mesure_environnement::Mesure<u64>,
     pub(crate) dest_bytes: crate::mesure_environnement::Mesure<u64>,
     pub(crate) wrote_plaintext_to_disk: bool,
+    pub(crate) objets_omis: Vec<ObjetOmis>,
 }
+
+/// UN DÉCLENCHEUR OU UNE VUE DE LA BASE QUE L'ÉCRIVAIN N'A PAS MIS DANS L'ARCHIVE. Son nom vient de la base : il ne
+/// s'écrit au journal qu'échappé et borné (`dump_restauration::ligne_des_objets_omis`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ObjetOmis {
+    pub(crate) genre: GenreOmis,
+    pub(crate) nom: String,
+}
+
+/// Les deux genres d'objets que l'écrivain peut omettre.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum GenreOmis {
+    Declencheur,
+    Vue,
+}
+
+impl GenreOmis {
+    /// Le mot du journal.
+    pub(crate) fn mot(self) -> &'static str {
+        match self {
+            GenreOmis::Declencheur => "déclencheur",
+            GenreOmis::Vue => "vue",
+        }
+    }
+}
+
+/// La phrase FIXE que la ligne opérateur d'une sauvegarde porte après `omis=<nombre>` quand l'écrivain a omis au moins
+/// un objet (`BackupStats::phrase_des_tailles`). Les noms, eux, ne sont écrits qu'au journal `[backup]`.
+pub(crate) const PHRASE_DES_OBJETS_OMIS: &str =
+    "déclencheurs ou vues autres que ceux que le démon crée, omis de l'archive : la restauration les refuserait";
 
 impl BackupStats {
     /// La charge sérialisée, si elle a été mesurée (les assertions de test la lisent ainsi).
@@ -861,7 +904,10 @@ impl BackupStats {
     }
 
     /// `charge=… o  dest=… o  ratio=…x` pour la ligne opérateur : une taille inconnue est écrite
-    /// `INCONNUE (cause)`, et le ratio n'est calculé que sur deux tailles lues.
+    /// `INCONNUE (cause)`, et le ratio n'est calculé que sur deux tailles lues. Quand l'écrivain a omis des objets,
+    /// la phrase se termine par `  omis=<nombre> (PHRASE_DES_OBJETS_OMIS)` ; sinon elle est celle des seules tailles.
+    /// Les deux appelants de production l'écrivent sur leur ligne de résultat : la sous-commande `backup --compress`
+    /// (sortie standard) et le cycle de l'ordonnanceur natif (ligne `[backup-sched] écrit …`).
     pub(crate) fn phrase_des_tailles(&self) -> String {
         use crate::mesure_environnement::Mesure;
         let dit = |m: &Mesure<u64>| match m {
@@ -873,7 +919,12 @@ impl BackupStats {
             (Mesure::Lue(_), Mesure::Lue(_)) => "0.0x".to_string(),
             _ => "n/a".to_string(),
         };
-        format!("charge={}  dest={}  ratio={ratio}", dit(&self.plaintext_bytes), dit(&self.dest_bytes))
+        let omis = if self.objets_omis.is_empty() {
+            String::new()
+        } else {
+            format!("  omis={} ({PHRASE_DES_OBJETS_OMIS})", self.objets_omis.len())
+        };
+        format!("charge={}  dest={}  ratio={ratio}{omis}", dit(&self.plaintext_bytes), dit(&self.dest_bytes))
     }
 }
 
@@ -890,10 +941,13 @@ pub(crate) fn taille_sur_disque(chemin: &std::path::Path) -> crate::mesure_envir
 /// Étapes (toutes en RAM bornée) :
 ///  1. EXPORT plaintext : ouvre `db_path` (clé SQLCipher), `ATTACH <tmp> AS plain KEY ''`
 ///     (clair), `SELECT sqlcipher_export('plain')` -> DB SQLite EN CLAIR `<tmp_plain>`
-///     (snapshot cohérent même si la DB de prod est ouverte ailleurs).
+///     (snapshot cohérent même si la DB de prod est ouverte ailleurs), puis retire de CE FICHIER les déclencheurs et
+///     les vues que la restauration refuserait
+///     (`dump_restauration::retirer_de_l_export_ce_que_la_restauration_refuserait`).
 ///  2. STREAM : `<tmp_plain>` -> zstd::Encoder -> age(passphrase=key) -> `<dest>` (buffers 1 MiB).
 ///  3. Le garde RAII efface `<tmp_plain>` (succès comme erreur/panique).
-/// Requiert une clé non vide (passphrase age). Renvoie {plaintext_bytes, dest_bytes, wrote_plaintext_to_disk=true}.
+/// Requiert une clé non vide (passphrase age). Renvoie {plaintext_bytes, dest_bytes, wrote_plaintext_to_disk=true,
+/// objets_omis}.
 /// NB : ce chemin MATÉRIALISE la DB entière EN CLAIR dans un fichier temporaire (~2,4 Gio) — c'est
 /// PRÉCISÉMENT ce que B1 (`backup_compressed_stream`) élimine. Il reste comme REPLI pour les schémas
 /// que le dump typé B1 ne peut pas représenter fidèlement (FTS contentless/régulière, etc.).
@@ -926,17 +980,22 @@ fn backup_compressed_legacy(db_path: &str, dest: &str, key: Option<&str>, recipi
 
     // 1) EXPORT en clair : SQLCipher chiffré (main) -> SQLite clair (attaché). sqlcipher_export
     //    copie schéma + données via le pager SQLite -> RAM bornée (pas de chargement 2 GiB).
-    {
+    //    Puis, dans le FICHIER EXPORTÉ seulement, les déclencheurs et les vues que la restauration refuserait sont
+    //    retirés (`dump_restauration::retirer_de_l_export_ce_que_la_restauration_refuserait`, même règle que le flux).
+    let objets_omis = {
         let conn = open_db_keyed_without_schema_contract(db_path, Some(&pass)).map_err(|e| format!("ouverture DB source : {e}"))?;
         // garde-fou : la source doit être lisible AVEC la clé (sinon clé fausse / DB illisible).
         conn.query_row("SELECT count(*) FROM sqlite_master", [], |r| r.get::<_, i64>(0))
             .map_err(|e| format!("DB source illisible (clé PLUME_DB_KEY incorrecte ?) : {e}"))?;
         crate::db_open::checkpoint_wal_tronque(&conn, "backup");
         let sql = format!(
-            "ATTACH DATABASE '{}' AS plain KEY ''; SELECT sqlcipher_export('plain'); DETACH DATABASE plain;",
+            "ATTACH DATABASE '{}' AS plain KEY ''; SELECT sqlcipher_export('plain');",
             tmp_plain.replace('\'', "''"));
         conn.execute_batch(&sql).map_err(|e| format!("export plaintext (sqlcipher_export) : {e}"))?;
-    }
+        let omis = dump_restauration::retirer_de_l_export_ce_que_la_restauration_refuserait(&conn, "plain")?;
+        conn.execute_batch("DETACH DATABASE plain;").map_err(|e| format!("export plaintext (détachement) : {e}"))?;
+        omis
+    };
     let plaintext_bytes = taille_sur_disque(std::path::Path::new(&tmp_plain));
 
     // v134 (#7) — LOUD WARN à chaque repli symétrique (backup DÉCHIFFRABLE PAR LE NŒUD : passphrase = clé
@@ -980,7 +1039,7 @@ fn backup_compressed_legacy(db_path: &str, dest: &str, key: Option<&str>, recipi
 
     let dest_bytes = taille_sur_disque(std::path::Path::new(dest));
     // tmp_guard est droppé ici -> efface le plaintext temporaire.
-    Ok(BackupStats { plaintext_bytes, dest_bytes, wrote_plaintext_to_disk: true })
+    Ok(BackupStats { plaintext_bytes, dest_bytes, wrote_plaintext_to_disk: true, objets_omis })
 }
 
 /// CLÔT LE FICHIER D'UNE ARCHIVE, erreurs JUGÉES : vide le tampon puis synchronise le fichier sur disque.
@@ -999,7 +1058,7 @@ mod dump_restauration; // LA CHARGE : dump typé B1 streaming, dispatch `backup_
 mod restauration_liste_fermee; // la restauration n'accepte que les formes d'instruction que l'écrivain du dump émet
 pub(crate) use dump_restauration::{backup_compressed, restore_compressed};
 #[cfg(test)]
-pub(crate) use dump_restauration::{crochet_du_clair_de_restauration, SUFFIXE_RESTAURATION_EN_COURS, SUFFIXE_SAUVEGARDE_EN_COURS};
+pub(crate) use dump_restauration::{crochet_de_l_ecrivain, crochet_du_clair_de_restauration, SUFFIXE_RESTAURATION_EN_COURS, SUFFIXE_SAUVEGARDE_EN_COURS};
 #[cfg(test)]
 pub(crate) use restauration_liste_fermee::crochets_de_restauration;
 use dump_restauration::quote_ident; // consommé par `verification` (inventaire) via `use super::*`

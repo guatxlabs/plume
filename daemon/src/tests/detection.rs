@@ -1234,6 +1234,8 @@
         // (P10.34-t, `restauration_corps_des_declencheurs_et_des_vues.rs`). Ce témoin de FIDÉLITÉ du rejeu lève ce seul
         // jugement pour garder sa vue et son déclencheur.
         let _corps = crate::backup::crochets_de_restauration::sans_jugement_des_declencheurs_et_des_vues();
+        // L'écrivain, qui suit la même règle, les omettrait de l'archive : il les émet ici aussi.
+        let _ecrivain = crate::backup::crochet_de_l_ecrivain::tout_emettre();
         let key = "b1-parity-passphrase-correct-horse-battery-staple";
         let src = mk_tmp_path("b1src.db");
         let dest = mk_tmp_path("b1dest.age");

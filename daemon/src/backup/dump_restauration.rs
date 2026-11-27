@@ -2,7 +2,9 @@
 //! (`PLUMEDUMP1\n`, format auto-descriptif little-endian à longueur préfixée, plan dérivé de `sqlite_master`,
 //! AUCUN clair sur disque), le dispatch `backup_compressed` (B1 par défaut, repli legacy `sqlcipher_export` sur
 //! un schéma que le dump ne représente pas) et la RESTAURATION `restore_compressed`, qui reconnaît la charge à
-//! son marqueur de tête (dump B1 ou fichier SQLite historique), jamais au nom du fichier.
+//! son marqueur de tête (dump B1 ou fichier SQLite historique), jamais au nom du fichier. L'écrivain n'émet un
+//! déclencheur ou une vue que si la restauration l'admettra (`admis_par_la_restauration`, même règle qu'elle) : tout
+//! autre est omis de l'archive, dans les deux formats, et `backup_compressed` le dit au journal (`[backup]`).
 //! Sous-module de `backup` (cf. `backup/mod.rs`), qui ré-exporte sa surface `pub(crate)` sous les chemins d'origine.
 use super::*;
 
@@ -40,7 +42,8 @@ use super::*;
 // tables rowid sans alias). sqlite_sequence (compteurs AUTOINCREMENT) préservé -> pas de
 // réutilisation de rowid après restore.
 //
-// SCHÉMA : capturé depuis sqlite_master (tables/index/triggers/vues + colonnes ALTERées). Les FTS5
+// SCHÉMA : capturé depuis sqlite_master (tables/index/triggers/vues + colonnes ALTERées), sauf un déclencheur ou une
+// vue que la restauration refuserait (`admis_par_la_restauration`) : il est omis du plan (`DumpPlan::omis`). Les FTS5
 // à CONTENU EXTERNE (content='<table réelle>', ex: event_fts) sont RECONSTRUITES par `rebuild`
 // depuis leur table de contenu (index DÉRIVÉ -> fidélité FONCTIONNELLE, correcte car le contenu
 // source EST préservé bit-à-bit). Toute forme de schéma que B1 NE PEUT représenter fidèlement
@@ -226,6 +229,7 @@ struct DumpPlan {
     tables: Vec<TableDump>,    // données à streamer (dans l'ordre pre_ddl)
     seqs: Vec<(String, i64)>,  // sqlite_sequence (compteurs AUTOINCREMENT)
     post: Vec<PostStep>,       // vtables + rebuild + index + triggers + vues, dans l'ordre d'application
+    omis: Vec<ObjetOmis>,      // déclencheurs et vues de la base que la restauration refuserait : hors du plan
 }
 
 /// `CREATE VIRTUAL TABLE ...` ?
@@ -290,8 +294,118 @@ fn build_table_dump(conn: &Connection, name: &str, create_sql: &str) -> Result<T
 /// (`restauration_liste_fermee`).
 pub(super) const SUFFIXES_DES_TABLES_FANTOMES: [&str; 9] = ["data", "idx", "docsize", "config", "content", "row", "segments", "segdir", "stat"];
 
+/// LA RÈGLE QUE L'ÉCRIVAIN PARTAGE AVEC LA RESTAURATION : un déclencheur ou une vue (nom de `sqlite_master.name`,
+/// texte de `sqlite_master.sql`) n'entre dans l'archive que si le couple est membre de l'ensemble de référence, la MÊME
+/// fonction (`migrate::declencheurs_et_vues_de_reference`) et la MÊME égalité (couple entier, à l'octet, sans
+/// normalisation) que celles de `restauration_liste_fermee::ListeFermee::juger_les_declencheurs_et_les_vues`. L'écrivain
+/// rejoue `sqlite_master.sql` tel quel et le moteur rend à l'autoriseur le nom qu'il lit dans ce même texte : ce que
+/// cette règle admet, la restauration l'admet ; ce qu'elle refuse, la restauration le refuserait. Un objet refusé ici
+/// est OMIS, la sauvegarde n'est jamais refusée pour lui.
+///
+/// L'ensemble est construit au premier appel, une fois par processus (`OnceLock`) ; cette règle n'est appelée que pour un
+/// déclencheur ou une vue ; les appels suivants ne font que le lire.
+pub(super) fn admis_par_la_restauration(nom: &str, sql: &str) -> bool {
+    #[cfg(test)]
+    if crochet_de_l_ecrivain::tout_emis() {
+        return true;
+    }
+    let reference = crate::migrate::declencheurs_et_vues_de_reference();
+    #[cfg(test)]
+    let reference = if crochet_de_l_ecrivain::ensemble_retire() { Err(String::new()) } else { reference };
+    match reference {
+        Ok(reference) => reference.contains(&(nom.to_string(), sql.to_string())),
+        // HORS D'ATTEINTE par une base : l'ensemble ne dépend que du binaire (cf. la même branche de
+        // `ListeFermee::juger_les_declencheurs_et_les_vues`). Un ensemble non construit n'a aucun membre : la
+        // restauration refuserait tout déclencheur et toute vue, l'écrivain les omet donc tous, et le dit (témoin sous
+        // `crochet_de_l_ecrivain::sans_ensemble_de_reference`).
+        Err(_) => false,
+    }
+}
+
+/// LE FORMAT ANCIEN SUIT LA MÊME RÈGLE : dans l'export en clair attaché sous `base` (`backup_compressed_legacy`, après
+/// `sqlcipher_export`, qui recopie tout le schéma), chaque déclencheur et chaque vue que `admis_par_la_restauration`
+/// refuse est retiré du FICHIER EXPORTÉ, jamais de la base vivante. Le retrait efface sa ligne de `<base>.sqlite_master`,
+/// désignée par son `rowid` (un nom n'est jamais réécrit dans une instruction) : c'est tout ce que fait `DROP TRIGGER`
+/// ou `DROP VIEW` sur le fichier, un déclencheur ou une vue n'ayant aucune page à lui (`rootpage` = 0). Leur texte ne
+/// survit pas dans l'espace libéré de la page : le fichier attaché hérite de `secure_delete` de la base principale
+/// (`attachFunc`, sqlite3.c:119687), que SQLCipher force sur toute base chiffrée (`sqlcipherCodecAttach`,
+/// sqlite3.c:102969). `writable_schema` n'est posé que sur la connexion privée de l'export, fermée à la sortie de son
+/// bloc. Rend les objets retirés, dans l'ordre de `sqlite_master`. Une erreur du moteur pendant ce retrait fait échouer
+/// la sauvegarde (le temporaire est retiré par l'appelant), comme toute autre erreur de l'export (témoin sous
+/// `crochet_de_l_ecrivain::retrait_refuse_par_le_moteur`).
+pub(super) fn retirer_de_l_export_ce_que_la_restauration_refuserait(conn: &Connection, base: &str) -> Result<Vec<ObjetOmis>, String> {
+    let q = quote_ident(base);
+    let lire = |e: rusqlite::Error| format!("export plaintext : lecture des déclencheurs et des vues : {e}");
+    let mut s = conn
+        .prepare(&format!("SELECT rowid, type, name, sql FROM {q}.sqlite_master WHERE type IN ('trigger', 'view') AND sql IS NOT NULL ORDER BY rowid"))
+        .map_err(lire)?;
+    let objets = s
+        .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?)))
+        .map_err(lire)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(lire)?;
+    drop(s);
+    let retires: Vec<(i64, ObjetOmis)> = objets
+        .into_iter()
+        .filter_map(|(rowid, ty, nom, sql)| {
+            let genre = if ty == "trigger" { GenreOmis::Declencheur } else { GenreOmis::Vue };
+            (!admis_par_la_restauration(&nom, &sql)).then_some((rowid, ObjetOmis { genre, nom }))
+        })
+        .collect();
+    if retires.is_empty() {
+        return Ok(Vec::new());
+    }
+    conn.execute_batch("PRAGMA writable_schema = ON").map_err(|e| format!("export plaintext : writable_schema : {e}"))?;
+    // Témoin de la branche d'erreur du moteur (`crochet_de_l_ecrivain::retrait_refuse_par_le_moteur`) : le mode défensif
+    // interdit toute écriture de `sqlite_master`, `writable_schema` compris, et le `DELETE` ci-dessous échoue.
+    #[cfg(test)]
+    if crochet_de_l_ecrivain::retrait_refuse() {
+        conn.set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_DEFENSIVE, true)
+            .map_err(|e| format!("crochet de test : mode défensif : {e}"))?;
+    }
+    let effacer = format!("DELETE FROM {q}.sqlite_master WHERE rowid = ?1");
+    for (rowid, objet) in &retires {
+        conn.execute(&effacer, [rowid]).map_err(|e| {
+            format!("export plaintext : retrait d'un {} que la restauration refuserait : {e}", objet.genre.mot())
+        })?;
+    }
+    Ok(retires.into_iter().map(|(_, objet)| objet).collect())
+}
+
+/// Nombre de noms qu'une ligne `[backup]` d'objets omis écrit ; les suivants sont comptés, pas nommés.
+const NOMS_OMIS_AU_JOURNAL_MAX: usize = 8;
+/// Nombre de caractères (pas d'octets : un nom n'est jamais coupé au milieu d'un caractère) qu'un nom omis garde au
+/// journal ; au-delà il est coupé et suivi de `…`.
+const CARACTERES_D_UN_NOM_OMIS_AU_JOURNAL_MAX: usize = 64;
+
+/// LA LIGNE `[backup]` D'UNE SAUVEGARDE QUI A OMIS DES OBJETS : leur nombre, puis le genre et le nom de chacun des
+/// `NOMS_OMIS_AU_JOURNAL_MAX` premiers. Un nom vient de la base : il est d'abord borné à
+/// `CARACTERES_D_UN_NOM_OMIS_AU_JOURNAL_MAX` caractères, puis écrit ÉCHAPPÉ entre guillemets (forme `Debug` de Rust :
+/// `\n`, `\r`, `\0`, `\"`, `\\` et tout caractère de contrôle échappés), pour qu'il ne forge jamais une ligne du journal.
+pub(super) fn ligne_des_objets_omis(omis: &[ObjetOmis]) -> String {
+    let nommes: Vec<String> = omis
+        .iter()
+        .take(NOMS_OMIS_AU_JOURNAL_MAX)
+        .map(|o| {
+            let borne: String = o.nom.chars().take(CARACTERES_D_UN_NOM_OMIS_AU_JOURNAL_MAX).collect();
+            let coupe = if borne.len() < o.nom.len() { "…" } else { "" };
+            format!("{} {borne:?}{coupe}", o.genre.mot())
+        })
+        .collect();
+    let reste = omis.len() - nommes.len();
+    let suite = if reste > 0 { format!(", et {reste} de plus") } else { String::new() };
+    format!(
+        "[backup] {} déclencheur(s) ou vue(s) autres que ceux que le démon crée OMIS de l'archive (la restauration les \
+         refuserait ; les tables et leurs lignes sont emportées) : {}{suite}",
+        omis.len(),
+        nommes.join(", ")
+    )
+}
+
 /// Collecte le PLAN de dump depuis sqlite_master. Renvoie `Unsupported` (AVANT toute écriture) si le
-/// schéma contient une table virtuelle non représentable en dump typé -> repli legacy propre.
+/// schéma contient une table virtuelle non représentable en dump typé -> repli legacy propre. Un déclencheur ou une vue
+/// que la restauration refuserait (`admis_par_la_restauration`) n'entre pas dans le plan : il est rangé dans
+/// `DumpPlan::omis`.
 fn collect_dump_plan(conn: &Connection) -> Result<DumpPlan, PlanErr> {
     let mut stmt = conn.prepare("SELECT type, name, COALESCE(sql,'') FROM sqlite_master ORDER BY rowid")
         .map_err(|e| PlanErr::Fatal(format!("prepare sqlite_master : {e}")))?;
@@ -320,7 +434,7 @@ fn collect_dump_plan(conn: &Connection) -> Result<DumpPlan, PlanErr> {
         .map(|(_, name, _)| name.clone())
         .collect();
 
-    let mut plan = DumpPlan { pre_ddl: vec![], tables: vec![], seqs: vec![], post: vec![] };
+    let mut plan = DumpPlan { pre_ddl: vec![], tables: vec![], seqs: vec![], post: vec![], omis: vec![] };
     let (mut virt_creates, mut rebuilds, mut indexes, mut triggers, mut views) =
         (Vec::<String>::new(), Vec::<String>::new(), Vec::<String>::new(), Vec::<String>::new(), Vec::<String>::new());
 
@@ -348,8 +462,26 @@ fn collect_dump_plan(conn: &Connection) -> Result<DumpPlan, PlanErr> {
                 }
             }
             "index" => { if !sql.is_empty() { indexes.push(sql.clone()); } } // sqlite_autoindex_* -> sql vide -> skip
-            "trigger" => { if !sql.is_empty() { triggers.push(sql.clone()); } }
-            "view" => { if !sql.is_empty() { views.push(sql.clone()); } }
+            // Un déclencheur ou une vue n'entre dans le plan que si la restauration l'admettra ; sinon il est omis, et dit
+            // (`DumpPlan::omis`, puis `BackupStats::objets_omis`).
+            "trigger" => {
+                if !sql.is_empty() {
+                    if admis_par_la_restauration(name, sql) {
+                        triggers.push(sql.clone());
+                    } else {
+                        plan.omis.push(ObjetOmis { genre: GenreOmis::Declencheur, nom: name.clone() });
+                    }
+                }
+            }
+            "view" => {
+                if !sql.is_empty() {
+                    if admis_par_la_restauration(name, sql) {
+                        views.push(sql.clone());
+                    } else {
+                        plan.omis.push(ObjetOmis { genre: GenreOmis::Vue, nom: name.clone() });
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -456,7 +588,12 @@ fn backup_compressed_stream(db_path: &str, dest: &str, pass: &str, recipient: Op
     crate::handlers::transaction_validee::fermer_l_instantane_de_lecture(&conn, "backup", "sauvegarde en flux");
 
     let dest_bytes = taille_sur_disque(std::path::Path::new(dest));
-    Ok(BackupStats { plaintext_bytes: crate::mesure_environnement::Mesure::Lue(plaintext_bytes), dest_bytes, wrote_plaintext_to_disk: false })
+    Ok(BackupStats {
+        plaintext_bytes: crate::mesure_environnement::Mesure::Lue(plaintext_bytes),
+        dest_bytes,
+        wrote_plaintext_to_disk: false,
+        objets_omis: plan.omis,
+    })
 }
 
 /// SAUVEGARDE COMPRESSÉE+CHIFFRÉE — B1 par défaut (dump STREAMING, ZÉRO clair transitoire) avec REPLI
@@ -474,6 +611,15 @@ fn backup_compressed_stream(db_path: &str, dest: &str, pass: &str, recipient: Op
 ///
 /// UNE DESTINATION QUI DÉSIGNE LA BASE VIVANTE EST REFUSÉE avant tout geste
 /// (`refuser_une_destination_qui_designe_la_base`) : le `rename` final la remplacerait par l'archive.
+///
+/// CE QUE L'ARCHIVE N'EMPORTE PAS SE DIT UNE FOIS : quand l'écrivain a omis des déclencheurs ou des vues
+/// (`BackupStats::objets_omis`, cf. `admis_par_la_restauration`), la ligne `ligne_des_objets_omis` part au journal
+/// après le `rename` de `<dest>.sauvegarde-en-cours` vers `dest`, quel que soit le chemin qui a écrit l'archive ; une
+/// base qui n'en porte aucun n'écrit aucune ligne de plus. Ce `rename` est celui de cette fonction, pas la publication
+/// finale par son appelant : quand `dest` est lui-même un temporaire, l'appelant le renomme ENSUITE vers sa destination
+/// (ordonnanceur natif, `server::sauvegarde_planifiee`) ou peut le retirer après l'avoir vérifié (précondition de la
+/// conversion, `crypto`) ; si ce renommage échoue ou si l'archive est retirée, la ligne a déjà été écrite pour une
+/// archive qui n'est finalement pas publiée.
 pub(crate) fn backup_compressed(db_path: &str, dest: &str, key: Option<&str>, recipient: Option<&str>) -> Result<BackupStats, String> {
     refuser_une_destination_qui_designe_la_base(db_path, dest)?;
     let en_cours = format!("{dest}{SUFFIXE_SAUVEGARDE_EN_COURS}");
@@ -484,6 +630,12 @@ pub(crate) fn backup_compressed(db_path: &str, dest: &str, key: Option<&str>, re
                 return Err(format!(
                     "backup : l'archive complète n'a pas pu prendre la place de {dest} ({e}) ; le temporaire \
                      {en_cours} a été retiré et {dest} n'a pas été remplacée."));
+            }
+            // L'ARCHIVE EST RENOMMÉE SUR `dest` (pas encore publiée si `dest` est le temporaire d'un appelant, cf. la
+            // doc ci-dessus) : ce qu'elle n'emporte pas se dit ici, une fois, quel que soit le chemin qui l'a écrite (un
+            // repli du flux vers le format ancien ne double pas la ligne).
+            if !st.objets_omis.is_empty() {
+                eprintln!("{}", ligne_des_objets_omis(&st.objets_omis));
             }
             Ok(st)
         }
@@ -915,5 +1067,62 @@ pub(crate) mod crochet_du_clair_de_restauration {
         if let Some((_, f)) = pris {
             f(clair);
         }
+    }
+}
+
+/// CROCHETS DE TEST DE L'ÉCRIVAIN, propres au fil qui les arme (la sauvegarde se joue sur le fil de son appelant) et
+/// désarmés quand la garde rendue sort de portée :
+///  - `tout_emettre` : `admis_par_la_restauration` admet tout déclencheur et toute vue, pour que les témoins de la
+///    FIDÉLITÉ du rejeu, qui lèvent aussi le jugement de la restauration
+///    (`crochets_de_restauration::sans_jugement_des_declencheurs_et_des_vues`), gardent leurs objets de fixture ;
+///  - `sans_ensemble_de_reference` : la même règle lit l'ensemble de référence comme non construit ;
+///  - `retrait_refuse_par_le_moteur` : au format ancien, la connexion de l'export passe en mode défensif juste avant le
+///    retrait, et le moteur refuse le `DELETE` de `sqlite_master`.
+#[cfg(test)]
+pub(crate) mod crochet_de_l_ecrivain {
+    use std::cell::Cell;
+
+    thread_local! {
+        static TOUT_EMIS: Cell<bool> = const { Cell::new(false) };
+        static SANS_ENSEMBLE: Cell<bool> = const { Cell::new(false) };
+        static RETRAIT_REFUSE: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// Désarme les crochets du fil en sortie de portée, panique comprise.
+    pub(crate) struct Arme(());
+
+    impl Drop for Arme {
+        fn drop(&mut self) {
+            TOUT_EMIS.with(|c| c.set(false));
+            SANS_ENSEMBLE.with(|c| c.set(false));
+            RETRAIT_REFUSE.with(|c| c.set(false));
+        }
+    }
+
+    pub(crate) fn retrait_refuse_par_le_moteur() -> Arme {
+        RETRAIT_REFUSE.with(|c| c.set(true));
+        Arme(())
+    }
+
+    pub(super) fn retrait_refuse() -> bool {
+        RETRAIT_REFUSE.with(|c| c.get())
+    }
+
+    pub(crate) fn tout_emettre() -> Arme {
+        TOUT_EMIS.with(|c| c.set(true));
+        Arme(())
+    }
+
+    pub(crate) fn sans_ensemble_de_reference() -> Arme {
+        SANS_ENSEMBLE.with(|c| c.set(true));
+        Arme(())
+    }
+
+    pub(super) fn tout_emis() -> bool {
+        TOUT_EMIS.with(|c| c.get())
+    }
+
+    pub(super) fn ensemble_retire() -> bool {
+        SANS_ENSEMBLE.with(|c| c.get())
     }
 }

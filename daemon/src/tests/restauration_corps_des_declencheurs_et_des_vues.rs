@@ -463,10 +463,12 @@ mod ck2_restauration_corps_des_declencheurs_et_des_vues {
     const VUE_DES_REFUS: &str = "CREATE VIEW vue_des_refus AS SELECT id, host, message FROM event WHERE severity >= 3;";
     const SANS_ECRITURE: &str = "CREATE TRIGGER vue_des_refus_sans_ecriture INSTEAD OF DELETE ON vue_des_refus BEGIN SELECT 1; END;";
 
-    /// La sauvegarde réelle d'une base de la tête (avec l'entretien si `entretien`) à laquelle on ajoute `ajout` ; rend
-    /// les octets de l'archive.
+    /// La sauvegarde réelle d'une base de la tête (avec l'entretien si `entretien`) à laquelle on ajoute `ajout`, par un
+    /// écrivain qui émet tout déclencheur et toute vue (`crochet_de_l_ecrivain::tout_emettre`), comme l'écrivain d'avant
+    /// la règle qu'il partage désormais avec la restauration ; rend les octets de l'archive.
     fn archive_de_la_tete_avec(cas: &str, entretien: bool, ajout: &str, tete_attendue: &[u8]) -> Vec<u8> {
         let _reglages = VERROU_ENV_PROCESSUS.read();
+        let _ecrivain = crate::backup::crochet_de_l_ecrivain::tout_emettre();
         let _tmp = crate::tmp_possede::TmpPossede::neuf(&format!("{cas}-source"));
         let racine = _tmp.racine().chemin().to_path_buf();
         let src = chemin(&racine, "src.db");
@@ -481,9 +483,10 @@ mod ck2_restauration_corps_des_declencheurs_et_des_vues {
         std::fs::read(&archive).unwrap()
     }
 
-    /// INVERSION NOMMÉE : la vue `vue_des_refus`, que l'aller-retour courant de la tête restaurait, est refusée dans la
-    /// sauvegarde réelle d'une base de la tête ; au format ancien (filtre de champs), la même vue et son déclencheur
-    /// `INSTEAD OF`, que l'aller-retour ancien restaurait.
+    /// INVERSION NOMMÉE : la vue `vue_des_refus`, que l'aller-retour courant de la tête restaurait, est refusée dans
+    /// l'archive d'une base de la tête écrite par un écrivain qui émet tout ; au format ancien (filtre de champs), la même
+    /// vue et son déclencheur `INSTEAD OF`, que l'aller-retour ancien restaurait. L'écrivain du démon, lui, les omet et
+    /// son archive se restaure (`sauvegarde_objets_hors_reference_omis_et_dits.rs`).
     #[test]
     fn les_fixtures_des_allers_retours_anterieurs_sont_refusees() {
         let courant = archive_de_la_tete_avec("ck2-inv-courant", false, VUE_DES_REFUS, b"PLUMEDUMP1\n");

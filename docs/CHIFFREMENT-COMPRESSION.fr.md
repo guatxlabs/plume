@@ -273,6 +273,14 @@ fichier** : un dump typé en flux (le défaut, qui n'écrit aucun clair transito
 complète (chemin historique, atteint par repli automatique quand un schéma n'est pas représentable
 en dump typé).
 
+Aucune des deux formes ne porte un déclencheur ou une vue autres que ceux que le démon crée : la
+restauration le refuserait, donc l'écrivain applique la même règle et le laisse hors de l'archive
+(sur le chemin historique, il est retiré du fichier exporté, jamais de la base vivante). La
+sauvegarde n'échoue pas pour autant ; elle le dit : une ligne `[backup]` du journal donne le nombre
+d'objets omis et nomme les huit premiers (les suivants sont comptés, `, et N de plus`), et la ligne
+de résultat se termine par `omis=<n> (…)`, sur la sortie standard de
+`backup --compress` et sur la ligne `[backup-sched] écrit …` du planificateur interne.
+
 **CE QUI FAIT BASCULER SUR LE CHEMIN HISTORIQUE, ET CE QUE CE CHEMIN ÉCRIT.** *Établi par lecture des
 sources le 2026-08-30.* Le repli n'est pas théorique : il est déclenché par une **table virtuelle FTS
 sans table de contenu**. `collect_dump_plan` ne sait recréer une vtable FTS que lorsqu'elle s'adosse

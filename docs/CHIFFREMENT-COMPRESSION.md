@@ -273,6 +273,14 @@ name**: a streamed typed dump (the default, which writes no transient plaintext)
 copy (historical path, reached by automatic fallback when a schema cannot be represented
 as a typed dump).
 
+Neither form carries a trigger or a view other than those the daemon creates: the restore would
+refuse it, so the writer applies the same rule and leaves it out of the archive (on the historical
+path, it is removed from the exported file, never from the live database). The backup does not fail
+because of it; it says so: a `[backup]` log line gives the number of objects left out and names
+the first eight (the others are counted, `, et N de plus`), and the result line
+ends with `omis=<n> (…)`, on the standard output of `backup --compress` and on the
+`[backup-sched] écrit …` line of the internal scheduler.
+
 **WHAT SWITCHES TO THE HISTORICAL PATH, AND WHAT THAT PATH WRITES.** *Established by reading the
 sources on 2026-08-30.* The fallback is not theoretical: it is triggered by an **FTS virtual table
 without a content table**. `collect_dump_plan` can only recreate an FTS vtable when it is backed

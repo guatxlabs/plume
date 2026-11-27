@@ -471,9 +471,9 @@
             }
             Mesure::Lue(n) => panic!("une archive absente a une taille ({n}) — c'est le zéro rassurant que cette clé ferme"),
         }
-        let dite = BackupStats { plaintext_bytes: Mesure::Lue(50), dest_bytes: lue, wrote_plaintext_to_disk: false }.phrase_des_tailles();
+        let dite = BackupStats { plaintext_bytes: Mesure::Lue(50), dest_bytes: lue, wrote_plaintext_to_disk: false, objets_omis: Vec::new() }.phrase_des_tailles();
         assert_eq!(dite, "charge=50 o  dest=5 o  ratio=10.0x");
-        let avouee = BackupStats { plaintext_bytes: Mesure::Lue(50), dest_bytes: absente, wrote_plaintext_to_disk: false }.phrase_des_tailles();
+        let avouee = BackupStats { plaintext_bytes: Mesure::Lue(50), dest_bytes: absente, wrote_plaintext_to_disk: false, objets_omis: Vec::new() }.phrase_des_tailles();
         assert!(avouee.contains("dest=INCONNUE (source_absente)") && avouee.ends_with("ratio=n/a"),
             "une taille inconnue est dite, et aucun ratio n'est calculé dessus : {avouee}");
     }

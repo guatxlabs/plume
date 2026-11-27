@@ -291,10 +291,12 @@ const MOTS_DU_PLAN_DE_CONTROLE = {
   // refusée »). Mesuré sur la base : la face disait « sa base n'a pas pris l'événement », faux pour la seconde. C'est la
   // phrase servie, peinte à côté, qui dit laquelle. `P10.20-b` — une TROISIÈME phrase sous la même clé : la ligne du
   // tenant au catalogue non relue (`CAUSE_EVENEMENT_DU_TENANT_CATALOGUE_NON_LU`, daemon/src/tenants.rs) — ni refus de sa
-  // base, ni base non servie ; la face la nomme parmi les trois.
+  // base, ni base non servie. `P10.20-b` — une QUATRIÈME : la suspension d'un tenant actif dont la base n'était pas
+  // ouvrable (`CAUSE_EVENEMENT_DU_TENANT_BASE_NON_OUVERTE`, daemon/src/tenants.rs), faite, son événement sans base où
+  // s'écrire ; la face la nomme parmi les quatre.
   evenement_non_ecrit: {
-    fr: "Le geste a bien eu lieu, mais l'événement d'audit qui le montre n'est pas écrit dans la base de ce tenant — refusé par elle, base non servie (tenant suspendu), ou ligne du tenant non relue au plan de contrôle : le démon dit laquelle. Ce tenant ne verra pas ce changement parmi ses propres événements, et le refaire ne comblerait rien. Le démon le dit —",
-    en: "The gesture did happen, but the audit event that shows it is not written in this tenant's database — refused by it, database not served (suspended tenant), or tenant row not re-read from the control plane: the daemon says which. This tenant will not see this change among its own events, and doing it again would fill nothing. The daemon says —" },
+    fr: "Le geste a bien eu lieu, mais l'événement d'audit qui le montre n'est pas écrit dans la base de ce tenant — refusé par elle, base non servie (tenant suspendu), base non ouvrable (clé non résolue ou base indisponible), ou ligne du tenant non relue au plan de contrôle : le démon dit laquelle. Ce tenant ne verra pas ce changement parmi ses propres événements, et le refaire ne comblerait rien. Le démon le dit —",
+    en: "The gesture did happen, but the audit event that shows it is not written in this tenant's database — refused by it, database not served (suspended tenant), database not openable (key not resolved or database unavailable), or tenant row not re-read from the control plane: the daemon says which. This tenant will not see this change among its own events, and doing it again would fill nothing. The daemon says —" },
   tenant_non_lu_bascule: {
     fr: "Tenant INCHANGÉ : le plan de contrôle n'a pas pu LIRE ce tenant, la bascule n'a PAS été faite — ce n'est pas « tenant inconnu ». Le geste peut être rejoué. Le démon en nomme la cause —",
     en: 'Tenant UNCHANGED: the control plane could not READ this tenant, the switch was NOT made — this is not "unknown tenant". The gesture can be replayed. The daemon names the cause —' },

@@ -97,26 +97,30 @@ pub(crate) fn connecteur_push_lie_lu(
 pub(crate) enum BaseDeLaLivraisonPush {
     /// La base du tenant porteur (mode 0 : le writer du processus, à l'octet comme avant, aucun catalogue lu).
     Servie(Arc<Mutex<rusqlite::Connection>>),
-    /// Tenant absent, suspendu, clé non résolue ou schéma refusé : refusé comme une clé dont la source n'est plus
-    /// vivante (403), rien au spool.
+    /// Tenant absent ou suspendu : refusé comme une clé dont la source n'est plus vivante (403), rien au spool.
     NonServable,
+    /// `P10.20-b` — tenant ACTIF dont la clé n'est pas résolue ou la base pas ouverte : refus PASSAGER (503, phrase fixe
+    /// `rbac::CAUSE_BASE_DU_TENANT_NON_OUVERTE`, le flux amont rejoue), jamais le 403 d'une source morte, rien au spool.
+    /// La classe et le détail vont au journal du démon seul, par `state::ready_lu`, une fois par panne.
+    NonOuvert,
     /// La ligne du catalogue n'a pas été lue : refus PASSAGER (503 nommé, le flux amont rejoue), rien au spool. La
     /// cause du moteur va au journal seul.
     CatalogueNonLu(rusqlite::Error),
 }
 
 /// Partagée par les deux récepteurs push. JAMAIS la base du processus à la place de celle du tenant : la seule base
-/// servie sort de `handle_for_lu`.
+/// servie sort de `handle_ouverte_lu`.
 ///
-/// HORS D'ATTEINTE AUJOURD'HUI, PAR LA ROUTE, POUR `NonServable` ET `CatalogueNonLu` : `push_token_connector_lu`
+/// HORS D'ATTEINTE AUJOURD'HUI, PAR LA ROUTE, POUR `NonServable`, `NonOuvert` ET `CatalogueNonLu` : `push_token_connector_lu`
 /// (state.rs) rend `Absent` dès qu'un plan de contrôle existe, si bien qu'en mode multi-tenant la livraison est
 /// refusée à la clé (Firehose 403, Pub/Sub 401) avant cet appel, et que le tenant porteur vaut toujours `default`.
-/// Les deux bras gardent la règle si les clés push s'ouvrent un jour au mode multi-tenant ; leurs témoins appellent
+/// Les trois bras gardent la règle si les clés push s'ouvrent un jour au mode multi-tenant ; leurs témoins appellent
 /// cette fonction directement.
 pub(crate) fn base_de_la_livraison_push_lu(st: &AppState, tenant: &str) -> BaseDeLaLivraisonPush {
-    match st.tenants.handle_for_lu(tenant) {
-        Ok(Some(handle)) => BaseDeLaLivraisonPush::Servie(handle),
-        Ok(None) => BaseDeLaLivraisonPush::NonServable,
+    match st.tenants.handle_ouverte_lu(tenant) {
+        Ok(OuvertureDuTenant::Servie(handle)) => BaseDeLaLivraisonPush::Servie(handle),
+        Ok(OuvertureDuTenant::NonServable) => BaseDeLaLivraisonPush::NonServable,
+        Ok(OuvertureDuTenant::NonOuvert(_)) => BaseDeLaLivraisonPush::NonOuvert,
         Err(cause) => BaseDeLaLivraisonPush::CatalogueNonLu(cause),
     }
 }
@@ -218,12 +222,15 @@ pub(crate) async fn firehose_ingest_post(
     //    du connecteur ratée -> 503 nommé (le stream rejoue), jamais le 403 d'un binding cassé ; cause du moteur au
     //    journal seul, aucun repli. La base est celle du tenant porteur, jamais celle du processus à sa place
     //    (`base_de_la_livraison_push_lu`) : tenant non servable -> le 403 d'une source qui n'est plus vivante ;
-    //    ligne du catalogue non lue -> 503 nommé, le stream rejoue. Ces deux bras sont HORS D'ATTEINTE par la route
-    //    aujourd'hui (aucune clé push en mode multi-tenant, cf. la doc de la fonction).
+    //    tenant actif non ouvert ou ligne du catalogue non lue -> 503 nommé, le stream rejoue. Ces trois bras sont HORS
+    //    D'ATTEINTE par la route aujourd'hui (aucune clé push en mode multi-tenant, cf. la doc de la fonction).
     let handle = match base_de_la_livraison_push_lu(&st, &ident.tenant) {
         BaseDeLaLivraisonPush::Servie(handle) => handle,
         BaseDeLaLivraisonPush::NonServable => {
             return firehose_err(StatusCode::FORBIDDEN, &request_id, "delivery key not bound to a live push source")
+        }
+        BaseDeLaLivraisonPush::NonOuvert => {
+            return firehose_err(StatusCode::SERVICE_UNAVAILABLE, &request_id, crate::rbac::CAUSE_BASE_DU_TENANT_NON_OUVERTE)
         }
         BaseDeLaLivraisonPush::CatalogueNonLu(cause) => {
             eprintln!("[ingest] WARN tenant d'une clé Firehose : ligne du catalogue des tenants NON LUE, livraison refusée : {cause}");

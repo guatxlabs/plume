@@ -31062,7 +31062,8 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
 // CE QUE LE DÉMON SERT SOUS `evenement_du_tenant_non_ecrit` (RELU ci-dessous) : `CAUSE_EVENEMENT_DU_TENANT_NON_ECRIT`
 // (daemon/src/rbac.rs, la base du tenant a refusé l'événement) et `CAUSE_EVENEMENT_DU_TENANT_SANS_BASE_SERVIE`
 // (daemon/src/tenants.rs, la base n'est pas servie — « ce n'est pas une écriture refusée »). MESURÉ SUR LA BASE : la face
-// disait « sa base n'a pas pris l'événement d'audit », fausse pour la seconde.
+// disait « sa base n'a pas pris l'événement d'audit », fausse pour la seconde. `P10.20-b` — deux phrases de plus sous la même
+// clé, dans tenants.rs : la ligne du tenant non relue, et la base non ouvrable de la suspension faite.
 // JUGÉ, sur `avouerLeProvisionnement` des deux instances de langue : chaque phrase servie donne la face NEUTRE (fragment
 // écrit ICI), suivie de la phrase entière ; la face ne dit plus que la base a refusé.
 // CE QU'IL NE TIENT PAS : quel geste sert quelle phrase (témoins Rust).
@@ -31081,10 +31082,13 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
   const lire157 = (rel) => { try { return readFileSync(path.join(RACINE, "daemon", "src", rel), "utf8"); } catch (e) { return ""; } };
   const RBAC157 = lire157("rbac.rs"), TENANTS157 = lire157("tenants.rs");
   // `P10.20-b` — la TROISIÈME phrase servie sous la même clé : la ligne du tenant au catalogue non relue (tenants.rs, posée
-  // par l'aide commune de rbac.rs), ni refus de sa base ni base non servie.
-  const PHRASES157 = { perte_d_ecriture: litteral157(RBAC157, "CAUSE_EVENEMENT_DU_TENANT_NON_ECRIT"), base_non_servie: litteral157(TENANTS157, "CAUSE_EVENEMENT_DU_TENANT_SANS_BASE_SERVIE"), catalogue_non_lu: litteral157(TENANTS157, "CAUSE_EVENEMENT_DU_TENANT_CATALOGUE_NON_LU") };
-  instrument157(PHRASES157.perte_d_ecriture.length > 100 && PHRASES157.base_non_servie.length > 100 && PHRASES157.catalogue_non_lu.length > 100
-    && new Set(Object.values(PHRASES157)).size === 3
+  // par l'aide commune de rbac.rs), ni refus de sa base ni base non servie. La QUATRIÈME : la suspension d'un tenant actif
+  // dont la base n'était pas ouvrable (tenants.rs, posée par `tenant_set_suspended`), faite, son événement sans base.
+  const PHRASES157 = { perte_d_ecriture: litteral157(RBAC157, "CAUSE_EVENEMENT_DU_TENANT_NON_ECRIT"), base_non_servie: litteral157(TENANTS157, "CAUSE_EVENEMENT_DU_TENANT_SANS_BASE_SERVIE"), catalogue_non_lu: litteral157(TENANTS157, "CAUSE_EVENEMENT_DU_TENANT_CATALOGUE_NON_LU"), base_non_ouvrable: litteral157(TENANTS157, "CAUSE_EVENEMENT_DU_TENANT_BASE_NON_OUVERTE") };
+  instrument157(PHRASES157.perte_d_ecriture.length > 100 && PHRASES157.base_non_servie.length > 100 && PHRASES157.catalogue_non_lu.length > 100 && PHRASES157.base_non_ouvrable.length > 100
+    && new Set(Object.values(PHRASES157)).size === 4
+    && /corps\[CLE_EVENEMENT_DU_TENANT_NON_ECRIT\] = json!\(CAUSE_EVENEMENT_DU_TENANT_BASE_NON_OUVERTE\);/.test(TENANTS157)
+    && /pas pu être ouverte/.test(PHRASES157.base_non_ouvrable)
     && /corps\[CLE_EVENEMENT_DU_TENANT_NON_ECRIT\] = json!\((?:crate::tenants::)?CAUSE_EVENEMENT_DU_TENANT_CATALOGUE_NON_LU\);/.test(RBAC157 + "\n" + TENANTS157)
     && /relire/.test(PHRASES157.catalogue_non_lu)
     && /corps\[CLE_EVENEMENT_DU_TENANT_NON_ECRIT\] = json!\(CAUSE_EVENEMENT_DU_TENANT_NON_ECRIT\);/.test(RBAC157)
@@ -31092,12 +31096,12 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
     // sous le chemin `crate::tenants::`) ; la constante, elle, reste dans tenants.rs.
     && /corps\[CLE_EVENEMENT_DU_TENANT_NON_ECRIT\] = json!\((?:crate::tenants::)?CAUSE_EVENEMENT_DU_TENANT_SANS_BASE_SERVIE\);/.test(RBAC157 + "\n" + TENANTS157)
     && /servie/.test(PHRASES157.base_non_servie),
-    "les trois phrases servies sous `evenement_du_tenant_non_ecrit` ne se relisent plus dans rbac.rs et tenants.rs");
+    "les quatre phrases servies sous `evenement_du_tenant_non_ecrit` ne se relisent plus dans rbac.rs et tenants.rs");
   instrument157(modT157.CLE_DE_L_EVENEMENT_DU_TENANT_NON_ECRIT === "evenement_du_tenant_non_ecrit" && typeof modT157.avouerLeProvisionnement === "function" && typeof modTEn157.avouerLeProvisionnement === "function",
     "web/multitenant.js n'exporte plus la clé ou `avouerLeProvisionnement`");
   const NEUTRE157 = {
-    fr: ["Le geste a bien eu lieu", "n'est pas écrit dans la base de ce tenant", "refusé par elle, base non servie (tenant suspendu), ou ligne du tenant non relue au plan de contrôle", "le démon dit laquelle", "le refaire ne comblerait rien"],
-    en: ["The gesture did happen", "is not written in this tenant's database", "refused by it, database not served (suspended tenant), or tenant row not re-read from the control plane", "the daemon says which", "doing it again would fill nothing"],
+    fr: ["Le geste a bien eu lieu", "n'est pas écrit dans la base de ce tenant", "refusé par elle, base non servie (tenant suspendu), base non ouvrable (clé non résolue ou base indisponible), ou ligne du tenant non relue au plan de contrôle", "le démon dit laquelle", "le refaire ne comblerait rien"],
+    en: ["The gesture did happen", "is not written in this tenant's database", "refused by it, database not served (suspended tenant), database not openable (key not resolved or database unavailable), or tenant row not re-read from the control plane", "the daemon says which", "doing it again would fill nothing"],
   };
   const FAUX157 = { fr: ["sa base n'a pas pris"], en: ["its database did not take"] };
   const liste157 = document.querySelector("#tenant-list");
@@ -31120,7 +31124,7 @@ const CAUSES_DU_DEMON_A_EFFET_PARTIEL = Object.freeze(["CAUSE_ENVOI_DU_PUITS_CUR
     aveux157().forEach((a) => a.remove());
   }
   if (echecs.length !== echecsAvant157) console.log(`(157) EN ÉCHEC — ${echecs.length - echecsAvant157} écart(s), dits ci-dessus`);
-  else console.log("(157) OK — `P10.30-d` (console) : sous `evenement_du_tenant_non_ecrit`, la perte d'écriture (rbac.rs), la base non servie et la ligne du tenant non relue (`P10.20-b`, tenants.rs) donnent la même face NEUTRE — le geste a eu lieu, l'événement n'est pas écrit dans la base du tenant, refusé, base non servie ou ligne non relue, le démon dit laquelle — suivie de la phrase servie entière, fr et en. Ce qu'il NE tient PAS : quel geste sert quelle phrase.");
+  else console.log("(157) OK — `P10.30-d` (console) : sous `evenement_du_tenant_non_ecrit`, la perte d'écriture (rbac.rs), la base non servie, la ligne du tenant non relue et la base non ouvrable de la suspension (`P10.20-b`, tenants.rs) donnent la même face NEUTRE — le geste a eu lieu, l'événement n'est pas écrit dans la base du tenant, refusé, base non servie, base non ouvrable ou ligne non relue, le démon dit laquelle — suivie de la phrase servie entière, fr et en. Ce qu'il NE tient PAS : quel geste sert quelle phrase.");
 }
 
 

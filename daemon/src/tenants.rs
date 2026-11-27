@@ -705,7 +705,8 @@ pub(crate) async fn tenant_set_suspended(st: &AppState, au: &AuthUser, id: &str,
     let Some(cp) = st.tenants.control.as_ref() else {
         return (StatusCode::INTERNAL_SERVER_ERROR, "control-plane indisponible").into_response();
     };
-    // Existence + audit AVANT de basculer (à la suspension, la base doit encore être résoluble pour l'event).
+    // Existence AVANT de basculer. La bascule ne dépend pas de l'ouverture de la base du tenant : quand elle ne s'ouvre
+    // pas, la suspension est écrite quand même et l'événement que cette base ne peut pas recevoir est avoué plus bas.
     // `P10.21-m` — TROIS ISSUES : présent, ABSENT (404), ILLISIBLE (503 nommé, comme `grant_set`). `.is_ok()`
     // servait une lecture ratée comme « tenant inconnu » : une lecture non faite rendue comme un fait.
     let existence = {
@@ -733,16 +734,23 @@ pub(crate) async fn tenant_set_suspended(st: &AppState, au: &AuthUser, id: &str,
     // résolvait déjà pas » : prise pour telle, la bascule passait et l'événement, cherché après elle, ne trouvait plus
     // de base servie — perdu alors qu'il pouvait être écrit. La bascule est REFUSÉE, avant toute écriture et toute
     // trace, sous la cause d'un tenant non lu à la bascule (la console la lit déjà) ; le geste se rejoue.
-    let poignee_avant_suspension = if suspend {
-        match st.tenants.handle_for_lu(id) {
-            Ok(poignee) => poignee,
+    // `P10.20-b` — un tenant ACTIF dont la base n'est pas ouvrable (clé non résolue, base non ouverte) au moment de
+    // prendre cette poignée N'EMPÊCHE PAS la suspension : c'est un geste de sécurité, et l'exploitant doit pouvoir le
+    // faire précisément quand la base est cassée, compromise, ou que le coffre de ses clés est injoignable. La bascule
+    // est écrite et tracée au journal de contrôle comme toute suspension ; l'événement d'audit, que cette base ne peut
+    // pas recevoir, n'est pas tenté : il est AVOUÉ à côté du succès sous sa phrase fixe
+    // (`CAUSE_EVENEMENT_DU_TENANT_BASE_NON_OUVERTE`). La classe et le détail du résolveur ou du moteur restent au journal
+    // du démon (`state::ready_lu`, une fois par panne), jamais dans la réponse.
+    let base_avant_suspension = if suspend {
+        match st.tenants.handle_ouverte_lu(id) {
+            Ok(base) => base,
             Err(e) => {
                 eprintln!("[tenants] WARN tenant '{id}' : ligne du catalogue des tenants NON LUE avant la bascule de suspension (poignée de sa base) : {e}");
                 return err_json(StatusCode::SERVICE_UNAVAILABLE, CAUSE_TENANT_NON_LU_BASCULE_NON_FAITE);
             }
         }
     } else {
-        None
+        OuvertureDuTenant::NonServable
     };
     let bascule = {
         let conn = cp.conn.lock();
@@ -756,17 +764,23 @@ pub(crate) async fn tenant_set_suspended(st: &AppState, au: &AuthUser, id: &str,
     }
     let message = format!("tenant '{id}' {verb} par '{}'", au.name);
     // `P10.21-m` — la bascule est ÉCRITE : un événement perdu ne l'annule pas, il est avoué à côté du succès.
-    let evenement = match poignee_avant_suspension {
-        Some(poignee) => audit_tenant_event_sur(&poignee, kind, sev, &message, json!({ "operator": au.name })),
-        // Réactivation : la base redevient résoluble APRÈS la bascule. Suspension d'un tenant dont la
-        // base ne se résolvait déjà pas : l'appel ne trouve rien, comme avant.
-        None => audit_tenant_event(st, id, kind, sev, &message, json!({ "operator": au.name })),
+    let evenement = match base_avant_suspension {
+        OuvertureDuTenant::Servie(poignee) => Some(audit_tenant_event_sur(&poignee, kind, sev, &message, json!({ "operator": au.name }))),
+        // Réactivation : la base redevient résoluble APRÈS la bascule. Suspension d'un tenant absent ou déjà
+        // suspendu : l'appel ne trouve rien, comme avant.
+        OuvertureDuTenant::NonServable => Some(audit_tenant_event(st, id, kind, sev, &message, json!({ "operator": au.name }))),
+        // Suspension d'un tenant actif dont la base n'était pas ouvrable : aucune base où écrire, avoué ci-dessous.
+        OuvertureDuTenant::NonOuvert(_) => None,
     };
     // `P10.20-z` — la bascule est faite ; une ligne manquante au journal de contrôle est dite à côté.
     let maillon = control_ledger_append(st, kind, &au.name, id, &json!({ "operator": au.name }).to_string());
     let mut corps = json!({ "ok": true, "id": id, "suspended": suspend });
     avouer_le_maillon_de_controle_manquant(&mut corps, &maillon);
-    avouer_l_evenement_du_tenant_non_ecrit(&mut corps, &evenement);
+    if let Some(evenement) = evenement {
+        avouer_l_evenement_du_tenant_non_ecrit(&mut corps, &evenement);
+    } else {
+        corps[CLE_EVENEMENT_DU_TENANT_NON_ECRIT] = json!(CAUSE_EVENEMENT_DU_TENANT_BASE_NON_OUVERTE);
+    }
     Json(corps).into_response()
 }
 
@@ -1034,6 +1048,17 @@ pub(crate) const CAUSE_EVENEMENT_DU_TENANT_SANS_BASE_SERVIE: &str =
     "ÉVÉNEMENT DU TENANT NON ÉCRIT : le geste d'administration a bien eu lieu, mais la base de ce tenant n'est pas \
      servie (un tenant suspendu ne l'est pas) — l'événement d'audit qui le lui montre n'y est pas écrit, et ce tenant ne \
      verra pas ce changement parmi ses propres événements, même une fois servi de nouveau.";
+
+/// `P10.20-b` — CE QU'UN SUCCÈS DE LA SUSPENSION DIT QUAND LA BASE DU TENANT, ACTIF, N'ÉTAIT PAS OUVRABLE (clé non résolue,
+/// base non ouverte) : la suspension est faite et tracée au journal de contrôle, mais l'événement qui la montre au tenant
+/// n'a pas de base où s'écrire. Ni `CAUSE_EVENEMENT_DU_TENANT_SANS_BASE_SERVIE` (le tenant n'était ni absent ni suspendu),
+/// ni `CAUSE_EVENEMENT_DU_TENANT_NON_ECRIT` (aucune écriture n'a été tentée ni refusée). Même clé
+/// (`CLE_EVENEMENT_DU_TENANT_NON_ECRIT`, lue par la console), posée par `tenant_set_suspended` ; la classe et le détail du
+/// résolveur ou du moteur vont au journal du démon seul.
+pub(crate) const CAUSE_EVENEMENT_DU_TENANT_BASE_NON_OUVERTE: &str =
+    "ÉVÉNEMENT DU TENANT NON ÉCRIT : le geste d'administration a bien eu lieu, mais la base de ce tenant n'a pas pu être \
+     ouverte (clé non résolue ou base indisponible) — l'événement d'audit qui le lui montre n'y est pas écrit, et ce \
+     tenant ne verra pas ce changement parmi ses propres événements, même une fois servi de nouveau.";
 
 /// `P10.20-b` — CE QU'UN SUCCÈS DIT QUAND LA LIGNE DU TENANT AU CATALOGUE N'A PAS PU ÊTRE RELUE POUR ÉCRIRE L'ÉVÉNEMENT
 /// (`EvenementDAuditDuTenant::CatalogueNonLu`). Ni `CAUSE_EVENEMENT_DU_TENANT_SANS_BASE_SERVIE` (rien n'établit que la

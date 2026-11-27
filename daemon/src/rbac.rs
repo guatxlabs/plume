@@ -131,6 +131,17 @@ pub(crate) const CAUSE_CATALOGUE_DES_TENANTS_NON_LU: &str = "CATALOGUE DES TENAN
      pas pu lire la ligne du tenant demandé — ce n'est PAS « tenant inconnu ou indisponible » : son existence n'est ni \
      affirmée ni niée, et aucune base n'est servie. Réessayez une fois le plan de contrôle de nouveau lisible.";
 
+/// `P10.20-b` — LE TENANT DEMANDÉ EST ACTIF, MAIS SA BASE N'A PAS PU ÊTRE OUVERTE : clé non résolue (coffre de secrets
+/// injoignable) ou base non ouverte ou non préparée. Ce n'est ni « tenant inconnu ou indisponible » (403 d'une absence ou
+/// d'une suspension établies) ni « catalogue non lu » : une panne du moment, et le demandeur est invité à réessayer.
+/// Servie par la porte de l'accès inter-tenants, la porte d'entrée d'`auth_guard` (auth.rs) et les récepteurs poussés ;
+/// la classe et le détail vont au journal du démon seul (`state::catalog_route` et `state::ready_lu`, une fois par
+/// panne), jamais dans la réponse.
+pub(crate) const CAUSE_BASE_DU_TENANT_NON_OUVERTE: &str = "BASE DU TENANT NON OUVERTE : le tenant demandé est actif, mais \
+     sa base n'a pas pu être ouverte pour une cause du moment (clé non résolue ou base indisponible) — ce n'est PAS « tenant \
+     inconnu ou indisponible » : rien n'est servi ni écrit, ni dans sa base ni dans une autre. Réessayez une fois sa base de \
+     nouveau ouvrable.";
+
 /// `P10.20-b` — le refus des portes d'entrée sur des droits non lus : 503, la phrase fixe, sans le texte du moteur ;
 /// ce texte est dit au journal, jamais servi.
 pub(crate) fn refus_des_droits_non_lus(cause_du_moteur: &rusqlite::Error) -> (StatusCode, String) {
@@ -200,9 +211,14 @@ pub(crate) fn resolve_tenant_access(
         return Err((StatusCode::FORBIDDEN, "aucun accès à ce tenant (grant requis)".into()));
     }
     // Le tenant doit exister ET être résoluble (fail-closed : jamais d'accès à un tenant fantôme/suspendu).
-    match st.tenants.tenant_available_lu(&tenant) {
-        Ok(true) => {}
-        Ok(false) => return Err((StatusCode::FORBIDDEN, "tenant inconnu ou indisponible".into())),
+    // `P10.20-b` — QUATRE ISSUES : un tenant ACTIF dont la clé n'est pas résolue n'est plus « inconnu ou indisponible » :
+    // 503 nommé, sans la cause (dite au journal par `state::catalog_route`, une fois par panne).
+    match st.tenants.disponibilite_lu(&tenant) {
+        Ok(OuvertureDuTenant::Servie(())) => {}
+        Ok(OuvertureDuTenant::NonServable) => return Err((StatusCode::FORBIDDEN, "tenant inconnu ou indisponible".into())),
+        Ok(OuvertureDuTenant::NonOuvert(_)) => {
+            return Err((StatusCode::SERVICE_UNAVAILABLE, CAUSE_BASE_DU_TENANT_NON_OUVERTE.to_string()))
+        }
         Err(e) => return Err(refus_du_catalogue_non_lu(&e)),
     }
     if mutating {
@@ -1388,13 +1404,18 @@ fn poser_l_evenement_du_tenant(st: &AppState, superadmin: &str, tenant: &str, wr
         DecisionDeFenetre::Reservee(jeton) => jeton,
     };
     let trace_du_tenant = if write { TRACE_OPERATEUR_TENANT_ECRITURE } else { TRACE_OPERATEUR_TENANT_LECTURE };
-    // `P10.20-b` — trois issues, une seule conduite (la trace du tenant est perdue, comptée, la réservation oubliée ;
-    // rien n'est écrit dans une autre base) : seule la cause diffère, et une ligne du catalogue NON LUE n'est plus
-    // comptée sous « base non résoluble ».
-    let handle = match st.tenants.handle_for_lu(tenant) {
-        Ok(Some(handle)) => handle,
-        Ok(None) => {
+    // `P10.20-b` — quatre issues, une seule conduite (la trace du tenant est perdue, comptée, la réservation oubliée ;
+    // rien n'est écrit dans une autre base) : seule la cause diffère. Une ligne du catalogue NON LUE et un tenant ACTIF
+    // dont la base n'est pas ouverte ne sont plus comptés sous « base non résoluble » ; la seconde cause ne porte que le
+    // mot fixe de sa classe, le détail est au journal du démon (`state::ready_lu`).
+    let handle = match st.tenants.handle_ouverte_lu(tenant) {
+        Ok(OuvertureDuTenant::Servie(handle)) => handle,
+        Ok(OuvertureDuTenant::NonServable) => {
             return perdre_la_trace_du_tenant(superadmin, tenant, jeton, trace_du_tenant, "base du tenant non résoluble au moment de l'écriture")
+        }
+        Ok(OuvertureDuTenant::NonOuvert(cause)) => {
+            let cause = format!("base du tenant NON ouverte au moment de l'écriture ({})", cause.classe.mot());
+            return perdre_la_trace_du_tenant(superadmin, tenant, jeton, trace_du_tenant, &cause);
         }
         Err(e) => {
             let cause = format!("ligne du catalogue des tenants NON LUE au moment de l'écriture ({e})");
@@ -1753,7 +1774,8 @@ pub(crate) fn refuser_le_geste_sans_anti_verrouillage_lu(cause_du_moteur: &str) 
 }
 
 /// (#2c) AUDIT : écrit un event `source='plume-tenant-admin'` DANS la base du tenant visé (visible du client,
-/// cf. tâche 6). Le tenant doit être résoluble (sinon `SansBaseServie` — ex. destruction déjà faite, tenant suspendu).
+/// cf. tâche 6). Le tenant doit être résoluble (sinon `SansBaseServie` — ex. destruction déjà faite, tenant suspendu,
+/// tenant actif dont la base n'est pas ouverte).
 ///
 /// `P10.21-m` — L'ÉVÉNEMENT REND SON ISSUE. Il était « best-effort » sous `let _ =` : une base du tenant qui
 /// refusait l'`INSERT` laissait la réponse et le journal de contrôle dire le geste, pendant que le tenant ne le
@@ -1764,9 +1786,13 @@ pub(crate) fn refuser_le_geste_sans_anti_verrouillage_lu(cause_du_moteur: &str) 
 /// phrase affirme que la base de ce tenant n'est pas servie) : elle rend `CatalogueNonLu`, avoué sous sa phrase à elle,
 /// et la cause du moteur va au journal du démon seul.
 pub(crate) fn audit_tenant_event(st: &AppState, tenant: &str, action: &str, sev: i64, msg: &str, detail: Value) -> EvenementDAuditDuTenant {
-    let handle = match st.tenants.handle_for_lu(tenant) {
-        Ok(Some(handle)) => handle,
-        Ok(None) => return EvenementDAuditDuTenant::SansBaseServie,
+    let handle = match st.tenants.handle_ouverte_lu(tenant) {
+        Ok(OuvertureDuTenant::Servie(handle)) => handle,
+        Ok(OuvertureDuTenant::NonServable) => return EvenementDAuditDuTenant::SansBaseServie,
+        // `P10.20-b` — tenant ACTIF dont la base n'est pas ouverte (clé non résolue, base non ouverte) : sa base n'est pas
+        // servie à cet instant, ce que dit exactement la phrase de `SansBaseServie` ; rien n'est écrit dans une autre
+        // base, et la classe avec son détail sont au journal du démon (`state::ready_lu`, une fois par panne).
+        Ok(OuvertureDuTenant::NonOuvert(_)) => return EvenementDAuditDuTenant::SansBaseServie,
         Err(e) => {
             eprintln!(
                 "[tenants] WARN événement d'audit '{action}' NON écrit : ligne du catalogue des tenants NON LUE pour '{tenant}' \

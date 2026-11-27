@@ -381,6 +381,134 @@ pub(crate) fn resolve_tenant_key(key_ref: &str) -> Result<Option<String>, String
     }
 }
 
+/// `P10.20-b` — POURQUOI UN TENANT ACTIF N'EST PAS OUVERT. Vocabulaire FERMÉ, une classe par cause : ce n'est ni un
+/// tenant absent, ni un tenant suspendu, ni une ligne du catalogue non lue — le catalogue l'a lu ACTIF, et sa base
+/// n'a pas pu être ouverte pour une cause du moment.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ClasseDuTenantNonOuvert {
+    /// `resolve_tenant_key` en erreur (coffre de secrets injoignable ou non configuré, préfixe inconnu) : la base
+    /// n'est pas ouverte, jamais avec une clé par défaut.
+    CleNonResolue,
+    /// `PreparedWriter::open` en erreur : la base n'a pas pu être ouverte, ou son contrat de schéma n'a pas pu être
+    /// établi (fichier ou répertoire indisponible, base illisible, schéma refusé).
+    BaseNonOuverte,
+}
+
+impl ClasseDuTenantNonOuvert {
+    /// Le mot FIXE de la classe. C'est lui, jamais le détail du résolveur ou du moteur, qu'une ligne d'appelant cite.
+    pub(crate) fn mot(self) -> &'static str {
+        match self {
+            Self::CleNonResolue => "clé non résolue",
+            Self::BaseNonOuverte => "base non ouverte",
+        }
+    }
+}
+
+/// `P10.20-b` — LE TENANT ACTIF NON OUVERT : sa classe, lisible par l'appelant, et le détail du résolveur ou du moteur,
+/// PRIVÉ à ce module : il n'en sort que par la ligne du journal du démon (`dire_le_tenant_non_ouvert`), jamais vers une
+/// réponse.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct TenantNonOuvert {
+    pub(crate) classe: ClasseDuTenantNonOuvert,
+    detail: String,
+}
+
+/// `P10.20-b` — CE QUE LE CATALOGUE ET L'OUVERTURE ONT ÉTABLI D'UN TENANT, quand sa ligne a été LUE (la ligne non lue
+/// est le `Err` de la lecture qui porte cette valeur). Trois faits distincts, que l'appelant ne peut pas confondre sans
+/// l'écrire :
+///  - `Servie` : le tenant est servable ;
+///  - `NonServable` : NON SERVABLE ÉTABLI — absent du catalogue, ou suspendu ;
+///  - `NonOuvert` : ACTIF NON OUVRABLE — clé non résolue, ou base non ouverte ou non préparée. Le refus reste FERMÉ
+///    (jamais de clé par défaut, jamais de base servie sans sa clé, jamais la base d'un autre), mais c'est une panne du
+///    moment : l'appelant la refuse en invitant à réessayer, garde le lot, saute le tour sous cette cause.
+#[derive(Debug)]
+pub(crate) enum OuvertureDuTenant<T> {
+    Servie(T),
+    NonServable,
+    NonOuvert(TenantNonOuvert),
+}
+
+impl<T> OuvertureDuTenant<T> {
+    pub(crate) fn map<U>(self, f: impl FnOnce(T) -> U) -> OuvertureDuTenant<U> {
+        match self {
+            Self::Servie(v) => OuvertureDuTenant::Servie(f(v)),
+            Self::NonServable => OuvertureDuTenant::NonServable,
+            Self::NonOuvert(cause) => OuvertureDuTenant::NonOuvert(cause),
+        }
+    }
+
+    /// TÉMOINS SEULEMENT — la projection à deux issues (servie ou rien) des formes d'avant.
+    #[cfg(test)]
+    pub(crate) fn servie(self) -> Option<T> {
+        match self {
+            Self::Servie(v) => Some(v),
+            Self::NonServable | Self::NonOuvert(_) => None,
+        }
+    }
+}
+
+/// `P10.20-b` — BORNE DU MÉMO des tenants actifs non ouverts déjà dits au journal. Un tenant n'y entre qu'après une
+/// ligne de catalogue LUE et ACTIVE : la population est celle du catalogue, la borne la tient quand même.
+pub(crate) const TENANTS_NON_OUVERTS_MEMO_MAX: usize = 256;
+
+/// PREMIÈRE fois, pour cette panne, que ce tenant est dit non ouvert sous cette classe ? Seam PUR sur la carte passée
+/// (le mémo du processus est `tenants_non_ouverts_dits`, celui du spool vit dans `ingest`). Une classe DIFFÉRENTE de
+/// celle notée est une panne nouvelle : dite, et notée à sa place. À la borne, un tenant neuf est DIT sans être noté —
+/// la ligne revient alors à chaque appel pour lui, jamais tue.
+pub(crate) fn noter_un_tenant_non_ouvert(
+    memo: &mut HashMap<String, ClasseDuTenantNonOuvert>,
+    tenant: &str,
+    classe: ClasseDuTenantNonOuvert,
+) -> bool {
+    match memo.get_mut(tenant) {
+        Some(notee) if *notee == classe => false,
+        Some(notee) => {
+            *notee = classe;
+            true
+        }
+        None => {
+            if memo.len() < TENANTS_NON_OUVERTS_MEMO_MAX {
+                memo.insert(tenant.to_string(), classe);
+            }
+            true
+        }
+    }
+}
+
+fn tenants_non_ouverts_dits() -> &'static Mutex<HashMap<String, ClasseDuTenantNonOuvert>> {
+    static DITS: std::sync::OnceLock<Mutex<HashMap<String, ClasseDuTenantNonOuvert>>> = std::sync::OnceLock::new();
+    DITS.get_or_init(Default::default)
+}
+
+/// LA LIGNE DU TENANT ACTIF NON OUVERT, une fois par tenant et par panne (changement de classe compris), quel que soit
+/// l'appelant — porte d'entrée, requête, lot du spool, tour de fond. Elle porte le détail du résolveur ou du moteur.
+fn dire_le_tenant_non_ouvert(tenant: &str, cause: &TenantNonOuvert) {
+    if !noter_un_tenant_non_ouvert(&mut tenants_non_ouverts_dits().lock(), tenant, cause.classe) {
+        return;
+    }
+    match cause.classe {
+        ClasseDuTenantNonOuvert::CleNonResolue => eprintln!(
+            "[multi-tenant] tenant '{tenant}' : clé non résolue -> FAIL-CLOSED, base NON ouverte ({}). Ce n'est ni un \
+             tenant absent ni un tenant suspendu : dit une fois jusqu'à la prochaine ouverture réussie de sa base.",
+            cause.detail
+        ),
+        ClasseDuTenantNonOuvert::BaseNonOuverte => eprintln!(
+            "[multi-tenant] tenant '{tenant}' : base NON servie — {}. Aucune requête ne sera routée vers elle ; déployer \
+             un binaire compatible ou réparer la base, puis réessayer. Ce n'est ni un tenant absent ni un tenant \
+             suspendu : dit une fois jusqu'à la prochaine ouverture réussie de sa base.",
+            cause.detail
+        ),
+    }
+}
+
+/// La base de ce tenant s'est ouverte : la prochaine panne sera dite à son tour.
+fn oublier_le_tenant_non_ouvert(tenant: &str) {
+    let mut dits = tenants_non_ouverts_dits().lock();
+    if !dits.is_empty() {
+        dits.remove(tenant);
+    }
+}
+
 /// Résout `tenant -> (db_path, clé)` et fournit le handle DB. Le read-pool #2a-1 est déjà keyé par
 /// db_path ; on ajoute ici un registre de writers par tenant. INERTE : exposé pour l'identité uniquement,
 /// pas encore câblé aux handlers data (#2a-2b).
@@ -388,7 +516,7 @@ pub(crate) fn resolve_tenant_key(key_ref: &str) -> Result<Option<String>, String
 ///    writer = st.db. Comportement STRICTEMENT identique à aujourd'hui.
 ///  - Mode 1 (`control=Some`) : lit la table `tenant` du control-plane + résout key_ref -> ouvre/mémoïse.
 // INERTE #2a-2a : `control` est lu par les accesseurs d'identité (token/user) ; les autres champs + les
-// méthodes (ready_lu/handle_for_lu/ready_db_path_lu) ne seront câblés aux handlers data qu'en #2a-2b -> allow(dead_code).
+// méthodes (ready_lu/handle_ouverte_lu/chemin_ouvert_lu) ne seront câblés aux handlers data qu'en #2a-2b -> allow(dead_code).
 #[derive(Clone)]
 #[allow(dead_code)]
 pub(crate) struct TenantDbManager {
@@ -488,55 +616,109 @@ pub(crate) fn per_db_registries_reload(conn: &Connection, db_path: &str) {
     knowledge_reload(conn, db_path);
 }
 
+/// `P10.20-b` — le détail de la cause quand la ligne du tenant a changé pendant la résolution de sa clé (dit au journal du
+/// démon par `dire_le_tenant_non_ouvert`, jamais servi).
+const DETAIL_LIGNE_CHANGEE_PENDANT_LA_RESOLUTION: &str =
+    "la ligne du tenant a changé au catalogue pendant la résolution de sa clé : aucune clé enregistrée";
+
+/// La ligne d'un tenant au catalogue : `(db_path, key_ref, suspended)`, `None` si elle est absente. Lue sous le verrou
+/// du plan de contrôle que l'appelant tient.
+fn lire_la_ligne_du_tenant(conn: &Connection, tenant: &str) -> rusqlite::Result<Option<(String, String, i64)>> {
+    use rusqlite::OptionalExtension as _;
+    conn.query_row(
+        "SELECT db_path, key_ref, suspended FROM tenant WHERE id=?1",
+        params![tenant],
+        |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?)),
+    )
+    .optional()
+}
+
+/// `P10.20-b` — retire du cache du client du coffre la clé d'une référence `vault:` que la ligne relue ne désigne plus
+/// (tenant détruit, ou recréé sous une autre clé, pendant la résolution) : la résolution a pu l'y remettre après l'oubli
+/// de la destruction (`tenants::tenant_destroy`). Même clé de cache que la résolution (`chemin#champ`). Une autre
+/// référence ne laisse rien au cache.
+fn oublier_la_cle_que_le_catalogue_ne_designe_plus(key_ref: &str) {
+    let reference = guatx_core::secret::SecretRef::parse(key_ref.trim());
+    if reference.scheme() == "vault" {
+        let (chemin, champ) = reference.vault_path_field();
+        crate::crypto::vault_key_cache_forget(&format!("{chemin}#{champ}"));
+    }
+}
+
 #[allow(dead_code)]
 impl TenantDbManager {
     /// LE CATALOGUE, PAS UN CHEMIN SERVABLE. Rend (db_path, clé_effective) du tenant. Mode 0 :
     /// passthrough (PLUME_DB, PLUME_DB_KEY), quel que soit `tenant` (il n'existe qu'un tenant). Mode 1 :
-    /// catalogue control-plane ; tenant absent ou suspendu -> None (fail-closed : jamais de repli
-    /// silencieux sur une autre base).
+    /// catalogue control-plane ; tenant absent, suspendu ou actif à clé non résolue -> rien de servable
+    /// (fail-closed : jamais de repli silencieux sur une autre base).
     ///
     /// PRIVÉE À CE MODULE (et `pub(crate)` UNIQUEMENT en build de test, comme `open_db` dans db_open.rs) :
     /// le chemin qu'elle rend n'a PAS ses registres par-db_path chargés, donc le SERVIR serait le fail-open
-    /// #45. Le seul chemin servable sort de `ready_lu` (`handle_for_lu`, `ready_db_path_lu`). Un chemin de
+    /// #45. Le seul chemin servable sort de `ready_lu` (`handle_ouverte_lu`, `chemin_ouvert_lu`). Un chemin de
     /// production qui l'appellerait ne COMPILE PAS (`cargo build`, CI) ; les tests, eux, mesurent légitimement le
     /// catalogue nu.
     ///
-    /// `P10.20-b` — TROIS ISSUES : `Ok(Some(..))` servable, `Ok(None)` absent, suspendu ou clé non résolue
-    /// (fail-closed, comme avant), `Err(..)` la ligne du catalogue n'a PAS été lue. Le `.ok()?` d'avant
-    /// rendait cette lecture ratée comme un tenant absent, et les portes d'entrée la servaient en 403
-    /// « tenant inconnu ou indisponible » : un refus de droit sur une lecture qui n'avait pas eu lieu.
-    fn catalog_route(&self, tenant: &str) -> rusqlite::Result<Option<(String, Option<String>)>> {
-        match &self.control {
-            None => Ok(Some((self.default_db_path.as_ref().clone(), db_key()))),
-            Some(cp) => {
-                use rusqlite::OptionalExtension as _;
-                let conn = cp.conn.lock();
-                let Some((db_path, key_ref, suspended)) = conn
-                    .query_row(
-                        "SELECT db_path, key_ref, suspended FROM tenant WHERE id=?1",
-                        params![tenant],
-                        |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?)),
-                    )
-                    .optional()?
-                else {
-                    return Ok(None);
-                };
-                if suspended != 0 {
-                    return Ok(None); // tenant suspendu -> pas de handle
-                }
-                // #2a-3 : résout la clé DU TENANT et l'enregistre (db_path -> clé) pour que read_conn_open
-                // ouvre CE fichier avec SA clé (frontière crypto). FAIL-CLOSED : clé non résoluble
-                // (ex. vault: injoignable) -> None, la base ne s'ouvre PAS (jamais de clé par défaut).
-                match resolve_tenant_key(&key_ref) {
-                    Ok(key) => {
-                        register_db_key(&db_path, key.clone());
-                        Ok(Some((db_path, key)))
-                    }
-                    Err(e) => {
-                        eprintln!("[multi-tenant] tenant '{tenant}' : clé non résolue -> FAIL-CLOSED, base NON ouverte ({e})");
-                        Ok(None)
-                    }
-                }
+    /// `P10.20-b` — QUATRE ISSUES : `Ok(Servie(..))` servable ; `Ok(NonServable)` absent ou suspendu (fail-closed, comme
+    /// avant) ; `Ok(NonOuvert(..))` ACTIF mais clé non résolue (fail-closed aussi : la base ne s'ouvre pas, jamais avec
+    /// une clé par défaut), dit au journal une fois par panne (`dire_le_tenant_non_ouvert`) ; `Err(..)` la ligne du
+    /// catalogue n'a PAS été lue. Le `.ok()?` d'avant rendait la lecture ratée comme un tenant absent, et une clé non
+    /// résolue l'était aussi : les portes servaient l'une et l'autre en refus d'absence.
+    ///
+    /// `P10.20-b` — LE VERROU DU PLAN DE CONTRÔLE N'EST PAS TENU PENDANT LA RÉSOLUTION DE LA CLÉ. La ligne est lue sous le
+    /// verrou, le verrou est RENDU, puis la clé est résolue (un aller-retour au coffre de secrets peut durer) : une
+    /// lecture du catalogue pour un autre tenant — donc la porte d'entrée de tous — ne l'attend plus. Deux résolutions
+    /// concurrentes du même tenant ne sont plus sérialisées : chacune interroge le coffre si la clé n'est pas au cache.
+    /// CE QUI GARDE LE REGISTRE `db_path -> clé` COHÉRENT : la clé n'est enregistrée qu'APRÈS avoir relu la ligne SOUS le
+    /// verrou, et sous ce même verrou, si elle est encore celle qui a été lue (même chemin, même référence de clé, tenant
+    /// actif). Toute écriture de la ligne (création, bascule, destruction) prend ce verrou : elle a lieu tout entière
+    /// avant la relecture, ou après l'enregistrement. Une clé n'est donc jamais enregistrée pour un chemin que la ligne
+    /// ne lui associe plus — ni celui d'un tenant recréé sous une autre clé, ni celui d'un autre tenant. Si la ligne a
+    /// changé : absente ou suspendue -> `NonServable` ; autre chemin ou autre clé -> `NonOuvert` (clé non résolue pour la
+    /// ligne actuelle), rien n'est enregistré ; et une clé que la ligne ne désigne plus est retirée du cache du client
+    /// du coffre, où la résolution a pu la remettre APRÈS l'oubli de la destruction. Une relecture qui échoue rend
+    /// `Err` et n'enregistre rien. Une résolution en échec n'enregistre rien non plus : elle est rendue sans relecture.
+    fn catalog_route(&self, tenant: &str) -> rusqlite::Result<OuvertureDuTenant<(String, Option<String>)>> {
+        let Some(cp) = &self.control else {
+            return Ok(OuvertureDuTenant::Servie((self.default_db_path.as_ref().clone(), db_key())));
+        };
+        let lue = lire_la_ligne_du_tenant(&cp.conn.lock(), tenant)?;
+        let Some((db_path, key_ref, suspended)) = lue else {
+            return Ok(OuvertureDuTenant::NonServable);
+        };
+        if suspended != 0 {
+            return Ok(OuvertureDuTenant::NonServable); // tenant suspendu -> pas de handle
+        }
+        // #2a-3 : résout la clé DU TENANT (verrou rendu) et l'enregistre (db_path -> clé) pour que read_conn_open
+        // ouvre CE fichier avec SA clé (frontière crypto). FAIL-CLOSED : clé non résoluble
+        // (ex. vault: injoignable) -> la base ne s'ouvre PAS (jamais de clé par défaut).
+        let key = match resolve_tenant_key(&key_ref) {
+            Ok(key) => key,
+            Err(detail) => {
+                let cause = TenantNonOuvert { classe: ClasseDuTenantNonOuvert::CleNonResolue, detail };
+                dire_le_tenant_non_ouvert(tenant, &cause);
+                return Ok(OuvertureDuTenant::NonOuvert(cause));
+            }
+        };
+        let conn = cp.conn.lock();
+        let relue = lire_la_ligne_du_tenant(&conn, tenant)?;
+        if let Some((chemin_relu, reference_relue, suspendu_relu)) = &relue {
+            if *suspendu_relu == 0 && *chemin_relu == db_path && *reference_relue == key_ref {
+                register_db_key(&db_path, key.clone());
+                return Ok(OuvertureDuTenant::Servie((db_path, key)));
+            }
+        }
+        drop(conn);
+        if !matches!(&relue, Some((_, reference_relue, _)) if *reference_relue == key_ref) {
+            oublier_la_cle_que_le_catalogue_ne_designe_plus(&key_ref);
+        }
+        match relue {
+            None => Ok(OuvertureDuTenant::NonServable),
+            Some((_, _, suspendu)) if suspendu != 0 => Ok(OuvertureDuTenant::NonServable),
+            Some(_) => {
+                let detail = DETAIL_LIGNE_CHANGEE_PENDANT_LA_RESOLUTION.to_string();
+                let cause = TenantNonOuvert { classe: ClasseDuTenantNonOuvert::CleNonResolue, detail };
+                dire_le_tenant_non_ouvert(tenant, &cause);
+                Ok(OuvertureDuTenant::NonOuvert(cause))
             }
         }
     }
@@ -544,23 +726,29 @@ impl TenantDbManager {
     /// VISIBILITÉ DE TEST du catalogue nu (cf. `catalog_route`) : les tests mesurent légitimement
     /// « ce tenant est-il catalogué / sa clé résout-elle », sans rien servir. Absente du binaire de
     /// production, exactement comme `open_db`/`open_db_keyed` dans db_open.rs. Une ligne de catalogue
-    /// non lue y vaut `None`, À DESSEIN : les témoins de la lecture ratée passent par
-    /// `tenant_available_lu`, la seule forme que la production appelle.
+    /// non lue et une clé non résolue y valent `None`, À DESSEIN : les témoins de ces issues passent par
+    /// `disponibilite_lu`, la forme que la production appelle.
     #[cfg(test)]
     pub(crate) fn resolve(&self, tenant: &str) -> Option<(String, Option<String>)> {
-        self.catalog_route(tenant).ok().flatten()
+        self.catalog_route(tenant).ok().and_then(OuvertureDuTenant::servie)
     }
 
-    /// LE TENANT EST-IL DISPONIBLE ? (existe, non suspendu, clé résoluble). C'est TOUT ce dont les
-    /// gardes d'entrée (auth_guard, résolution de rôle cross-tenant) ont besoin : elles REFUSENT, elles
-    /// ne servent rien. Elles n'obtiennent donc AUCUN chemin — la seule façon d'en obtenir un reste
-    /// `ready_db_path_lu`. Effet de bord conservé (identique à l'ancien `resolve` qu'elles appelaient) :
-    /// la clé DU tenant est enregistrée au registre du read-pool.
-    ///
-    /// `P10.20-b` — `Err` : la ligne du catalogue n'a pas été lue. Ce n'est ni « disponible » ni
-    /// « indisponible », et chaque porte la sert en 503 nommé (`rbac::CAUSE_CATALOGUE_DES_TENANTS_NON_LU`).
+    /// LE TENANT EST-IL DISPONIBLE ? EN QUATRE ISSUES (`P10.20-b`, cf. `catalog_route`). C'est ce dont la porte de
+    /// l'accès inter-tenants (`rbac::resolve_tenant_access`) et la porte d'entrée d'`auth_guard` (auth.rs) ont besoin :
+    /// elles REFUSENT, elles ne servent rien, et n'obtiennent donc AUCUN chemin. Effet de bord conservé : la clé DU tenant est enregistrée au registre du read-pool. Seule la clé est
+    /// jugée ici, pas l'ouverture de la base : une base qui ne s'ouvre pas est vue par `ready_lu`, au premier geste qui la
+    /// demande.
+    pub(crate) fn disponibilite_lu(&self, tenant: &str) -> rusqlite::Result<OuvertureDuTenant<()>> {
+        Ok(self.catalog_route(tenant)?.map(|_| ()))
+    }
+
+    /// TÉMOINS SEULEMENT — la projection à trois issues de `disponibilite_lu` : un tenant actif dont la clé n'est pas
+    /// résolue y vaut `Ok(false)`, comme un tenant absent ou suspendu ; `Err` : la ligne du catalogue n'a pas été lue.
+    /// Absente du binaire de production : la porte d'entrée d'`auth_guard` qui la lisait servait le 403 d'une absence au
+    /// membre d'un tenant actif non ouvert ; elle lit `disponibilite_lu`, et une porte qui la prendrait ne compile pas.
+    #[cfg(test)]
     pub(crate) fn tenant_available_lu(&self, tenant: &str) -> rusqlite::Result<bool> {
-        Ok(self.catalog_route(tenant)?.is_some())
+        Ok(matches!(self.catalog_route(tenant)?, OuvertureDuTenant::Servie(_)))
     }
 
     /// TÉMOINS SEULEMENT — la forme booléenne d'avant `P10.20-b`, contrôle des fixtures (« ce tenant est
@@ -584,11 +772,15 @@ impl TenantDbManager {
     /// ne tient que pour les tenants jamais utilisés n'est pas une garde. Le coût est une lecture d'une
     /// table minuscule et indexée du control-plane (ce que `auth_guard` fait déjà par requête).
     ///
-    /// TROIS ISSUES (`P10.20-b`), rendues jusqu'aux appelants :
-    ///  - `Ok(Some(w))` : servable ;
-    ///  - `Ok(None)` : FAIL-CLOSED, tenant inconnu/suspendu, clé non résoluble, schéma refusé. Le tenant
-    ///    n'est PAS servi (au lieu d'être servi depuis, ou dans, la base d'un autre). La clé non résolue et
-    ///    le schéma refusé sont nommés au journal ici ; la cause ne contient jamais la clé ;
+    /// QUATRE ISSUES (`P10.20-b`), rendues jusqu'aux appelants :
+    ///  - `Ok(Servie(w))` : servable ;
+    ///  - `Ok(NonServable)` : FAIL-CLOSED, tenant inconnu ou suspendu. Le tenant n'est PAS servi (au lieu d'être servi
+    ///    depuis, ou dans, la base d'un autre) ;
+    ///  - `Ok(NonOuvert(cause))` : FAIL-CLOSED aussi, mais le tenant est ACTIF : sa clé n'est pas résolue, ou sa base
+    ///    n'a pas pu être ouverte ou préparée (schéma refusé compris). Ce n'est ni « absent » ni « suspendu » : rien
+    ///    n'est servi, et l'appelant DÉCIDE (le lot reste au spool, le récepteur invite à réessayer, le tour de fond se
+    ///    saute sous cette cause). La ligne est dite ICI, une fois par tenant et par panne (`dire_le_tenant_non_ouvert`),
+    ///    oubliée à la première ouverture réussie ; la cause ne contient jamais la clé ;
     ///  - `Err(e)` : la ligne du catalogue n'a PAS été LUE. Ce n'est ni « absent » ni « suspendu » : rien
     ///    n'est servi non plus, mais l'appelant DÉCIDE de ce qu'il en fait (l'ingestion laisse le lot au spool
     ///    au lieu de l'écarter, un tour de fond se saute sous sa vraie cause). Rien n'est écrit au journal
@@ -599,17 +791,21 @@ impl TenantDbManager {
     /// lisait pas : seul le catalogue relu peut le dire) ni ÉVINCÉ (une panne passagère du plan de contrôle
     /// ne coûte pas une réouverture et une nouvelle préparation de la base). La lecture suivante qui réussit
     /// le retrouve et le juge comme avant (même chemin -> servi, autre chemin -> évincé, suspendu -> rien).
-    fn ready_lu(&self, tenant: &str) -> rusqlite::Result<Option<prepared_writer::PreparedWriter>> {
+    /// Une clé non résolue sort de même avant le cache : le writer chaud n'est pas servi sans que sa clé se résolve.
+    fn ready_lu(&self, tenant: &str) -> rusqlite::Result<OuvertureDuTenant<prepared_writer::PreparedWriter>> {
         if self.control.is_none() {
-            return Ok(None); // mode 0 : inatteignable (tous les appelants court-circuitent AVANT) ; fail-closed si ça change
+            return Ok(OuvertureDuTenant::NonServable); // mode 0 : inatteignable (tous les appelants court-circuitent AVANT) ; fail-closed si ça change
         }
-        let Some((path, key)) = self.catalog_route(tenant)? else {
-            return Ok(None);
+        let (path, key) = match self.catalog_route(tenant)? {
+            OuvertureDuTenant::Servie(route) => route,
+            OuvertureDuTenant::NonServable => return Ok(OuvertureDuTenant::NonServable),
+            OuvertureDuTenant::NonOuvert(cause) => return Ok(OuvertureDuTenant::NonOuvert(cause)),
         };
         let cached = self.writers.lock().get(tenant).cloned();
         if let Some(w) = cached {
             if w.path() == path {
-                return Ok(Some(w));
+                oublier_le_tenant_non_ouvert(tenant);
+                return Ok(OuvertureDuTenant::Servie(w));
             }
             // Le catalogue désigne désormais un AUTRE fichier pour ce tenant : le writer chaud pointe la
             // base PRÉCÉDENTE -> on l'évince plutôt que de continuer à servir l'ancien fichier.
@@ -617,41 +813,48 @@ impl TenantDbManager {
         }
         let w = match prepared_writer::PreparedWriter::open(&path, key.as_deref()) {
             Ok(w) => w,
-            Err(e) => {
+            Err(detail) => {
                 // NB : on ne prétend PAS que « rien n'a été écrit » — `prepare_schema` a pu appliquer
                 // db/schema.sql et des étapes de migration avant d'échouer. Ce qui est garanti ici est
                 // plus étroit et suffisant : AUCUNE requête ne sera routée vers cette base.
-                eprintln!(
-                    "[multi-tenant] tenant '{tenant}' : base NON servie — {e}. Aucune requête ne sera \
-                     routée vers elle ; déployer un binaire compatible ou réparer la base, puis réessayer"
-                );
-                return Ok(None);
+                let cause = TenantNonOuvert { classe: ClasseDuTenantNonOuvert::BaseNonOuverte, detail };
+                dire_le_tenant_non_ouvert(tenant, &cause);
+                return Ok(OuvertureDuTenant::NonOuvert(cause));
             }
         };
+        oublier_le_tenant_non_ouvert(tenant);
         // `or_insert` et non `insert` : deux requêtes concurrentes sur un tenant froid ouvrent chacune
         // leur connexion (le verrou n'est PAS tenu pendant l'ouverture — la préparation peut migrer, on
         // ne bloque pas les autres tenants pendant ce temps) ; la première arrivée reste, la seconde est
         // relâchée. Aucune connexion déjà distribuée n'est remplacée sous les pieds d'un appelant.
         let mut cache = self.writers.lock();
-        Ok(Some(cache.entry(tenant.to_string()).or_insert(w).clone()))
+        Ok(OuvertureDuTenant::Servie(cache.entry(tenant.to_string()).or_insert(w).clone()))
     }
 
-    /// Handle d'ÉCRITURE (writer) du tenant, en TROIS ISSUES (cf. `ready_lu`). Mode 0 : le writer
+    /// Handle d'ÉCRITURE (writer) du tenant, en QUATRE ISSUES (cf. `ready_lu`). Mode 0 : le writer
     /// process-global existant (st.db) — passthrough exact, AUCUNE ligne de ce chemin n'est touchée (c'est
     /// `server/mod.rs` qui a déjà passé ce handle par `prepare_schema` avant le bind), et aucun catalogue
-    /// n'est lu. Mode 1 : le writer du `PreparedWriter`, `Ok(None)` s'il n'est pas servable, `Err` si la
-    /// ligne du catalogue n'a pas été lue.
-    pub(crate) fn handle_for_lu(&self, tenant: &str) -> rusqlite::Result<Option<Arc<Mutex<Connection>>>> {
+    /// n'est lu. Mode 1 : le writer du `PreparedWriter`, `NonServable` ou `NonOuvert` s'il n'est pas servi, `Err` si
+    /// la ligne du catalogue n'a pas été lue.
+    pub(crate) fn handle_ouverte_lu(&self, tenant: &str) -> rusqlite::Result<OuvertureDuTenant<Arc<Mutex<Connection>>>> {
         if self.control.is_none() {
-            return Ok(Some(self.default_writer.clone()));
+            return Ok(OuvertureDuTenant::Servie(self.default_writer.clone()));
         }
         Ok(self.ready_lu(tenant)?.map(|w| w.handle()))
+    }
+
+    /// TÉMOINS SEULEMENT — la forme à trois issues d'avant (`Ok(None)` pour un tenant non servable comme pour un tenant
+    /// actif non ouvert). `P10.20-b` — absente du binaire de production : ses appelants lisent `handle_ouverte_lu` et
+    /// décident du tenant actif non ouvert ; un nouvel appelant de production qui la prendrait ne compile pas.
+    #[cfg(test)]
+    pub(crate) fn handle_for_lu(&self, tenant: &str) -> rusqlite::Result<Option<Arc<Mutex<Connection>>>> {
+        Ok(self.handle_ouverte_lu(tenant)?.servie())
     }
 
     /// TÉMOINS SEULEMENT — PROJECTION À DEUX ISSUES de `handle_for_lu` : `None` pour un tenant non servable comme
     /// pour une ligne de catalogue non lue, celle-ci dite au journal avec la cause du moteur. `P10.20-b` — absente
     /// du binaire de production : ses derniers appelants (récepteurs Pub/Sub et Firehose, inventaire des accès,
-    /// événement d'accès opérateur et d'audit du tenant, poignée prise avant la suspension) lisent `handle_for_lu`
+    /// événement d'accès opérateur et d'audit du tenant, poignée prise avant la suspension) lisent `handle_ouverte_lu`
     /// et décident de la lecture non faite ; un nouvel appelant de production qui prendrait celle-ci ne compile pas.
     /// Les témoins s'en servent pour obtenir la base d'un tenant de leurs fixtures.
     #[cfg(test)]
@@ -669,16 +872,22 @@ impl TenantDbManager {
     }
 
     /// db_path SERVABLE du tenant (clé du read-pool et de tous les caches/registres par-db_path) — mode 1,
-    /// TROIS ISSUES (cf. `ready_lu`). Il ne peut sortir que d'un `PreparedWriter`, donc les registres de
+    /// QUATRE ISSUES (cf. `ready_lu`). Il ne peut sortir que d'un `PreparedWriter`, donc les registres de
     /// cette base SONT chargés : c'est ce qui rend impossible de LIRE un tenant avec un masquage vide.
-    /// `Ok(None)` = tenant non servable ; `Err` = ligne du catalogue non lue.
-    pub(crate) fn ready_db_path_lu(&self, tenant: &str) -> rusqlite::Result<Option<String>> {
+    pub(crate) fn chemin_ouvert_lu(&self, tenant: &str) -> rusqlite::Result<OuvertureDuTenant<String>> {
         Ok(self.ready_lu(tenant)?.map(|w| w.path()))
+    }
+
+    /// TÉMOINS SEULEMENT — la forme à trois issues d'avant (`Ok(None)` = non servable ou actif non ouvert ; `Err` =
+    /// ligne du catalogue non lue). Absente du binaire de production : `req_db_path` lit `chemin_ouvert_lu`.
+    #[cfg(test)]
+    pub(crate) fn ready_db_path_lu(&self, tenant: &str) -> rusqlite::Result<Option<String>> {
+        Ok(self.chemin_ouvert_lu(tenant)?.servie())
     }
 
     /// TÉMOINS SEULEMENT — la forme à deux issues d'avant `P10.20-b` (« ce tenant a-t-il un chemin servable »),
     /// contrôle des fixtures. Absente du binaire de production : le seul appelant de production (`req_db_path`)
-    /// lit `ready_db_path_lu`, et un nouvel appelant qui prendrait celle-ci ne compile pas.
+    /// lit `chemin_ouvert_lu`, et un nouvel appelant qui prendrait celle-ci ne compile pas.
     #[cfg(test)]
     pub(crate) fn ready_db_path(&self, tenant: &str) -> Option<String> {
         self.ready_db_path_lu(tenant).ok().flatten()
@@ -1098,9 +1307,12 @@ pub(crate) fn req_db(st: &AppState, au: &AuthUser) -> Arc<Mutex<Connection>> {
     if !st.multi_tenant {
         return st.db.clone();
     }
-    match st.tenants.handle_for_lu(&au.tenant) {
-        Ok(Some(handle)) => handle,
-        Ok(None) => unavailable_tenant_db(),
+    match st.tenants.handle_ouverte_lu(&au.tenant) {
+        Ok(OuvertureDuTenant::Servie(handle)) => handle,
+        Ok(OuvertureDuTenant::NonServable) => unavailable_tenant_db(),
+        // `P10.20-b` — tenant actif non ouvert : le même cul-de-sac ; sa ligne est dite par `ready_lu`, une fois par panne,
+        // pas une fois par requête.
+        Ok(OuvertureDuTenant::NonOuvert(_)) => unavailable_tenant_db(),
         Err(e) => {
             eprintln!(
                 "[multi-tenant] tenant '{}' : ligne du catalogue des tenants NON LUE ({e}) -> base cul-de-sac pour \
@@ -1129,7 +1341,7 @@ pub(crate) fn req_db(st: &AppState, au: &AuthUser) -> Arc<Mutex<Connection>> {
 pub(crate) const UNAVAILABLE_TENANT_DB_PATH: &str = "/dev/null/plume-tenant-indisponible.db";
 
 /// Chemin de la base du tenant COURANT (clé du read-pool + des caches par-db_path). Mode 0 : st.db_path.
-/// Mode 1 : le chemin SERVABLE du tenant (registres chargés, cf. `ready_db_path_lu`), sinon le cul-de-sac.
+/// Mode 1 : le chemin SERVABLE du tenant (registres chargés, cf. `chemin_ouvert_lu`), sinon le cul-de-sac.
 pub(crate) fn req_db_path(st: &AppState, au: &AuthUser) -> String {
     // Mode 0 — ET mode 1 DÉGRADÉ sans control-plane (init échoué : « l'identité retombe sur la base
     // unique », cf. server/mod.rs) : passthrough EXACT, comme `req_db`/`handle_for` au même instant.
@@ -1138,9 +1350,11 @@ pub(crate) fn req_db_path(st: &AppState, au: &AuthUser) -> String {
     }
     // `P10.20-b` — même conduite que `req_db` pour la ligne de catalogue NON LUE : le cul-de-sac, et la cause
     // dite au journal au lieu d'être confondue avec un tenant indisponible.
-    match st.tenants.ready_db_path_lu(&au.tenant) {
-        Ok(Some(path)) => path,
-        Ok(None) => UNAVAILABLE_TENANT_DB_PATH.to_string(),
+    match st.tenants.chemin_ouvert_lu(&au.tenant) {
+        Ok(OuvertureDuTenant::Servie(path)) => path,
+        Ok(OuvertureDuTenant::NonServable) => UNAVAILABLE_TENANT_DB_PATH.to_string(),
+        // `P10.20-b` — tenant actif non ouvert : le même cul-de-sac, sa ligne dite par `ready_lu` une fois par panne.
+        Ok(OuvertureDuTenant::NonOuvert(_)) => UNAVAILABLE_TENANT_DB_PATH.to_string(),
         Err(e) => {
             eprintln!(
                 "[multi-tenant] tenant '{}' : ligne du catalogue des tenants NON LUE ({e}) -> chemin cul-de-sac pour \
@@ -1224,9 +1438,10 @@ fn oublier_la_liste_des_tenants_actifs_non_lue() {
 ///    (db_path, clé) + le writer PUIS exécute le corps sur SA base. Le corps reçoit le handle du tenant
 ///    (writer) + son db_path (clé des caches par-db_path #2a-1). Les tenants sont ainsi évalués/purgés/
 ///    rollupés isolément — complétude mode 1 (pas un vecteur de fuite).
-///  - SKIP FAIL-CLOSED (log warn) : un tenant dont la CLÉ ne résout pas (vault: injoignable, préfixe inconnu)
-///    ou dont la base ne s'ouvre pas est SAUTÉ — le job ne tourne JAMAIS sur la base `default` à sa place
-///    (jamais de repli cross-tenant ; cohérent avec resolve/ingest fail-closed R8/#2a-3).
+///  - SKIP FAIL-CLOSED : un tenant dont la CLÉ ne résout pas (vault: injoignable, préfixe inconnu) ou dont la base ne
+///    s'ouvre pas est SAUTÉ — le job ne tourne JAMAIS sur la base `default` à sa place (jamais de repli
+///    cross-tenant ; cohérent avec resolve/ingest fail-closed R8/#2a-3). `P10.20-b` — sous SA cause : la ligne du
+///    tenant actif non ouvert (`ready_lu`), une fois par panne, jamais la ligne d'un tenant suspendu.
 ///  - `P10.20-b` — un tenant dont la ligne du catalogue n'a PAS été LUE est sauté de même, sous SA cause
 ///    (« ligne du catalogue des tenants NON LUE », cause du moteur jointe), jamais sous celle d'un tenant
 ///    suspendu, d'une clé non résolue ou d'un schéma refusé : rien n'est établi sur lui ce tour-ci.
@@ -1281,11 +1496,17 @@ pub(crate) fn for_each_active_tenant<F: FnMut(&str, &Arc<Mutex<Connection>>, &st
         // read-pool, contrat de schéma appliqué, registres par-db_path hydratés — sinon SKIP fail-closed
         // (le job ne tourne JAMAIS sur la base `default` à la place d'un tenant).
         let w = match mgr.ready_lu(&tid) {
-            Ok(Some(w)) => w,
-            Ok(None) => {
-                eprintln!("[multi-tenant][jobs] tenant '{tid}' : base non servable (tenant suspendu / clé non résolue / schéma refusé) -> SKIP (fail-closed ; job NON exécuté sur la base default)");
+            Ok(OuvertureDuTenant::Servie(w)) => w,
+            // La liste ne porte que des tenants actifs : non servable ici = suspendu ou retiré du catalogue depuis sa
+            // lecture.
+            Ok(OuvertureDuTenant::NonServable) => {
+                eprintln!("[multi-tenant][jobs] tenant '{tid}' : base non servable (tenant suspendu ou retiré depuis la lecture de la liste) -> SKIP (fail-closed ; job NON exécuté sur la base default)");
                 continue;
             }
+            // `P10.20-b` — tenant ACTIF non ouvert (clé non résolue, base non ouverte ou non préparée) : sauté sous SA
+            // cause, jamais sous celle d'une suspension. Sa ligne, qui nomme la classe et le détail, est dite par
+            // `ready_lu` une fois par tenant et par panne : un tour de fond par boucle ne la répète pas.
+            Ok(OuvertureDuTenant::NonOuvert(_)) => continue,
             Err(e) => {
                 eprintln!(
                     "[multi-tenant][jobs] tenant '{tid}' : ligne du catalogue des tenants NON LUE ({e}) -> SKIP de ce \
@@ -1465,18 +1686,30 @@ pub(crate) fn spool_file_tenant(name: &str) -> String {
 /// (writer, db_path) cible de l'ingest pour un tenant. Mode 0 : (st.db, st.db_path) quel que soit `tenant`
 /// (passthrough EXACT — mêmes deux valeurs qu'avant, aucun catalogue lu). Mode 1 : le MÊME point de passage
 /// que le chemin requête et les jobs (`ready_lu`) -> writer et db_path viennent du MÊME `PreparedWriter` (ils
-/// ne peuvent plus désigner deux bases différentes), registres hydratés. TROIS ISSUES (`P10.20-b`) :
-/// `Ok(Some(..))` routable ; `Ok(None)` tenant inconnu/suspendu/clé non résolue/schéma refusé (fail-closed
-/// R8 : quarantaine du fichier spool, jamais un repli vers `default`) ; `Err` la ligne du catalogue n'a pas
-/// été lue — ce n'est PAS un fichier non routable, et `ingest_once` le laisse au spool, intact.
+/// ne peuvent plus désigner deux bases différentes), registres hydratés. QUATRE ISSUES (`P10.20-b`) :
+/// `Ok(Servie(..))` routable ; `Ok(NonServable)` tenant inconnu ou suspendu (fail-closed R8 : quarantaine du
+/// fichier spool, jamais un repli vers `default`) ; `Ok(NonOuvert(..))` tenant ACTIF dont la clé n'est pas résolue
+/// ou la base pas ouverte — ce n'est PAS un fichier non routable, `ingest_once` le laisse au spool, intact ; `Err`
+/// la ligne du catalogue n'a pas été lue — de même, le lot reste au spool.
+pub(crate) fn cible_d_ingestion_lu(
+    mgr: &TenantDbManager,
+    tenant: &str,
+) -> rusqlite::Result<OuvertureDuTenant<(Arc<Mutex<Connection>>, String)>> {
+    if mgr.control.is_none() {
+        return Ok(OuvertureDuTenant::Servie((mgr.default_writer.clone(), mgr.default_db_path.as_ref().clone())));
+    }
+    Ok(mgr.ready_lu(tenant)?.map(|w| (w.handle(), w.path())))
+}
+
+/// TÉMOINS SEULEMENT — la forme à trois issues d'avant (`Ok(None)` pour un tenant non servable comme pour un tenant
+/// actif non ouvert). Absente du binaire de production : l'ingestion qui la prendrait écarterait de nouveau un lot
+/// valide d'un tenant actif comme un lot non routable, et ne compile pas.
+#[cfg(test)]
 pub(crate) fn resolve_ingest_target_lu(
     mgr: &TenantDbManager,
     tenant: &str,
 ) -> rusqlite::Result<Option<(Arc<Mutex<Connection>>, String)>> {
-    if mgr.control.is_none() {
-        return Ok(Some((mgr.default_writer.clone(), mgr.default_db_path.as_ref().clone())));
-    }
-    Ok(mgr.ready_lu(tenant)?.map(|w| (w.handle(), w.path())))
+    Ok(cible_d_ingestion_lu(mgr, tenant)?.servie())
 }
 
 /// TÉMOINS SEULEMENT — la forme à deux issues d'avant `P10.20-b`, contrôle des fixtures. Absente du binaire de

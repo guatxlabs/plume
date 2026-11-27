@@ -1026,12 +1026,61 @@ fn oublier_le_catalogue_non_lu(tenant: &str) {
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+//  `P10.20-b` — UN LOT D'UN TENANT ACTIF DONT LA BASE NE S'OUVRE PAS N'EST PAS UN LOT NON ROUTABLE.
+//
+//  La ligne du catalogue est lue, le tenant est ACTIF, mais sa clé n'est pas résolue (coffre de secrets injoignable)
+//  ou sa base n'a pas pu être ouverte ou préparée. Avant, `resolve_ingest_target` rendait `None` comme pour un tenant
+//  absent ou suspendu, et le lot partait en QUARANTAINE (ou était DÉTRUIT si le déplacement échouait). Maintenant la
+//  conduite est celle de la ligne non lue : le lot RESTE au spool, intact, il est COMPTÉ parmi les abandons du
+//  passage (santé du composant `ingest`), et le passage qui trouve la base ouverte l'ingère sans geste.
+//
+//  LE JOURNAL : une ligne par tenant et par panne, dans la forme bornée du mémo de la ligne non lue, avec la classe
+//  pour seconde clé (une classe différente est une panne nouvelle, dite), oubliée au premier passage qui route un lot
+//  de ce tenant. Le tenant y est cité échappé ; la classe y est un mot FIXE ; le détail du résolveur ou du moteur est
+//  dans la ligne de `state.rs` (`[multi-tenant] tenant …`), dite elle aussi une fois par panne.
+//
+//  CE QUI BORNE L'ATTENTE : comme pour la ligne non lue, rien n'est jeté pendant la panne, et rien ne borne le spool
+//  dans ce chemin. La profondeur de file (composant `ingest`) et l'occupation du volume de données (composant
+//  `store`) le montrent ; les abandons comptés à chaque passage alimentent la santé de l'ingestion.
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+
+/// Le mémo du processus des tenants non ouverts déjà dits au spool (seam pur : `state::noter_un_tenant_non_ouvert`,
+/// borné par `state::TENANTS_NON_OUVERTS_MEMO_MAX`).
+fn tenants_non_ouverts_dits_au_spool() -> &'static Mutex<HashMap<String, ClasseDuTenantNonOuvert>> {
+    static DITS: std::sync::OnceLock<Mutex<HashMap<String, ClasseDuTenantNonOuvert>>> = std::sync::OnceLock::new();
+    DITS.get_or_init(Default::default)
+}
+
+/// LA LIGNE DU SPOOL, une fois par tenant et par panne. Le tenant est cité échappé (`{:?}`) : il vient d'un nom de
+/// fichier. La classe est un mot fixe ; aucun texte du résolveur ou du moteur n'y figure.
+fn dire_le_tenant_non_ouvert_au_spool(tenant: &str, classe: ClasseDuTenantNonOuvert) {
+    if noter_un_tenant_non_ouvert(&mut tenants_non_ouverts_dits_au_spool().lock(), tenant, classe) {
+        eprintln!(
+            "[ingest] tenant {tenant:?} : base du tenant NON ouverte ({}) -> ses lots RESTENT au spool, intacts (ni \
+             quarantaine, ni effacement, rien d'ingéré) et seront repris sans geste dès qu'elle s'ouvrira. Ce n'est ni un \
+             tenant inconnu ni un tenant suspendu. Dit une fois jusqu'à la prochaine ouverture réussie ; chaque lot laissé \
+             est compté à chaque passage parmi les abandons de l'ingestion (santé).",
+            classe.mot()
+        );
+    }
+}
+
+/// La base de ce tenant s'est ouverte : la prochaine panne sera dite à son tour.
+fn oublier_le_tenant_non_ouvert_au_spool(tenant: &str) {
+    let mut dits = tenants_non_ouverts_dits_au_spool().lock();
+    if !dits.is_empty() {
+        dits.remove(tenant);
+    }
+}
+
 /// UN PASSAGE SUR LE SPOOL. REND SON BILAN (`P4.1-r`) : `Illisible` si le répertoire n'a pas pu être
 /// énuméré — la voie fichier de l'ingestion est alors MORTE pour ce passage, et le dire vaut mieux qu'un
 /// retour muet qui laissait la boucle tourner « normalement » ; `Lue(n)` sinon, `n` = fichiers
-/// abandonnés (entrée illisible, spool non routable, ligne du catalogue non lue, fichier illisible ou
-/// indécodable, batch refusé, panic capturé). Chaque abandon est aussi mis en quarantaine ou laissé en
-/// place, comme avant ; un lot dont la ligne du catalogue n'a pas été lue est TOUJOURS laissé en place.
+/// abandonnés (entrée illisible, spool non routable, ligne du catalogue non lue, tenant actif non ouvert,
+/// fichier illisible ou indécodable, batch refusé, panic capturé). Chaque abandon est aussi mis en quarantaine
+/// ou laissé en place, comme avant ; un lot dont la ligne du catalogue n'a pas été lue, ou dont le tenant actif
+/// n'a pas pu être ouvert, est TOUJOURS laissé en place.
 pub(crate) fn ingest_once(mgr: &TenantDbManager, spool: &str) -> crate::bilan_de_tick::BilanDeTick {
     use crate::mesure_environnement::{cause_io, Mesure};
     let rd = match std::fs::read_dir(spool) {
@@ -1039,6 +1088,15 @@ pub(crate) fn ingest_once(mgr: &TenantDbManager, spool: &str) -> crate::bilan_de
         Err(e) => return Mesure::Illisible { cause: cause_io(&e), detail: format!("spool {spool} : {e}") },
     };
     let mut abandonnes = 0u32;
+    // `P10.20-b` — LES TENANTS TROUVÉS NON OUVERTS DANS CE PASSAGE : UNE SEULE TENTATIVE D'OUVERTURE PAR TENANT ET PAR
+    // PASSAGE. Rien ne garde l'échec d'une résolution d'un appel à l'autre (le client du coffre ne met en cache que ses
+    // succès, `PreparedWriter::open` ne garde rien de ses échecs) : sans cette carte, CHAQUE lot gardé d'un tenant non ouvert
+    // refaisait la tentative — un aller-retour au coffre (jusqu'à 10 s de lecture s'il ne répond pas) ou une ouverture et
+    // une préparation de base —, dans le seul fil d'ingestion, à chaque passage, pour un coût qui croissait avec le retard
+    // du tenant et retenait les lots de tous les autres. Les lots suivants du tenant sont laissés et comptés sous la classe
+    // trouvée, sans nouvelle tentative ; le passage suivant retente une fois. La carte meurt avec le passage, et seul un
+    // tenant dont la ligne du catalogue a été LUE et ACTIVE y entre : la population est celle du catalogue.
+    let mut non_ouverts_du_passage: HashMap<String, ClasseDuTenantNonOuvert> = HashMap::new();
     for ent in rd {
         // Une entrée que l'énumération refuse est un fichier qu'on n'ingérera pas ce passage : comptée.
         let ent = match ent {
@@ -1062,24 +1120,49 @@ pub(crate) fn ingest_once(mgr: &TenantDbManager, spool: &str) -> crate::bilan_de
         let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         // ROUTING FAIL-CLOSED (R8) : le tenant PORTEUR est encodé dans le nom (marqueur #T#…#T#, posé par
         // ingest_post/journal/minio) -> on résout SA base (writer + db_path). Mode 0 -> toujours (st.db,
-        // st.db_path). Mode 1, tenant inconnu/suspendu/clé non résolue -> QUARANTAINE (jamais d'insert dans
-        // une base client, jamais de repli sur `default`) ; ligne du catalogue NON LUE -> le lot RESTE au
-        // spool (`P10.20-b`, cf. le bandeau de `dire_le_catalogue_non_lu`). Fichier sans marqueur -> `default`
+        // st.db_path). Mode 1, tenant inconnu/suspendu -> QUARANTAINE (jamais d'insert dans une base client,
+        // jamais de repli sur `default`) ; ligne du catalogue NON LUE, ou tenant actif dont la clé n'est pas
+        // résolue ou la base pas ouverte -> le lot RESTE au spool (`P10.20-b`, cf. les bandeaux de
+        // `dire_le_catalogue_non_lu` et `dire_le_tenant_non_ouvert_au_spool`). Fichier sans marqueur -> `default`
         // (collecteurs hôte centraux / mode 0 / fichiers en vol pré-migration = base opérateur/self).
         let tenant = spool_file_tenant(&name);
         // M2 : host LIÉ au token de l'agent émetteur (marqueur `#H#…#H#`, posé par ingest_post/journal_post
         // pour un agent à token lié). Some(h) -> ÉCRASE `event.host` de tous les events du fichier (un agent
         // ne peut donc pas forger le host d'un AUTRE agent). None -> comportement historique (host de l'event).
         let forced_host = spool_file_host(&name);
-        let (handle, tdb_path) = match resolve_ingest_target_lu(mgr, &tenant) {
-            Ok(Some(t)) => {
+        // `P10.20-b` — tenant déjà trouvé non ouvert dans ce passage : le lot est laissé et compté comme au premier, sans
+        // nouvelle tentative (cf. `non_ouverts_du_passage`). Un tenant absent de la carte n'est pas un échec : c'est le
+        // chemin ordinaire, qui tente l'ouverture ci-dessous.
+        if non_ouverts_du_passage.contains_key(&tenant) {
+            if !crate::mesure_environnement::entree_de_spool_comptee(&name) {
+                return Sort::Ingere;
+            }
+            dire_le_tenant_non_ouvert_au_spool(&tenant, non_ouverts_du_passage[&tenant]);
+            return Sort::Abandonne;
+        }
+        let (handle, tdb_path) = match cible_d_ingestion_lu(mgr, &tenant) {
+            Ok(OuvertureDuTenant::Servie(t)) => {
                 oublier_le_catalogue_non_lu(&tenant);
+                oublier_le_tenant_non_ouvert_au_spool(&tenant);
                 t
             }
-            Ok(None) => {
+            Ok(OuvertureDuTenant::NonServable) => {
                 oublier_le_catalogue_non_lu(&tenant);
                 quarantine_spool_file(spool, &path, &name, "spool non routable (tenant inconnu/suspendu)");
                 return Sort::Abandonne; // (closure CONC-2 : ex-`continue`)
+            }
+            // `P10.20-b` — tenant ACTIF dont la clé n'est pas résolue ou la base pas ouverte : ni quarantaine ni
+            // effacement, le lot reste où il est, intact, et compte parmi les abandons du passage (cf. le bandeau de
+            // `dire_le_tenant_non_ouvert_au_spool`). Sa ligne du catalogue a été lue : la panne de lecture est oubliée.
+            // Une entrée qui n'est PAS un lot passe sans abandon ni ligne, comme pour la ligne non lue.
+            Ok(OuvertureDuTenant::NonOuvert(cause)) => {
+                oublier_le_catalogue_non_lu(&tenant);
+                non_ouverts_du_passage.insert(tenant.clone(), cause.classe);
+                if !crate::mesure_environnement::entree_de_spool_comptee(&name) {
+                    return Sort::Ingere;
+                }
+                dire_le_tenant_non_ouvert_au_spool(&tenant, cause.classe);
+                return Sort::Abandonne;
             }
             // `P10.20-b` — ni quarantaine ni effacement : le lot reste où il est, intact, et compte parmi les
             // abandons du passage ; le suivant relit la ligne. Une entrée qui n'est PAS un lot (le sous-répertoire

@@ -187,13 +187,16 @@ pub(crate) fn consigner_l_acces(st: &AppState, tenant: &str, nom: &str, role_eff
     if !doit_consigner(tenant, nom, provenance_presumee, maintenant) {
         return;
     }
-    // Jamais d'écriture dans la base d'un autre. `P10.20-b` — trois issues : tenant non servable (absent, suspendu,
-    // clé non résolue, schéma refusé) -> rien n'est écrit, comme avant ; ligne du catalogue NON LUE -> rien n'est
-    // écrit non plus, mais la cause est la sienne, dite au journal avec celle du moteur (jamais le nom du compte).
+    // Jamais d'écriture dans la base d'un autre. `P10.20-b` — quatre issues : tenant non servable (absent, suspendu)
+    // -> rien n'est écrit, comme avant ; tenant ACTIF dont la base n'est pas ouverte (clé non résolue, base non ouverte)
+    // -> rien n'est écrit, et sa ligne est celle de `state::ready_lu`, une fois par panne, pas une par accès ; ligne du
+    // catalogue NON LUE -> rien n'est écrit non plus, la cause dite au journal avec celle du moteur (jamais le nom du
+    // compte).
     let handle = if st.multi_tenant {
-        match st.tenants.handle_for_lu(tenant) {
-            Ok(Some(h)) => h,
-            Ok(None) => return,
+        match st.tenants.handle_ouverte_lu(tenant) {
+            Ok(OuvertureDuTenant::Servie(h)) => h,
+            Ok(OuvertureDuTenant::NonServable) => return,
+            Ok(OuvertureDuTenant::NonOuvert(_)) => return,
             Err(e) => {
                 eprintln!(
                     "[acces_observe] tenant '{tenant}' : ligne du catalogue des tenants NON LUE ({e}) -> accès par « {methode} » \

@@ -2345,17 +2345,23 @@ pub(crate) async fn auth_guard(State(st): State<AppState>, mut req: Request, nex
         return resp;
     }
     // #2a-3 FAIL-CLOSED (choke-point unique) : en mode 1, REFUSER ici — AVANT tout handler — si la base du
-    // tenant courant n'est pas résoluble (tenant suspendu, OU clé non résoluble : Vault injoignable /
-    // PLUME_VAULT_TOKEN absent / key_ref cassé) : l'appelant reçoit un 403 NOMMÉ au lieu d'une base
-    // cul-de-sac muette. `req_db`/`req_db_path` sont fail-closed par eux-mêmes (base/chemin CUL-DE-SAC, jamais
+    // tenant courant n'est pas résoluble (tenant absent ou suspendu : 403 NOMMÉ ; clé non résoluble : Vault
+    // injoignable / PLUME_VAULT_TOKEN absent / key_ref cassé : 503 nommé) au lieu d'une base cul-de-sac
+    // muette. `req_db`/`req_db_path` sont fail-closed par eux-mêmes (base/chemin CUL-DE-SAC, jamais
     // la base d'un autre tenant) — ce garde reste la couche qui le DIT à l'appelant, il n'est plus ce qui
-    // empêche la fuite. `tenant_available` enregistre au passage la clé DU tenant (registre read-pool).
+    // empêche la fuite. `disponibilite_lu` enregistre au passage la clé DU tenant (registre read-pool).
     // Mode 0 : sauté (multi_tenant=false) -> comportement STRICTEMENT identique.
-    // `P10.20-b` — une ligne de catalogue NON LUE n'est pas « base non résoluble » : 503 nommé, rien n'est servi.
+    // `P10.20-b` — une ligne de catalogue NON LUE n'est pas « base non résoluble » : 503 nommé, rien n'est servi. Un
+    // tenant ACTIF dont la clé n'est pas résolue n'est ni absent ni suspendu : il reçoit le refus nommé des autres portes
+    // (`rbac::CAUSE_BASE_DU_TENANT_NON_OUVERTE`, 503, sans la cause, dite au journal par `state::catalog_route` une fois
+    // par panne) ; le 403 reste celui d'un tenant absent ou suspendu.
     if st.multi_tenant {
-        match st.tenants.tenant_available_lu(&tenant) {
-            Ok(true) => {}
-            Ok(false) => return (StatusCode::FORBIDDEN, "tenant indisponible (base non résoluble)").into_response(),
+        match st.tenants.disponibilite_lu(&tenant) {
+            Ok(OuvertureDuTenant::Servie(())) => {}
+            Ok(OuvertureDuTenant::NonServable) => return (StatusCode::FORBIDDEN, "tenant indisponible (base non résoluble)").into_response(),
+            Ok(OuvertureDuTenant::NonOuvert(_)) => {
+                return err_json(StatusCode::SERVICE_UNAVAILABLE, crate::rbac::CAUSE_BASE_DU_TENANT_NON_OUVERTE);
+            }
             Err(e) => {
                 let (code, cause) = crate::rbac::refus_du_catalogue_non_lu(&e);
                 return err_json(code, cause);
